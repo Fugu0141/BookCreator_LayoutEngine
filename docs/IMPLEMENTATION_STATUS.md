@@ -41,3 +41,7 @@ Strict flat row/column preview components accept measured fixed text labels (bou
 ## M04 — recursive flow component groups
 
 Nested row/column groups (depth ≤4, 32 total children, 8 per group), fixed/fill widths, one flexible child per row, physical padding/gap/background. Resolve widths top-down, measure leaves, place groups bottom-up with layoutTree, render recursively from the resulting geometry. Exactly one source slot across the tree. Reject overflow and ambiguous fill; strict pagination only. Browser tests pending.
+
+## M04 — bounded component Canvas
+
+Nested groups may use canvas direction with fixed outer height, zero gap, padding, explicit child widths and nonnegative top-left x/y in micrometres. Existing layoutTree canvas geometry places premeasured children, overlapping allowed in tree order; overflow rejects rather than clips. Canvas participates in surrounding flow as an indivisible fixed-height group. Root still row/column, exactly one content slot. No anchors, rotation, full-page/spread canvas or image resources. Browser verification pending.

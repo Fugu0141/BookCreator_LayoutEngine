@@ -77,27 +77,31 @@ export async function measurePlainTextLines(document:Document,request:PlainTextM
 
 // Restricted component geometry: flat flow with exactly one semantic content slot.
 // Decorative rectangles never contribute source text. All lengths are integer micrometres.
-export type PreviewComponentChild =
-  | {id:string;type:'content'}
+export type PreviewComponentChild = (
+  | {id:string;type:'content';width?:number}
   | {id:string;type:'rect';width:number|'fill';height:number;color:string}
   | {id:string;type:'label';width:number|'fill';text:string;fontFamily:PlainTextMeasureRequest['fontFamily'];fontWeight:number;fontSize:number;lineHeight:number;color:string}
-  | {id:string;type:'group';width:number|'fill';direction:'row'|'column';gap:number;padding:number;background:string;children:readonly PreviewComponentChild[]};
+  | {id:string;type:'group';width:number|'fill';direction:'row'|'column'|'canvas';height?:number;gap:number;padding:number;background:string;children:readonly PreviewComponentChild[]}) & {x?:number;y?:number};
 export interface PreviewComponent {
   direction:'row'|'column'; gap:number; padding:number; background:string; textColor:string;
   children:readonly PreviewComponentChild[];
 }
 type ComponentPlacement=import('./tree.js').PlacedNode;
-type Group=Pick<PreviewComponent,'direction'|'gap'|'padding'|'background'|'children'>;
+type Group=Omit<Pick<PreviewComponent,'direction'|'gap'|'padding'|'background'|'children'>,'direction'>&{direction:'row'|'column'|'canvas';height?:number};
 const isColor=(v:unknown):v is string=>typeof v==='string'&&/^#[0-9a-fA-F]{6}$/.test(v);
 const length=(n:number)=>Number.isSafeInteger(n)&&n>=0&&n<=100000;
 // Validate and copy before await; never recursively clone an unbounded/cyclic caller tree.
 function snapshotComponent(c:PreviewComponent):PreviewComponent{
   const ids=new Set<string>();let slots=0,count=0;
   function group(g:Group,depth:number):PreviewComponentChild[]{
-    if(depth>4||!g||!['row','column'].includes(g.direction)||!length(g.gap)||!length(g.padding)||!isColor(g.background)||!Array.isArray(g.children)||g.children.length<1||g.children.length>8)throw RangeError('Invalid component group');
+    if(depth>4||!g||!['row','column','canvas'].includes(g.direction)||!length(g.gap)||!length(g.padding)||!isColor(g.background)||!Array.isArray(g.children)||g.children.length<1||g.children.length>8)throw RangeError('Invalid component group');
+    const canvas=g.direction==='canvas';
+    if(canvas?(!length(g.height!)||g.height!<=2*g.padding||g.gap!==0):g.height!==undefined)throw RangeError('Invalid canvas height or gap');
     return g.children.map(child=>{
       if(++count>32||!child||!/^[-A-Za-z0-9_]{1,64}$/.test(child.id)||child.id==='root'||ids.has(child.id))throw Error('Invalid component child ID or limit');
       ids.add(child.id);
+      if(canvas){if(!length(child.x!)||!length(child.y!)||typeof child.width!=='number'||!length(child.width)||child.width<=0)throw RangeError('Canvas children require explicit position and width');}
+      else if(child.x!==undefined||child.y!==undefined||(child.type==='content'&&child.width!==undefined))throw RangeError('Coordinates are only valid inside canvas');
       if(child.type==='content'){slots++;return {...child};}
       if(!(child.width==='fill'||length(child.width)&&child.width>0))throw RangeError('Invalid component width');
       if(child.type==='group')return {...child,children:group(child,depth+1)};
@@ -107,7 +111,7 @@ function snapshotComponent(c:PreviewComponent):PreviewComponent{
       return {...child};
     });
   }
-  if(!c||!isColor(c.textColor))throw RangeError('Invalid component color');
+  if(!c||!['row','column'].includes(c.direction)||!isColor(c.textColor))throw RangeError('Invalid component color');
   const children=group(c,0);
   if(slots!==1)throw RangeError('Component requires exactly one content slot');
   return {...c,children};
@@ -117,6 +121,10 @@ function resolveComponentWidths(c:PreviewComponent,width:number){
   function visit(g:Group,outer:number){
     const inner=outer-2*g.padding;
     if(inner<=0)throw RangeError('Component padding exceeds width');
+    if(g.direction==='canvas'){
+      for(const n of g.children){const w=n.width as number;if(n.x!+w>inner)throw RangeError('Canvas horizontal overflow');widths.set(n.id,w);if(n.type==='content')contentWidth=w;if(n.type==='group')visit(n,w);}
+      return;
+    }
     const flexible=(n:PreviewComponentChild)=>n.type==='content'||n.width==='fill';
     const fixed=g.children.reduce((sum,n)=>sum+(n.type==='content'||n.width==='fill'?0:n.width),0);
     const remaining=inner-fixed-g.gap*(g.children.length-1);
@@ -135,7 +143,10 @@ function resolveComponentWidths(c:PreviewComponent,width:number){
 function placeComponent(c:PreviewComponent,outerWidth:number,measurement:MeasuredTextLines,labels:Map<string,MeasuredTextLines>,widths:Map<string,number>,capHeight:number):ComponentPlacement{
   const textHeight=(m:MeasuredTextLines)=>m.lines.reduce((n,l)=>n+l.height,0);
   function place(g:Group,id:string,outer:number,cap:number):ComponentPlacement{
-    const inner=outer-2*g.padding,innerCap=cap-2*g.padding;
+    const canvas=g.direction==='canvas';
+    const outerHeight=canvas?g.height!:cap;
+    if(outerHeight>cap)throw RangeError('Canvas exceeds available height');
+    const inner=outer-2*g.padding,innerCap=outerHeight-2*g.padding;
     if(innerCap<=0)throw RangeError('Component padding exceeds height');
     const kids=g.children.map(n=>{
       const w=widths.get(n.id)!;
@@ -143,8 +154,8 @@ function placeComponent(c:PreviewComponent,outerWidth:number,measurement:Measure
       const height=n.type==='content'?textHeight(measurement):n.type==='label'?textHeight(labels.get(n.id)!):n.height;
       return {id:n.id,rect:{x:0,y:0,width:w,height},children:[]};
     });
-    const flow=layoutTree({id:'root',type:g.direction,width:inner,height:'auto',gap:g.gap,
-      children:kids.map(n=>({id:n.id,type:'leaf',width:n.rect.width,height:n.rect.height}))},{width:inner,height:innerCap});
+    const flow=layoutTree({id:'root',type:g.direction,width:inner,height:canvas?innerCap:'auto',gap:g.gap,
+      children:kids.map((n,i)=>({id:n.id,type:'leaf',width:n.rect.width,height:n.rect.height,...(canvas?{x:g.children[i].x,y:g.children[i].y}:{})}))},{width:inner,height:innerCap});
     return {id,rect:{x:0,y:0,width:outer,height:flow.rect.height+2*g.padding},
       children:kids.map((n,i)=>({...n,rect:{...flow.children[i].rect,x:flow.children[i].rect.x+g.padding,y:flow.children[i].rect.y+g.padding}}))};
   }
@@ -255,7 +266,7 @@ export async function createPlainTextPagePreview(document:Document,options:{
           Object.assign(el.style,{left:px(rect.x)+'px',top:px(rect.y)+'px',width:px(rect.width)+'px',height:px(rect.height)+'px'});
           el.dataset.componentNode=child.id;
           if(child.type==='rect'){el.style.background=child.color;el.setAttribute('aria-hidden','true');}
-          else if(child.type==='group'){el.dataset.componentGroup='true';el.style.background=child.background;renderChildren(child.children,node,el);}
+          else if(child.type==='group'){el.dataset.componentGroup='true';if(child.direction==='canvas')el.dataset.componentCanvas='true';el.style.background=child.background;renderChildren(child.children,node,el);}
           else if(child.type==='label'){
             el.dataset.fixedLabel='true';
             const measured=labels.get(child.id)!;

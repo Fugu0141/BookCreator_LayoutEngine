@@ -93,6 +93,20 @@ try{
   assert(nestedPreview.plan.pages[0].fragments[0].rect.height>=22000,'nested height in plan');
   let badGroup=false;try{await createPlainTextPagePreview(document,{revision:'6',fingerprint:'invalid',width:65000,height:150000,blocks:[makeText('sample','head','Heading',{component:{...nested,children:[...nested.children,{id:'extra',type:'rect',width:'fill',height:1000,color:'#123456'}]}})]});}catch{badGroup=true;}
   assert(badGroup,'ambiguous flexible row rejected');
+  const canvas={...component,direction:'column',children:[{id:'canvas',type:'group',direction:'canvas',width:'fill',height:50000,gap:0,padding:2000,background:'#eeeeee',children:[{id:'bg',type:'rect',x:1000,y:1000,width:40000,height:30000,color:'#abcdef'},{id:'title',type:'content',x:3000,y:5000,width:35000},{id:'label',type:'label',x:3000,y:25000,width:25000,text:'CHAPTER',fontFamily:'monospace',fontWeight:400,fontSize:3000,lineHeight:1.5,color:'#224466'}]}]};
+  const canvasPreview=await createPlainTextPagePreview(document,{revision:'7',fingerprint:'canvas',width:65000,height:150000,blocks:[makeText('sample','head','Heading',{component:canvas})]});
+  const cn=canvasPreview.element.shadowRoot.querySelector('[data-component-canvas]');
+  const ct=cn.querySelector('[data-content-slot]');
+  assert(Math.abs(parseFloat(ct.style.left)-5000*96/25400)<.02,'canvas exact x including padding');
+  assert(Math.abs(parseFloat(ct.style.top)-7000*96/25400)<.02,'canvas exact y including padding');
+  assert(canvasPreview.plan.pages[0].fragments[0].rect.height===54000,'fixed canvas height in plan');
+  assert(cn.children[0].dataset.componentNode==='bg'&&cn.children[1]===ct,'canvas paint order');
+  assert(canvasPreview.slices.length===1&&canvasPreview.slices[0].textEnd===7,'canvas source slice');
+  for(const [x,y] of [[40000,5000],[3000,49000]]){
+    const bad={...canvas,children:[{...canvas.children[0],children:canvas.children[0].children.map(n=>n.id==='title'?{...n,x,y}:n)}]};
+    let rejected=false;try{await createPlainTextPagePreview(document,{revision:'7',fingerprint:'bad-canvas',width:65000,height:150000,blocks:[makeText('sample','head','Heading',{component:bad})]});}catch{rejected=true;}
+    assert(rejected,'canvas overflow rejected');
+  }
   result.textContent='PASS '+JSON.stringify({lineCount:lines.lines.length,previewPages:preview.plan.pages.length,lineRanges:preview.slices.map(s=>[s.textStart,s.textEnd])})+' '+JSON.stringify({wide,narrow,pages:plan.pages.length});
 }catch(error){result.textContent='FAIL '+String(error);}
 </script></body></html>
