@@ -5,7 +5,9 @@
 import {measurePlainText,paginateMeasured,measurePlainTextLines,createPlainTextPagePreview} from '/dist/index.js';
 const result=document.querySelector('#result');
 const assert=(condition,message)=>{if(!condition)throw Error(message);};
+const phase=async name=>{await fetch('/test-progress',{method:'POST',body:name});};
 try{
+  await phase("basic text measurement");
   const before=document.body.children.length;
   const text='実測組版の検証。The quick brown fox jumps over the lazy dog. '.repeat(8);
   const opts={text,fontSize:4200,fontFamily:'sans-serif',lineHeight:1.4};
@@ -54,6 +56,7 @@ try{
   }
   assert(document.body.children.length===before,'font failure cleanup');
   const makeText=(id,key,text,extra={})=>({origin:{documentId:id,revision:'1',blockKey:key},request:{...request,text},splitPolicy:'strict',...extra});
+  await phase("section and component layouts");
   const sectionPreview=await createPlainTextPagePreview(document,{revision:'3',fingerprint:'book',width:65000,height:200000,paper:{width:100000,height:230000,inner:20000,outer:15000,top:10000,bottom:20000,firstSide:'right'},sections:[
     {id:'a',startOn:'page',blocks:[makeText('a','0','First')]},
     {id:'b',startOn:'continuous',blocks:[makeText('b','0','Second',{startPosition:'page-top',startPositionSource:'component'}),{kind:'pagebreak',origin:{documentId:'b',revision:'1',blockKey:'break'}},makeText('b','1','Third')]},
@@ -113,6 +116,7 @@ try{
   const picture={...component,direction:'column',children:[imageNode,{...imageNode,id:'cover',fit:'cover',alt:''},{id:'content',type:'content'}]};
   let resolves=0;
   const imageOptions={revision:'8',fingerprint:'image',width:65000,height:150000,blocks:[makeText('sample','head','Heading',{component:picture})],resolveImage:async id=>{assert(id===imageId,'resolve ID only');resolves++;return png;}};
+  await phase("image components");
   const picturePreview=await createPlainTextPagePreview(document,imageOptions);
   assert(resolves===1,'shared image decoded once');
   const contain=picturePreview.element.shadowRoot.querySelector('[data-component-node=art] canvas'),cover=picturePreview.element.shadowRoot.querySelector('[data-component-node=cover] canvas');
@@ -144,6 +148,7 @@ try{
   }
   const framedText='日本語の本文を複数ページにわたって表示します。 English text with spaces. '.repeat(28);
   const frame={direction:'column',gap:0,padding:2000,background:'#eeeeee',textColor:'#224466',children:[{id:'content',type:'content'}]};
+  await phase("fragmentable frames");
   const framed=await createPlainTextPagePreview(document,{revision:'9',fingerprint:'paragraph-frame',width:65000,height:35000,blocks:[{origin:{documentId:'p',revision:'9',blockKey:'0',range:{start:0,end:framedText.length}},request:{...request,text:framedText},splitPolicy:'allow',sourceTextStart:0,component:frame}]});
   assert(framed.plan.pages.length>1&&framed.slices.map(s=>framedText.slice(s.textStart,s.textEnd)).join('')===framedText,'framed paragraph splits without source loss');
   const fragments=framed.element.shadowRoot.querySelectorAll('[data-fragmentable-frame]');
@@ -171,6 +176,7 @@ try{
     {name:'answer',request:{...slotRequest,text:answer,fontFamily:'serif',fontSize:4500},sourceTextStart:200}
   ]};
   const multiOptions={revision:'10',fingerprint:'multi',width:65000,height:150000,blocks:[multiBlock]};
+  await phase("named slots and multiline");
   const multi=await createPlainTextPagePreview(document,multiOptions);
   const multiRoot=multi.element.shadowRoot,q=multiRoot.querySelector('[data-content-slot]'),h=multiRoot.querySelector('[data-named-slot=hint]'),aSlot=multiRoot.querySelector('[data-named-slot=answer]');
   assert(q.textContent===question&&h.textContent===hint&&aSlot.textContent===answer,'all semantic slot texts preserved independently');
@@ -220,6 +226,7 @@ try{
   const richRuns=[{start:boldStart,end:boldEnd,fontWeight:700,underline:true,color:'#123456'},
     {start:italicStart,end:monoStart,italic:true},{start:monoStart,end:richText.length,fontFamily:'monospace'}];
   const richRequest={...request,text:richText,multiline:true,inlineStyles:richRuns};
+  await phase("inline style runs");
   const rich=await measurePlainTextLines(document,richRequest);
   assert(rich.lines.map(l=>richText.slice(l.start,l.end)).join('')===richText,'styled text logical offsets');
   const richPreview=await createPlainTextPagePreview(document,{revision:'12',fingerprint:'inline-runs',width:65000,height:35000,blocks:[{
@@ -261,6 +268,7 @@ try{
     {start:subAt,end:subAt+1,baseline:'sub'},
     {start:big,end:big+3,fontSize:9000,color:'#123456'}
   ]};
+  await phase("variable inline metrics");
   const measuredMetrics=await measurePlainTextLines(document,metrics);
   assert(measuredMetrics.lines.map(l=>metricText.slice(l.start,l.end)).join('')===metricText,'variable-height logical mapping');
   const ordinary=measuredMetrics.lines[0].height,bigLine=measuredMetrics.lines.find(l=>l.start<=large&&l.end>large);
@@ -298,6 +306,7 @@ try{
     {start:0,end:4,fontFamily:'monospace',fontWeight:400,italic:true,underline:true,color:'#c2410c'},
     {start:6,end:17,fontFamily:'sans-serif',fontWeight:700}
   ]};
+  await phase("mixed font metrics");
   const mixed=await measurePlainTextLines(document,mixedRequest);
   assert(mixed.lines.length>1&&mixed.lines.map(l=>mixedText.slice(l.start,l.end)).join('')===mixedText,'mixed font metrics and exact offsets');
   const mixedPreview=await createPlainTextPagePreview(document,{revision:'14',fingerprint:'mixed-faces',width:65000,height:40000,blocks:[{origin:{documentId:'mixed',revision:'14',blockKey:'0'},request:mixedRequest,splitPolicy:'allow'}]});
@@ -307,10 +316,11 @@ try{
   assert(document.body.children.length===before,'mixed-font cleanup');
   // List markers are generated separately from the semantic text. Hanging indents
   // apply to all wrapped lines and all continuation fragments.
-  const listText='日本語の項目を折り返して表示します。 List item with several wrapped lines. '.repeat(8);
+  const listText='日本語の項目を折り返して表示します。 List item with several wrapped lines. '.repeat(4);
   const itemStyle={kind:'ordered',number:12,depth:2,indentStep:5000,markerWidth:9000,gap:2000};
   const listBlock={origin:{documentId:'list',revision:'1',blockKey:'a',range:{start:30,end:30+listText.length}},request:{...request,text:listText},splitPolicy:'allow',sourceTextStart:30,listItem:itemStyle};
   const listOptions={revision:'15',fingerprint:'list',width:65000,height:30000,blocks:[listBlock]};
+  await phase("list pagination");
   const listPreview=await createPlainTextPagePreview(document,listOptions);
   const listRoot=listPreview.element.shadowRoot,fragments=[...listRoot.querySelectorAll('[data-list-item]')];
   assert(fragments.length>1&&listPreview.plan.pages.length>1,'long list item paginates');
@@ -319,6 +329,7 @@ try{
   assert([...listRoot.querySelectorAll('[data-start]')].map(e=>e.textContent).join('')===listText,'markers excluded from logical row text');
   assert(listPreview.slices.map(s=>listText.slice(s.sourceSlice.start-30,s.sourceSlice.end-30)).join('')===listText,'list fragments preserve exact raw ranges');
   const bulletItems=[0,1,2].map((depth,i)=>({...makeText('list','bullet-'+i,'短い項目。'),listItem:{kind:'bullet',depth,indentStep:5000,markerWidth:9000,gap:2000}}));
+  await phase("bullet marker geometry");
   const bulletPreview=await createPlainTextPagePreview(document,{...listOptions,height:150000,blocks:bulletItems});
   assert([...bulletPreview.element.shadowRoot.querySelectorAll('[data-list-marker]')].map(e=>e.textContent).join('')==='•◦▪','depth-specific bullet markers');
   document.body.append(bulletPreview.element);
@@ -328,6 +339,7 @@ try{
       assert(mark.right<body.left&&body.right<=outer.right+.1&&body.bottom<=outer.bottom+.1,'marker and text columns fit within item geometry');
     }
   }finally{bulletPreview.element.remove();}
+  await phase("invalid list geometry");
   for(const item of [
     {...itemStyle,depth:8},{...itemStyle,depth:1.5},{...itemStyle,number:0},{...itemStyle,number:'1'},
     {...itemStyle,gap:-1},{...itemStyle,indentStep:30001},{...itemStyle,markerWidth:0},
