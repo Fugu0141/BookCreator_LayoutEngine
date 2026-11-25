@@ -194,6 +194,26 @@ try{
     let failed=false;try{await createPlainTextPagePreview(document,{...multiOptions,blocks:[invalid]});}catch{failed=true;}
     assert(failed,'invalid named slot declaration, source range or split rejected');
   }
+  const multilineText='最初の長い文章を折り返して表示します。'.repeat(3)+'\r\n\r\nSecond paragraph.\nThird line.';
+  const multilineRequest={...request,text:multilineText,multiline:true,paragraphGap:2000};
+  const multiLines=await measurePlainTextLines(document,multilineRequest);
+  const blank=multiLines.lines.find(l=>multilineText.slice(l.start,l.end)==='\r\n');
+  assert(blank&&blank.height===Math.ceil(request.fontSize*request.lineHeight)+2000,'blank line and physical paragraph gap');
+  assert(multiLines.lines.map(l=>multilineText.slice(l.start,l.end)).join('')===multilineText,'CRLF and LF preserved in line mapping');
+  const boundaries2=new Set([...new Intl.Segmenter(undefined,{granularity:'grapheme'}).segment(multilineText)].map(g=>g.index));boundaries2.add(multilineText.length);
+  assert(multiLines.lines.every(l=>boundaries2.has(l.start)&&boundaries2.has(l.end)),'no split inside CRLF or grapheme');
+  const multiPage=await createPlainTextPagePreview(document,{revision:'11',fingerprint:'multiline',width:65000,height:35000,blocks:[{origin:{documentId:'m',revision:'11',blockKey:'p',range:{start:50,end:50+multilineText.length}},request:multilineRequest,splitPolicy:'allow',sourceTextStart:50,component:frame}]});
+  assert(multiPage.plan.pages.length>1&&multiPage.slices.map(s=>multilineText.slice(s.sourceSlice.start-50,s.sourceSlice.end-50)).join('')===multilineText,'multi-paragraph frame pagination preserves source');
+  assert([...multiPage.element.shadowRoot.querySelectorAll('[data-start]')].map(e=>e.textContent).join('')===multilineText,'frozen rows preserve exact text including hidden separators');
+  const withMultilineSlot=await createPlainTextPagePreview(document,{...multiOptions,height:190000,blocks:[{...multiBlock,namedSlots:[{...multiBlock.namedSlots[0],request:{...multiBlock.namedSlots[0].request,text:'ヒント。\r\n\r\n次の段落。',multiline:true,paragraphGap:1000}},multiBlock.namedSlots[1]]}]});
+  const ms=withMultilineSlot.element.shadowRoot.querySelector('[data-named-slot=hint]');
+  assert(ms.textContent==='ヒント。\r\n\r\n次の段落。'&&ms.children.length>=3,'named slot multiline rendering');
+  assert(withMultilineSlot.slices[0].namedSlots[0].sourceSlice.end===40+ms.textContent.length,'named slot exact multiline source slice');
+  for(const bad of [{text:'a\rb',multiline:true},{text:'a\tb',multiline:true},{text:'\n\n',multiline:true},{text:'a\n'.repeat(256),multiline:true},{text:'a\nb',multiline:true,paragraphGap:-1},{text:'a',paragraphGap:100}]){
+    let failed=false;try{await measurePlainTextLines(document,{...request,...bad});}catch{failed=true;}
+    assert(failed,'invalid multiline input rejected');
+  }
+  assert(document.body.children.length===before,'multiline measurement cleanup');
   result.textContent='PASS '+JSON.stringify({lineCount:lines.lines.length,previewPages:preview.plan.pages.length,lineRanges:preview.slices.map(s=>[s.textStart,s.textEnd])})+' '+JSON.stringify({wide,narrow,pages:plan.pages.length});
 }catch(error){result.textContent='FAIL '+String(error);}
 await fetch('/test-result',{method:'POST',body:result.textContent});
