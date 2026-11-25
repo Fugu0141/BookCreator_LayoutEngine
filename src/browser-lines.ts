@@ -160,7 +160,7 @@ export async function measurePlainTextLines(document:Document,request:PlainTextM
   try{
     el.getBoundingClientRect();await readyPreviewFont(document,r.fontFamily,r.fontWeight,r.text);
     for(const run of r.inlineStyles??[])await readyPreviewFont(document,run.fontFamily??r.fontFamily,run.fontWeight??r.fontWeight,r.text.slice(run.start,run.end));
-    if(r.inlineStyles?.some(s=>s.fontSize!==undefined||(s.baseline&&s.baseline!=='normal'))){
+    if(r.inlineStyles?.some(s=>s.fontSize!==undefined||(s.baseline&&s.baseline!=='normal')||(s.fontFamily!==undefined&&s.fontFamily!==r.fontFamily))){
       const lines=measureVariableLines(document,root,el,r,segments);
       return {request:r,lines,measurement:'browser-dom-lines',publicationReady:false};
     }
