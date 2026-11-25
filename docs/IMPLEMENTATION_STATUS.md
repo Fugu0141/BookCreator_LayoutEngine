@@ -33,3 +33,7 @@ Multiple ordered sections and explicit page breaks are accepted by the browser p
 ## M04 — strict flat flow component preview
 
 A plain text block may carry a neutral restricted row/column component: exactly one content slot, up to seven decorative rectangles, physical gap/padding and literal hex colors. Text measured at reduced width, existing layoutTree places premeasured children, outer height enters pagination as a single strict unit. Same DOM rendering path for samples and book pages. Source ranges preserved; decorations aria-hidden. No arbitrary CSS, nested/Canvas/fragmentable components, literal extra text or publication readiness. Browser tests pending.
+
+## M04 — fixed component labels
+
+Strict flat row/column preview components accept measured fixed text labels (bounded text, physical width, independent registered font, weight, size and line height, hex color). Labels participate in geometry and pagination but never alter semantic content-slot source slices. No nested structures or publication readiness. Browser verification pending.

@@ -76,6 +76,13 @@ try{
   assert(parseFloat(col.querySelector('[data-component-node=bar]').style.top)>parseFloat(col.querySelector('[data-content-slot]').style.top),'column order');
   let rejectedComponent=false;try{await createPlainTextPagePreview(document,{revision:'4',fingerprint:'bad-component',width:65000,height:150000,blocks:[makeText('sample','head','Heading',{component:{...component,children:[{id:'a',type:'content'},{id:'b',type:'content'}]}})]});}catch{rejectedComponent=true;}
   assert(rejectedComponent,'duplicate semantic slot rejected');
+  const labelComponent={...component,direction:'column',children:[{id:'kicker',type:'label',width:'fill',text:'CHAPTER',fontFamily:'monospace',fontWeight:700,fontSize:3000,lineHeight:1.5,color:'#224466'},{id:'content',type:'content'}]};
+  const labeled=await createPlainTextPagePreview(document,{revision:'5',fingerprint:'label',width:65000,height:150000,blocks:[{...makeText('sample','head','Original heading',{component:labelComponent}),origin:{documentId:'sample',revision:'1',blockKey:'head',range:{start:10,end:26}},sourceTextStart:10}]});
+  const fixed=labeled.element.shadowRoot.querySelector('[data-fixed-label]');
+  assert(fixed.textContent==='CHAPTER'&&fixed.firstElementChild.style.fontFamily==='monospace'&&fixed.firstElementChild.style.fontWeight==='700','fixed label independent font');
+  assert(labeled.slices.length===1&&labeled.slices[0].sourceSlice.start===10&&labeled.slices[0].sourceSlice.end===26,'label does not change source slice');
+  assert(labeled.element.shadowRoot.querySelector('[data-content-slot]').textContent==='Original heading','original heading unchanged');
+  assert(parseFloat(fixed.style.top)<parseFloat(labeled.element.shadowRoot.querySelector('[data-content-slot]').style.top),'label flow order');
   result.textContent='PASS '+JSON.stringify({lineCount:lines.lines.length,previewPages:preview.plan.pages.length,lineRanges:preview.slices.map(s=>[s.textStart,s.textEnd])})+' '+JSON.stringify({wide,narrow,pages:plan.pages.length});
 }catch(error){result.textContent='FAIL '+String(error);}
 </script></body></html>
