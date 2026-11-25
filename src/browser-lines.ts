@@ -76,10 +76,11 @@ export async function measurePlainTextLines(document:Document,request:PlainTextM
   }finally{host.remove();}
 }
 
-// Restricted component geometry: flat flow with exactly one semantic content slot.
+// Restricted component geometry: one primary slot plus optional named source slots in strict trees.
 // Decorative rectangles never contribute source text. All lengths are integer micrometres.
 export type PreviewComponentChild = (
   | {id:string;type:'content';width?:number}
+  | {id:string;type:'slot';name:string;width:number|'fill';color:string}
   | {id:string;type:'rect';width:number|'fill';height:number;color:string}
   | {id:string;type:'image';width:number|'fill';height:number;assetId:string;fit:'contain'|'cover';alt:string;crop?:ImageCrop}
   | {id:string;type:'label';width:number|'fill';text:string;fontFamily:PlainTextMeasureRequest['fontFamily'];fontWeight:number;fontSize:number;lineHeight:number;color:string}
@@ -91,10 +92,11 @@ export interface PreviewComponent {
 type ComponentPlacement=import('./tree.js').PlacedNode;
 type Group=Omit<Pick<PreviewComponent,'direction'|'gap'|'padding'|'background'|'children'>,'direction'>&{direction:'row'|'column'|'canvas';height?:number};
 const isColor=(v:unknown):v is string=>typeof v==='string'&&/^#[0-9a-fA-F]{6}$/.test(v);
+const validSlotName=(v:unknown):v is string=>typeof v==='string'&&/^[a-z][a-z0-9-]{0,31}$/.test(v)&&v!=='content';
 const length=(n:number)=>Number.isSafeInteger(n)&&n>=0&&n<=100000;
 // Validate and copy before await; never recursively clone an unbounded/cyclic caller tree.
 function snapshotComponent(c:PreviewComponent):PreviewComponent{
-  const ids=new Set<string>();let slots=0,count=0;
+  const ids=new Set<string>(),names=new Set<string>();let slots=0,count=0;
   function group(g:Group,depth:number):PreviewComponentChild[]{
     if(depth>4||!g||!['row','column','canvas'].includes(g.direction)||!length(g.gap)||!length(g.padding)||!isColor(g.background)||!Array.isArray(g.children)||g.children.length<1||g.children.length>8)throw RangeError('Invalid component group');
     const canvas=g.direction==='canvas';
@@ -107,6 +109,10 @@ function snapshotComponent(c:PreviewComponent):PreviewComponent{
       if(child.type==='content'){slots++;return {...child};}
       if(!(child.width==='fill'||length(child.width)&&child.width>0))throw RangeError('Invalid component width');
       if(child.type==='group')return {...child,children:group(child,depth+1)};
+      if(child.type==='slot'){
+        if(!validSlotName(child.name)||names.has(child.name)||names.size>=8||!isColor(child.color))throw RangeError('Invalid or duplicate named content slot');
+        names.add(child.name);return {...child};
+      }
       if(child.type==='label'){
         if(typeof child.text!=='string'||!child.text.length||child.text.length>256||!isColor(child.color)||!isPreviewFontFamily(child.fontFamily)||!isPreviewFontWeight(child.fontWeight)||!positive(child.fontSize)||child.fontSize>30000||!Number.isFinite(child.lineHeight)||child.lineHeight<1.25||child.lineHeight>4)throw RangeError('Invalid component label');
       }else if(child.type==='image'){
@@ -145,7 +151,7 @@ function resolveComponentWidths(c:PreviewComponent,width:number){
   }
   visit(c,width);return {widths,contentWidth};
 }
-function placeComponent(c:PreviewComponent,outerWidth:number,measurement:MeasuredTextLines,labels:Map<string,MeasuredTextLines>,widths:Map<string,number>,capHeight:number):ComponentPlacement{
+function placeComponent(c:PreviewComponent,outerWidth:number,measurement:MeasuredTextLines,labels:Map<string,MeasuredTextLines>,slots:Map<string,MeasuredTextLines>,widths:Map<string,number>,capHeight:number):ComponentPlacement{
   const textHeight=(m:MeasuredTextLines)=>m.lines.reduce((n,l)=>n+l.height,0);
   function place(g:Group,id:string,outer:number,cap:number):ComponentPlacement{
     const canvas=g.direction==='canvas';
@@ -156,7 +162,7 @@ function placeComponent(c:PreviewComponent,outerWidth:number,measurement:Measure
     const kids=g.children.map(n=>{
       const w=widths.get(n.id)!;
       if(n.type==='group')return place(n,n.id,w,innerCap);
-      const height=n.type==='content'?textHeight(measurement):n.type==='label'?textHeight(labels.get(n.id)!):n.height;
+      const height=n.type==='content'?textHeight(measurement):n.type==='label'?textHeight(labels.get(n.id)!):n.type==='slot'?textHeight(slots.get(n.name)!):n.height;
       return {id:n.id,rect:{x:0,y:0,width:w,height},children:[]};
     });
     const flow=layoutTree({id:'root',type:g.direction,width:inner,height:canvas?innerCap:'auto',gap:g.gap,
@@ -167,7 +173,14 @@ function placeComponent(c:PreviewComponent,outerWidth:number,measurement:Measure
   return place(c,'root',outerWidth,capHeight);
 }
 
+export interface PreviewNamedSlot {
+  name:string;request:Omit<PlainTextMeasureRequest,'width'>;
+  /** Exact contiguous raw source offset verified by the host, when available. */
+  sourceTextStart?:number;
+}
+export interface PreviewNamedSlotSlice {name:string;textStart:number;textEnd:number;sourceSlice?:{start:number;end:number}}
 export interface PreviewTextBlock {
+  namedSlots?:readonly PreviewNamedSlot[];
   component?:PreviewComponent; // strict tree or splittable single-slot column frame
   origin:Origin; request:PlainTextMeasureRequest; splitPolicy:SplitPolicy;
   startPosition?:'page-top'; startPositionSource?:'component'|'explicit';
@@ -178,6 +191,31 @@ export interface PreviewTextSlice {
   pageIndex:number; origin:Origin; textStart:number; textEnd:number;
   /** Source offsets are available only if caller supplied an exact contiguous source slice. */
   sourceSlice?:{start:number;end:number};
+  /** Named slots are separate logical texts; never concatenate their source ranges. */
+  namedSlots?:readonly PreviewNamedSlotSlice[];
+}
+function snapshotNamedSlots(b:PreviewTextBlock,component:PreviewComponent|undefined):PreviewNamedSlot[]{
+  const names=new Set<string>();
+  function visit(nodes:readonly PreviewComponentChild[]){for(const n of nodes){if(n.type==='slot')names.add(n.name);else if(n.type==='group')visit(n.children);}}
+  if(component)visit(component.children);
+  const slots=b.namedSlots??[];
+  if(!Array.isArray(slots)||slots.length!==names.size||slots.length>8||(slots.length&&b.splitPolicy!=='strict'))throw RangeError('Named source slots require matching strict component nodes');
+  const ranges:{start:number;end:number}[]=[];
+  function checkRange(start:number|undefined,text:string){
+    if(start===undefined)return;
+    if(!b.origin.range||!Number.isSafeInteger(start)||start<b.origin.range.start||!Number.isSafeInteger(start+text.length)||start+text.length>b.origin.range.end)throw RangeError('Invalid named slot source mapping');
+    ranges.push({start,end:start+text.length});
+  }
+  checkRange(b.sourceTextStart,b.request.text);
+  const copy=slots.map(s=>{
+    if(!s||!validSlotName(s.name)||!names.delete(s.name)||!s.request)throw RangeError('Missing, duplicate or unknown named source slot');
+    const request={...s.request};validate({...request,width:100000});
+    checkRange(s.sourceTextStart,request.text);
+    return {name:s.name,request,sourceTextStart:s.sourceTextStart};
+  });
+  ranges.sort((a,b)=>a.start-b.start);
+  if(ranges.some((r,i)=>i>0&&r.start<ranges[i-1].end))throw RangeError('Overlapping component source slots');
+  return copy;
 }
 // The host resolves a project-scoped resource to a verified PNG Blob. No URL from the component definition is loaded.
 export type PreviewImageResolver=(assetId:string)=>Promise<Blob>;
@@ -206,7 +244,14 @@ export async function createPlainTextPagePreview(document:Document,options:{
     allBlocks.length<1||allBlocks.length>128||allBlocks.reduce((n,b)=>n+(isBreak(b)?0:b.request.text.length),0)>50000)
     throw RangeError('Invalid or oversized preview');
   // Snapshot caller-owned values before the first await.
-  const sections=sourceSections.map(s=>({...s,blocks:s.blocks.map(b=>({...b,origin:{...b.origin,range:b.origin.range?{...b.origin.range}:undefined},...(isBreak(b)?{}:{request:{...b.request},...(b.component?{component:snapshotComponent(b.component)}:{})})}))}));
+  const sections=sourceSections.map(s=>({...s,blocks:s.blocks.map(b=>{
+    const origin={...b.origin,range:b.origin.range?{...b.origin.range}:undefined};
+    if(isBreak(b))return {...b,origin};
+    const component=b.component?snapshotComponent(b.component):undefined;
+    const namedSlots=snapshotNamedSlots(b,component);
+    return {...b,origin,request:{...b.request},component,namedSlots};
+  })}));
+  if(sections.flatMap(s=>s.blocks).reduce((n,b)=>n+(isBreak(b)?0:b.request.text.length+(b.namedSlots??[]).reduce((sum,s)=>sum+s.request.text.length,0)),0)>50000)throw RangeError('Preview source text limit exceeded');
   const {revision,fingerprint,width,height,resolveImage}=options;
   // Decode each unique resource before building the plan. Use a canvas snapshot so no object URL survives rendering.
   const imageIds=new Set<string>();
@@ -229,7 +274,7 @@ export async function createPlainTextPagePreview(document:Document,options:{
     images.set(id,bitmap);
   }
   let renderedImagePixels=0;
-  const byKey=new Map<string,{block:PreviewTextBlock;measurement:MeasuredTextLines;labels:Map<string,MeasuredTextLines>;placement?:ComponentPlacement}>();
+  const byKey=new Map<string,{block:PreviewTextBlock;measurement:MeasuredTextLines;labels:Map<string,MeasuredTextLines>;slots:Map<string,MeasuredTextLines>;placement?:ComponentPlacement}>();
   const key=(o:Origin)=>JSON.stringify([o.documentId,o.blockKey]);
   const measuredSections:MeasuredSection[]=[];
   let totalLabelText=0;
@@ -246,16 +291,20 @@ export async function createPlainTextPagePreview(document:Document,options:{
     const geometry=b.component?resolveComponentWidths(b.component,b.request.width):undefined;
     const textWidth=geometry?.contentWidth??b.request.width;
     const measurement=await measurePlainTextLines(document,{...b.request,width:textWidth});
-    const labels=new Map<string,MeasuredTextLines>();
+    const labels=new Map<string,MeasuredTextLines>(),slots=new Map<string,MeasuredTextLines>();
+    const sources=new Map((b.namedSlots??[]).map(s=>[s.name,s.request]));
     async function measureLabels(children:readonly PreviewComponentChild[]){for(const child of children){
       if(child.type==='group'){await measureLabels(child.children);continue;}
+      if(child.type==='slot'){
+        slots.set(child.name,await measurePlainTextLines(document,{...sources.get(child.name)!,width:geometry!.widths.get(child.id)!}));continue;
+      }
       if(child.type!=='label')continue;
       totalLabelText+=child.text.length;if(totalLabelText>50000)throw RangeError('Component label text limit exceeded');
       labels.set(child.id,await measurePlainTextLines(document,{text:child.text,width:geometry!.widths.get(child.id)!,fontFamily:child.fontFamily,fontWeight:child.fontWeight,fontSize:child.fontSize,lineHeight:child.lineHeight}));
     }}
     if(b.component)await measureLabels(b.component.children);
-    const placement=b.component&&!fragmentable?placeComponent(b.component,b.request.width,measurement,labels,geometry!.widths,height):undefined;
-    byKey.set(k,{block:b,measurement,labels,placement});
+    const placement=b.component&&!fragmentable?placeComponent(b.component,b.request.width,measurement,labels,slots,geometry!.widths,height):undefined;
+    byKey.set(k,{block:b,measurement,labels,slots,placement});
     const heights=placement?[placement.rect.height]:measurement.lines.map(l=>l.height);
     blocks.push({kind:'block' as const,origin:b.origin,width:b.request.width,unitHeights:heights,splitPolicy:b.splitPolicy,...(fragmentable?{fragmentPadding:{top:b.component!.padding,bottom:b.component!.padding}}:{}),startPosition:b.startPosition,startPositionSource:b.startPositionSource});
   }
@@ -277,12 +326,13 @@ export async function createPlainTextPagePreview(document:Document,options:{
     if(paper){const guide=document.createElement('div');guide.dataset.contentGuide='true';guide.style.cssText='position:absolute;box-sizing:border-box;outline:1px dashed #ccc;pointer-events:none;';Object.assign(guide.style,{left:px(left)+'px',top:px(top)+'px',width:px(width)+'px',height:px(height)+'px'});page.append(guide);}
     for(const f of p.fragments){
       const entry=byKey.get(key(f.origin));if(!entry)throw Error('Missing preview block');
-      const {block,measurement,labels,placement}=entry, lineUnits=placement?measurement.lines:measurement.lines.slice(f.unitStart,f.unitEnd);
+      const {block,measurement,labels,slots,placement}=entry, lineUnits=placement?measurement.lines:measurement.lines.slice(f.unitStart,f.unitEnd);
       if(!lineUnits.length)throw Error('Missing preview lines');
       const textStart=lineUnits[0].start,textEnd=lineUnits.at(-1)!.end;
       // Origin may refer to markup; only a caller-verified contiguous mapping enables raw source ranges.
       const sourceSlice=block.sourceTextStart===undefined?undefined:{start:block.sourceTextStart+textStart,end:block.sourceTextStart+textEnd};
-      slices.push({pageIndex:p.index,origin:f.origin,textStart,textEnd,...(sourceSlice?{sourceSlice}:{})});
+      const namedSlots=(block.namedSlots??[]).map(s=>({name:s.name,textStart:0,textEnd:s.request.text.length,...(s.sourceTextStart===undefined?{}:{sourceSlice:{start:s.sourceTextStart,end:s.sourceTextStart+s.request.text.length}})}));
+      slices.push({pageIndex:p.index,origin:f.origin,textStart,textEnd,...(sourceSlice?{sourceSlice}:{}),...(namedSlots.length?{namedSlots}:{})});
       const fragment=document.createElement('div');fragment.dataset.block=f.origin.blockKey;fragment.dataset.document=f.origin.documentId;
       fragment.style.cssText='all:initial;display:block;position:absolute;box-sizing:border-box;';
       Object.assign(fragment.style,{left:px(left+f.rect.x)+'px',top:px(top+f.rect.y)+'px',width:px(f.rect.width)+'px',height:px(f.rect.height)+'px'});
@@ -322,6 +372,13 @@ export async function createPlainTextPagePreview(document:Document,options:{
             const measured=labels.get(child.id)!;
             for(const line of measured.lines){
               const item=document.createElement('div');styleText(item,measured.request,false);item.style.height=px(line.height)+'px';item.style.color=child.color;item.textContent=measured.request.text.slice(line.start,line.end);el.append(item);
+            }
+          }else if(child.type==='slot'){
+            el.dataset.namedSlot=child.name;
+            const measured=slots.get(child.name)!;
+            for(const line of measured.lines){
+              const item=document.createElement('div');styleText(item,measured.request,false);item.style.height=px(line.height)+'px';item.style.color=child.color;
+              item.dataset.start=String(line.start);item.dataset.end=String(line.end);item.textContent=measured.request.text.slice(line.start,line.end);el.append(item);
             }
           }else{textParent=el;el.dataset.contentSlot='true';}
           parent.append(el);
