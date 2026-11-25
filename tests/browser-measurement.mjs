@@ -1,11 +1,17 @@
 // Runs actual Chromium/Chrome against a loopback server with an explicit file allowlist.
 import {createServer} from 'node:http';
 import {readFile} from 'node:fs/promises';
-import {spawn} from 'node:child_process';
+import {spawn,spawnSync} from 'node:child_process';
 import {mkdtemp,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 const allowed=new Set(['/tests/browser-measurement.html','/dist/index.js','/dist/tree.js','/dist/pagination.js','/dist/inspector.js','/dist/browser-measurement.js','/dist/browser-lines.js','/dist/image-crop.js','/dist/preview-font.js']);
+// Fail fast on module syntax errors, which otherwise never reach /test-result.
+const html=await readFile(new URL('./browser-measurement.html',import.meta.url),'utf8');
+const moduleSource=html.match(/<script type="module">([\s\S]*?)<\/script>/)?.[1];
+if(!moduleSource)throw Error('Missing browser test module');
+const syntax=spawnSync(process.execPath,['--input-type=module','--check'],{input:moduleSource,encoding:'utf8'});
+if(syntax.error||syntax.status!==0)throw Error('Browser test module syntax check failed: '+(syntax.error??syntax.stderr));
 let complete,lastPhase='browser startup';
 const result=new Promise(resolve=>{complete=resolve;});
 const server=createServer(async(req,res)=>{
@@ -27,7 +33,7 @@ try{
   let timeout;
   const exited=new Promise((_,reject)=>{child.once('error',reject);child.once('close',code=>reject(Error('Browser exited before test result: '+code+' '+stderr)));});
   try{
-    const report=await Promise.race([result,exited,new Promise((_,reject)=>{timeout=setTimeout(()=>reject(Error('Browser test timed out during '+lastPhase+': '+stderr)),90000);})]);
+    const report=await Promise.race([result,exited,new Promise((_,reject)=>{timeout=setTimeout(()=>reject(Error('Browser test timed out during '+lastPhase+': '+stderr)),30000);})]);
     if(!report.startsWith('PASS '))throw Error('Browser measurement failed: '+report);
     console.log(report);
   }finally{clearTimeout(timeout);if(child.exitCode===null&&child.signalCode===null){const closed=new Promise(resolve=>child.once('close',resolve));child.kill('SIGKILL');await closed;}}
