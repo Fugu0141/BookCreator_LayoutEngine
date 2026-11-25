@@ -5,7 +5,7 @@ import {spawn} from 'node:child_process';
 import {mkdtemp,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-const allowed=new Set(['/tests/browser-measurement.html','/dist/index.js','/dist/tree.js','/dist/pagination.js','/dist/inspector.js','/dist/browser-measurement.js','/dist/browser-lines.js','/dist/preview-font.js']);
+const allowed=new Set(['/tests/browser-measurement.html','/dist/index.js','/dist/tree.js','/dist/pagination.js','/dist/inspector.js','/dist/browser-measurement.js','/dist/browser-lines.js','/dist/image-crop.js','/dist/preview-font.js']);
 let complete;
 const result=new Promise(resolve=>{complete=resolve;});
 const server=createServer(async(req,res)=>{
