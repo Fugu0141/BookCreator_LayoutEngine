@@ -53,3 +53,7 @@ A component may include a decorative image leaf with a stable SHA-256 asset ID, 
 ### Non-destructive image crop
 
 Optional crop stores four source-relative insets (left/top/right/bottom), integer basis points of original dimensions. Omitted crop is the full source. Opposite insets sum to at most 9900, retaining at least 1% per axis. Apply crop before contain/center-cover; physical frame and pagination are unchanged. Snapshot validates and copies crop before asynchronous decoding. Existing image assets and definitions remain valid. No raster source writes, no rotation, no arbitrary clip paths. Geometry and actual browser pixels are tested; CI pending.
+
+## Fragmentable paragraph frame (experimental)
+
+Measured blocks may specify nonnegative integer fragmentPadding top/bottom, reserved once per fragment including continuations. Split/avoid/strict consider padded height; a line plus padding must fit an empty page. Browser components with non-strict pagination are restricted to a column, zero gap and one semantic content slot, no decorations or nested groups. Measure at inner width; render repeated background and padding with exact contiguous source ranges on every page. Existing strict component trees remain unchanged. No continuation-specific decorations, orphan/widow rules or publication output. Unit and browser tests added; CI pending.
