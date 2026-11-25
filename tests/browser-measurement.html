@@ -63,6 +63,19 @@ try{
   const sheets=sectionPreview.element.shadowRoot.querySelectorAll('[data-page]');
   assert(sheets[0].dataset.side==='right'&&sheets[1].dataset.side==='left','page parity');
   assert(parseFloat(sheets[0].querySelector('[data-block]').style.left)>parseFloat(sheets[1].querySelector('[data-block]').style.left),'mirrored margins');
+  const component={direction:'row',gap:3000,padding:2000,background:'#f0f0f0',textColor:'#224466',children:[{id:'bar',type:'rect',width:2000,height:18000,color:'#315b86'},{id:'content',type:'content'}]};
+  const decorated=await createPlainTextPagePreview(document,{revision:'4',fingerprint:'component',width:65000,height:150000,blocks:[makeText('sample','head','Long Japanese heading 日本語の見出し',{component})]});
+  const deco=decorated.element.shadowRoot.querySelector('[data-component]');
+  assert(decorated.plan.pages[0].fragments[0].rect.height>=22000,'padding and decorative height included in pagination');
+  assert(deco.querySelector('[data-component-node=bar]').getAttribute('aria-hidden')==='true','decorative rectangle excluded from semantics');
+  assert(deco.querySelector('[data-content-slot]').textContent==='Long Japanese heading 日本語の見出し','exact text slot');
+  assert(decorated.slices[0].textEnd==='Long Japanese heading 日本語の見出し'.length,'strict component source range');
+  assert(parseFloat(deco.querySelector('[data-content-slot]').style.left)>parseFloat(deco.querySelector('[data-component-node=bar]').style.left),'row layout order');
+  const column=await createPlainTextPagePreview(document,{revision:'4',fingerprint:'column',width:65000,height:150000,blocks:[makeText('sample','head','Heading',{component:{...component,direction:'column',children:[{id:'content',type:'content'},{id:'bar',type:'rect',width:'fill',height:2000,color:'#315b86'}]}})]});
+  const col=column.element.shadowRoot.querySelector('[data-component]');
+  assert(parseFloat(col.querySelector('[data-component-node=bar]').style.top)>parseFloat(col.querySelector('[data-content-slot]').style.top),'column order');
+  let rejectedComponent=false;try{await createPlainTextPagePreview(document,{revision:'4',fingerprint:'bad-component',width:65000,height:150000,blocks:[makeText('sample','head','Heading',{component:{...component,children:[{id:'a',type:'content'},{id:'b',type:'content'}]}})]});}catch{rejectedComponent=true;}
+  assert(rejectedComponent,'duplicate semantic slot rejected');
   result.textContent='PASS '+JSON.stringify({lineCount:lines.lines.length,previewPages:preview.plan.pages.length,lineRanges:preview.slices.map(s=>[s.textStart,s.textEnd])})+' '+JSON.stringify({wide,narrow,pages:plan.pages.length});
 }catch(error){result.textContent='FAIL '+String(error);}
 </script></body></html>

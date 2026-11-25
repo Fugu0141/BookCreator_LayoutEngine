@@ -29,3 +29,7 @@ Browser measurement and frozen HTML use identical font family/weight settings. S
 ## M04 — whole-book experimental paper preview
 
 Multiple ordered sections and explicit page breaks are accepted by the browser preview; continuous sections retain the core first-component suppression rule. Optional physical paper bounds and mirrored inner/outer margins wrap the existing content plan; first side controls parity. Content coordinates remain content-relative. No cover, blank, spread or publication output. Browser tests pending.
+
+## M04 — strict flat flow component preview
+
+A plain text block may carry a neutral restricted row/column component: exactly one content slot, up to seven decorative rectangles, physical gap/padding and literal hex colors. Text measured at reduced width, existing layoutTree places premeasured children, outer height enters pagination as a single strict unit. Same DOM rendering path for samples and book pages. Source ranges preserved; decorations aria-hidden. No arbitrary CSS, nested/Canvas/fragmentable components, literal extra text or publication readiness. Browser tests pending.
