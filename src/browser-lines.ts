@@ -441,12 +441,15 @@ export async function createPlainTextPagePreview(document:Document,options:{
     if(fragmentable&&(b.component!.direction!=='column'||b.component!.gap!==0||b.component!.children.length!==1||b.component!.children[0].type!=='content'))throw Error('Splittable components require a single content slot in a column frame');
     const geometry=b.component?resolveComponentWidths(b.component,b.request.width):undefined;
     const textWidth=geometry?.contentWidth??(b.request.width-(b.listItem?listInset(b.listItem):0));
-    let measurement=await measurePlainTextLines(document,{...b.request,width:textWidth});
     let marker:MeasuredTextLines|undefined;
     if(b.listItem){
       const {inlineStyles:_,multiline:__,paragraphGap:___,...base}=b.request;
+      // Reject an impossible marker before spending time measuring the body.
       marker=await measurePlainTextLines(document,{...base,text:listMarker(b.listItem),width:b.listItem.markerWidth});
       if(marker.lines.length!==1)throw RangeError('List marker does not fit reserved width');
+    }
+    let measurement=await measurePlainTextLines(document,{...b.request,width:textWidth});
+    if(marker){
       // Marker and the first text row are top-aligned. Reserve both measured boxes.
       const [first,...rest]=measurement.lines;
       measurement={...measurement,lines:[{...first,height:Math.max(first.height,marker.lines[0].height)},...rest]};
