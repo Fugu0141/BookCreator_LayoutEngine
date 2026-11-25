@@ -1,0 +1,46 @@
+{
+  "schemaVersion": 1,
+  "revision": "1",
+  "fingerprint": "sample-fixture",
+  "content": {
+    "width": 100000,
+    "height": 100000
+  },
+  "sections": [
+    {
+      "id": "demo",
+      "startOn": "page",
+      "blocks": [
+        {
+          "kind": "block",
+          "origin": {
+            "documentId": "demo",
+            "revision": "1",
+            "blockKey": "heading"
+          },
+          "width": 100000,
+          "unitHeights": [
+            20000
+          ],
+          "splitPolicy": "strict"
+        },
+        {
+          "kind": "block",
+          "origin": {
+            "documentId": "demo",
+            "revision": "1",
+            "blockKey": "paragraph"
+          },
+          "width": 100000,
+          "unitHeights": [
+            30000,
+            30000,
+            30000,
+            30000
+          ],
+          "splitPolicy": "allow"
+        }
+      ]
+    }
+  ]
+}

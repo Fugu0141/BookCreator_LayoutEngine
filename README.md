@@ -43,3 +43,10 @@ TypeScript 5.8.3 is pinned. The lockfile is not yet generated; see [implementati
 ## License / ライセンス
 
 MIT is the intended license, subject to dependency review and final confirmation. No final license has been selected and no package has been released.
+
+### Experimental Layout Inspector
+
+    npm run build
+    npm run layout-inspector -- plan fixtures/measured-input.json --measure fixture
+
+Returns JSON with measured-page fragments and diagnostics. 0 = full placement in the experimental subset, 1 = invalid input or incomplete placement, 2 = usage/I/O error. Always publicationReady=false for plans. Does not read referenced manuscript/assets or generate PDF.
