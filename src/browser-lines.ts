@@ -2,7 +2,7 @@ import {validateImageCrop,imageSourceRect,type ImageCrop} from './image-crop.js'
 import {layoutTree} from './tree.js';
 import {applyPreviewFont,readyPreviewFont,isPreviewFontFamily,isPreviewFontWeight} from './preview-font.js';
 import {paginateMeasured,type Origin,type MeasuredPagePlan,type SplitPolicy,type PageBreak,type MeasuredSection} from './pagination.js';
-import type {PlainTextMeasureRequest} from './browser-measurement.js';
+import type {PlainTextMeasureRequest,InlineStyleRun} from './browser-measurement.js';
 
 export interface MeasuredTextLine {
   /** UTF-16 offsets in the original logical text, not a transformed Markdown source. */
@@ -27,6 +27,52 @@ function validate(request:PlainTextMeasureRequest){
     !isPreviewFontFamily(request.fontFamily)||!isPreviewFontWeight(request.fontWeight)||!Number.isFinite(request.lineHeight)||request.lineHeight<1.25||request.lineHeight>4)
     throw new RangeError('Unsupported plain line measurement request');
 }
+// Validate a bounded, ordered interval list before any asynchronous measurement.
+function snapshotRequest(r:PlainTextMeasureRequest):Readonly<PlainTextMeasureRequest>{
+  validate(r);
+  if(r.inlineStyles===undefined)return Object.freeze({...r});
+  if(!Array.isArray(r.inlineStyles)||r.inlineStyles.length>128)throw RangeError('Invalid inline style limit');
+  const boundaries=new Set([...new Intl.Segmenter(undefined,{granularity:'grapheme'}).segment(r.text)].map(g=>g.index));boundaries.add(r.text.length);
+  let previous=0;
+  const runs=r.inlineStyles.map(run=>{
+    if(!run||typeof run!=='object'||Object.keys(run).some(k=>!['start','end','fontFamily','fontWeight','italic','underline','color'].includes(k))||
+      !Number.isSafeInteger(run.start)||!Number.isSafeInteger(run.end)||run.start<previous||run.end<=run.start||!boundaries.has(run.start)||!boundaries.has(run.end)||
+      (run.fontFamily!==undefined&&!isPreviewFontFamily(run.fontFamily))||!isPreviewFontWeight(run.fontWeight)||
+      (run.italic!==undefined&&typeof run.italic!=='boolean')||(run.underline!==undefined&&typeof run.underline!=='boolean')||
+      (run.color!==undefined&&(typeof run.color!=='string'||!/^#[0-9a-fA-F]{6}$/.test(run.color))))throw RangeError('Invalid inline style range or property');
+    previous=run.end;return Object.freeze({...run});
+  });
+  return Object.freeze({...r,inlineStyles:Object.freeze(runs)});
+}
+function slicedRuns(r:PlainTextMeasureRequest,start:number,end:number):InlineStyleRun[]|undefined{
+  return r.inlineStyles?.filter(s=>s.start<end&&s.end>start).map(s=>({...s,start:Math.max(s.start,start)-start,end:Math.min(s.end,end)-start}));
+}
+/** Use identical typed spans for wrapping, frozen-line validation and final page rendering. */
+function appendStyled(el:HTMLElement,r:PlainTextMeasureRequest,start:number,end:number){
+  const segments:{start:number;end:number;node:Text}[]=[];
+  const append=(a:number,b:number,run?:InlineStyleRun)=>{
+    if(a===b)return;
+    const node=el.ownerDocument.createTextNode(r.text.slice(a,b));
+    if(run){
+      const span=el.ownerDocument.createElement('span');
+      span.dataset.inlineStyle='true';
+      applyPreviewFont(span,run.fontFamily??r.fontFamily,run.fontWeight??r.fontWeight);
+      // Upright-only project fonts may use browser-synthesized slant, not synthesized weight.
+      if(run.italic){span.style.fontStyle='italic';span.style.fontSynthesis='style';}
+      if(run.underline)span.style.textDecorationLine='underline';
+      if(run.color)span.style.color=run.color;
+      span.append(node);el.append(span);
+    }else el.append(node);
+    segments.push({start:a,end:b,node});
+  };
+  let cursor=start;
+  for(const run of r.inlineStyles??[]){
+    const a=Math.max(start,run.start),b=Math.min(end,run.end);
+    if(a>=b)continue;
+    append(cursor,a);append(a,b,run);cursor=b;
+  }
+  append(cursor,end);return segments;
+}
 function styleText(el:HTMLElement,r:PlainTextMeasureRequest,wrap:boolean){
   el.style.cssText='all:initial;display:block;box-sizing:border-box;padding:0;border:0;margin:0;overflow-wrap:anywhere;word-break:normal;writing-mode:horizontal-tb;direction:ltr;text-align:start;font-kerning:none;font-variant-ligatures:none;';
   el.style.width=px(r.width)+'px';el.style.fontSize=px(r.fontSize)+'px';applyPreviewFont(el,r.fontFamily,r.fontWeight);
@@ -38,8 +84,7 @@ function live(document:Document){
 }
 // Grapheme ranges, real browser wrapping, bounded input. Reject ambiguous geometry instead of guessing.
 export async function measurePlainTextLines(document:Document,request:PlainTextMeasureRequest):Promise<MeasuredTextLines>{
-  live(document);validate(request);
-  const r=Object.freeze({...request});
+  live(document);const r=snapshotRequest(request);
   if(r.multiline&&r.text.includes('\n')){
     const lines:MeasuredTextLine[]=[];let start=0;
     // Measure hard lines independently, then attach each original separator to its preceding row.
@@ -47,7 +92,7 @@ export async function measurePlainTextLines(document:Document,request:PlainTextM
       const raw=match[0];if(!raw)continue;
       const body=raw.replace(/(?:\r\n|\n)$/,'');
       if(body.length){
-        const measured=await measurePlainTextLines(document,{...r,text:body,multiline:false,paragraphGap:undefined});
+        const measured=await measurePlainTextLines(document,{...r,text:body,multiline:false,paragraphGap:undefined,inlineStyles:slicedRuns(r,start,start+body.length)});
         for(const [i,line] of measured.lines.entries())lines.push({start:start+line.start,end:start+(i===measured.lines.length-1?raw.length:line.end),height:line.height});
       }else lines.push({start,end:start+raw.length,height:Math.ceil(r.fontSize*r.lineHeight)+(r.paragraphGap??0)});
       start+=raw.length;
@@ -58,9 +103,10 @@ export async function measurePlainTextLines(document:Document,request:PlainTextM
   const host=document.createElement('div');
   host.style.cssText='all:initial;position:fixed;top:0;left:0;visibility:hidden;pointer-events:none;contain:layout style paint;display:block;';
   const root=host.attachShadow({mode:'closed'}), el=document.createElement('div');
-  styleText(el,r,true);const node=document.createTextNode(r.text);el.append(node);root.append(el);document.body.append(host);
+  styleText(el,r,true);const segments=appendStyled(el,r,0,r.text.length);root.append(el);document.body.append(host);
   try{
     el.getBoundingClientRect();await readyPreviewFont(document,r.fontFamily,r.fontWeight,r.text);
+    for(const run of r.inlineStyles??[])await readyPreviewFont(document,run.fontFamily??r.fontFamily,run.fontWeight??r.fontWeight,r.text.slice(run.start,run.end));
     const height=el.getBoundingClientRect().height;
     const linePx=px(r.fontSize*r.lineHeight);
     const count=Math.round(height/linePx);
@@ -68,9 +114,11 @@ export async function measurePlainTextLines(document:Document,request:PlainTextM
       throw Error('Unsupported line box geometry');
     const groups:{start:number;end:number}[]=[];
     let firstCenter:number|undefined;
-    const range=document.createRange();
+    const range=document.createRange();let segmentIndex=0;
     for(const g of new Intl.Segmenter(undefined,{granularity:'grapheme'}).segment(r.text)){
-      range.setStart(node,g.index);range.setEnd(node,g.index+g.segment.length);
+      while(segments[segmentIndex].end<=g.index)segmentIndex++;
+      const seg=segments[segmentIndex];if(g.index+g.segment.length>seg.end)throw Error('Style crosses grapheme boundary');
+      range.setStart(seg.node,g.index-seg.start);range.setEnd(seg.node,g.index-seg.start+g.segment.length);
       const rects=Array.from(range.getClientRects());
       if(!rects.length||rects.some(q=>!Number.isFinite(q.top)||!Number.isFinite(q.height)))throw Error('Missing grapheme geometry');
       const center=rects[0].top+rects[0].height/2;firstCenter??=center;
@@ -84,7 +132,7 @@ export async function measurePlainTextLines(document:Document,request:PlainTextM
     // Re-render each frozen line without reflow. Reject horizontal overflow rather than clipping it.
     const lines:MeasuredTextLine[]=[];
     for(const group of groups){
-      const line=document.createElement('div');styleText(line,r,false);line.textContent=r.text.slice(group.start,group.end);root.append(line);
+      const line=document.createElement('div');styleText(line,r,false);appendStyled(line,r,group.start,group.end);root.append(line);
       const rect=line.getBoundingClientRect();
       if(line.scrollWidth>line.clientWidth+1||Math.abs(rect.height-linePx)>1)throw Error('Frozen line does not fit measured geometry');
       lines.push({...group,height:um(Math.max(linePx,rect.height,height/count))});
@@ -97,7 +145,7 @@ export async function measurePlainTextLines(document:Document,request:PlainTextM
 // Preserve separator code units in DOM textContent without letting them create extra visual rows.
 function frozenText(el:HTMLElement,r:PlainTextMeasureRequest,line:MeasuredTextLine){
   const raw=r.text.slice(line.start,line.end),body=raw.replace(/(?:\r\n|\n)$/,'');
-  el.textContent=body;
+  appendStyled(el,r,line.start,line.start+body.length);
   if(body.length!==raw.length){const ending=el.ownerDocument.createElement('span');ending.hidden=true;ending.style.display='none';ending.textContent=raw.slice(body.length);el.append(ending);}
 }
 
@@ -234,7 +282,7 @@ function snapshotNamedSlots(b:PreviewTextBlock,component:PreviewComponent|undefi
   checkRange(b.sourceTextStart,b.request.text);
   const copy=slots.map(s=>{
     if(!s||!validSlotName(s.name)||!names.delete(s.name)||!s.request)throw RangeError('Missing, duplicate or unknown named source slot');
-    const request={...s.request};validate({...request,width:100000});
+    const {width:_,...request}=snapshotRequest({...s.request,width:100000});
     checkRange(s.sourceTextStart,request.text);
     return {name:s.name,request,sourceTextStart:s.sourceTextStart};
   });
@@ -248,7 +296,7 @@ export interface TextPagePreview {
   element:HTMLElement; plan:MeasuredPagePlan; slices:readonly PreviewTextSlice[];
   publicationReady:false;
 }
-// Multiple sections, plain text only. Caller owns the exact mapping of logical text to raw source.
+// Multiple sections, logical text with typed inline styles. Caller owns exact mapping to raw source.
 // No external HTML, CSS, resource fetching or publication output.
 export async function createPlainTextPagePreview(document:Document,options:{
   revision:string;fingerprint:string;width:number;height:number;
@@ -274,10 +322,11 @@ export async function createPlainTextPagePreview(document:Document,options:{
     if(isBreak(b))return {...b,origin};
     const component=b.component?snapshotComponent(b.component):undefined;
     const namedSlots=snapshotNamedSlots(b,component);
-    return {...b,origin,request:{...b.request},component,namedSlots};
+    return {...b,origin,request:snapshotRequest(b.request),component,namedSlots};
   })}));
   if(sections.flatMap(s=>s.blocks).reduce((n,b)=>n+(isBreak(b)?0:b.request.text.length+(b.namedSlots??[]).reduce((sum,s)=>sum+s.request.text.length,0)),0)>50000)throw RangeError('Preview source text limit exceeded');
   if(sections.flatMap(s=>s.blocks).reduce((n,b)=>n+(isBreak(b)?0:(b.request.text.match(/\n/g)?.length??0)+(b.namedSlots??[]).reduce((sum,s)=>sum+(s.request.text.match(/\n/g)?.length??0),0)),0)>1024)throw RangeError('Preview hard-line limit exceeded');
+  if(sections.flatMap(s=>s.blocks).reduce((n,b)=>n+(isBreak(b)?0:(b.request.inlineStyles?.length??0)+(b.namedSlots??[]).reduce((sum,s)=>sum+(s.request.inlineStyles?.length??0),0)),0)>1024)throw RangeError('Preview inline style limit exceeded');
   const {revision,fingerprint,width,height,resolveImage}=options;
   // Decode each unique resource before building the plan. Use a canvas snapshot so no object URL survives rendering.
   const imageIds=new Set<string>();

@@ -214,6 +214,44 @@ try{
     assert(failed,'invalid multiline input rejected');
   }
   assert(document.body.children.length===before,'multiline measurement cleanup');
+  // Styled runs must wrap using the actual selected face/weight and survive page fragmentation.
+  const richText='Plain '+'Bold and underlined text '.repeat(12)+'\r\n\r\nItalic text and monospace.';
+  const boldStart=6,boldEnd=richText.indexOf('\r'),italicStart=richText.indexOf('Italic'),monoStart=richText.indexOf('monospace');
+  const richRuns=[{start:boldStart,end:boldEnd,fontWeight:700,underline:true,color:'#123456'},
+    {start:italicStart,end:monoStart,italic:true},{start:monoStart,end:richText.length,fontFamily:'monospace'}];
+  const richRequest={...request,text:richText,multiline:true,inlineStyles:richRuns};
+  const rich=await measurePlainTextLines(document,richRequest);
+  assert(rich.lines.map(l=>richText.slice(l.start,l.end)).join('')===richText,'styled text logical offsets');
+  const richPreview=await createPlainTextPagePreview(document,{revision:'12',fingerprint:'inline-runs',width:65000,height:35000,blocks:[{
+    origin:{documentId:'rich',revision:'12',blockKey:'0',range:{start:100,end:100+richText.length}},request:richRequest,splitPolicy:'allow',sourceTextStart:100,component:frame
+  }]});
+  const richRoot=richPreview.element.shadowRoot;
+  assert(richPreview.plan.pages.length>1&&richPreview.slices.map(s=>richText.slice(s.sourceSlice.start-100,s.sourceSlice.end-100)).join('')===richText,'styled pagination exact source ranges');
+  assert([...richRoot.querySelectorAll('[data-start]')].map(e=>e.textContent).join('')===richText,'styled DOM preserves original logical text');
+  const styled=[...richRoot.querySelectorAll('[data-inline-style]')];
+  const bold=styled.filter(e=>e.style.fontWeight==='700');
+  assert(bold.length>1&&bold.map(e=>e.textContent).join('')===richText.slice(boldStart,boldEnd)&&bold.every(e=>e.style.color==='rgb(18, 52, 86)'&&e.style.textDecorationLine==='underline'),'bold/color/underline preserved across wraps');
+  assert(styled.some(e=>e.style.fontStyle==='italic'&&e.textContent.includes('Italic'))&&styled.some(e=>e.style.fontFamily==='monospace'&&e.textContent==='monospace.'),'italic and local family rendered');
+  const familyText='iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii';
+  const baseMeasure=await measurePlainTextLines(document,{...request,width:35000,text:familyText,fontFamily:'sans-serif'});
+  const monoMeasure=await measurePlainTextLines(document,{...request,width:35000,text:familyText,fontFamily:'sans-serif',inlineStyles:[{start:0,end:familyText.length,fontFamily:'monospace'}]});
+  assert(monoMeasure.lines.length>baseMeasure.lines.length,'inline font metrics influence wrapping');
+  const runs=[{start:0,end:4,color:'#112233'}],pending=measurePlainTextLines(document,{...request,text:'Test',inlineStyles:runs});
+  runs[0].color='#ffffff';runs.push({start:1,end:2,fontWeight:700});
+  const copied=await pending;assert(copied.request.inlineStyles.length===1&&copied.request.inlineStyles[0].color==='#112233','measurement snapshot isolates caller mutation');
+  const namedStyled=await createPlainTextPagePreview(document,{...multiOptions,blocks:[{...multiBlock,namedSlots:[multiBlock.namedSlots[0],{...multiBlock.namedSlots[1],request:{...multiBlock.namedSlots[1].request,inlineStyles:[{start:0,end:6,color:'#aabbcc',underline:true}]}}]}]});
+  const answerSpan=namedStyled.element.shadowRoot.querySelector('[data-named-slot=answer] [data-inline-style]');
+  assert(answerSpan.textContent==='Answer'&&answerSpan.style.color==='rgb(170, 187, 204)'&&answerSpan.style.textDecorationLine==='underline','named slot inline style');
+  for(const bad of [
+    [{start:0,end:1,color:'red'}],[{start:0,end:1,color:['#123456']}],
+    [{start:0,end:1,fontFamily:'serif; color:red'}],[{start:0,end:1,fontWeight:9000}],[{start:0,end:1,italic:'true'}],
+    [{start:0,end:1,fontSize:20}],[{start:0,end:2},{start:1,end:3}],[{start:2,end:3},{start:0,end:1}],
+    [{start:1,end:2}],[{start:0,end:999}],[{start:0,end:0}],[{start:0,end:1.5}]
+  ]){
+    let failed=false;try{await measurePlainTextLines(document,{...request,text:'éabc',inlineStyles:bad});}catch{failed=true;}
+    assert(failed,'invalid style range, grapheme split or property rejected');
+  }
+  assert(document.body.children.length===before,'styled measurement cleanup');
   result.textContent='PASS '+JSON.stringify({lineCount:lines.lines.length,previewPages:preview.plan.pages.length,lineRanges:preview.slices.map(s=>[s.textStart,s.textEnd])})+' '+JSON.stringify({wide,narrow,pages:plan.pages.length});
 }catch(error){result.textContent='FAIL '+String(error);}
 await fetch('/test-result',{method:'POST',body:result.textContent});
