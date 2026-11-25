@@ -1,6 +1,15 @@
 <!doctype html>
 <html lang="en"><meta charset="utf-8"><title>Browser measurement smoke test</title>
 <body><pre id="result">RUNNING</pre>
+<script>
+window.addEventListener('error',event=>{
+  fetch('/test-result',{method:'POST',body:'FAIL '+(event.message||'Module or resource loading error')+' at '+(event.filename||'module')+':'+(event.lineno||0)});
+},true);
+window.addEventListener('unhandledrejection',event=>{
+  fetch('/test-result',{method:'POST',body:'FAIL unhandled rejection: '+String(event.reason)});
+});
+fetch('/test-progress',{method:'POST',body:'HTML loaded; module initialization'});
+</script>
 <script type="module">
 import {measurePlainText,paginateMeasured,measurePlainTextLines,createPlainTextPagePreview} from '/dist/index.js';
 const result=document.querySelector('#result');
