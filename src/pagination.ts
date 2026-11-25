@@ -16,6 +16,8 @@ export interface MeasuredBlock {
   // Each positive unit is indivisible; boundaries between units are safe splits.
   unitHeights: readonly number[];
   splitPolicy: SplitPolicy;
+  // Repeated overhead reserved once per fragment, not once per line.
+  fragmentPadding?:{top:number;bottom:number};
   startPosition?: 'flow'|'page-top';
   startPositionSource?: 'component'|'explicit';
 }
@@ -81,10 +83,13 @@ export function paginateMeasured(input:PaginationInput):MeasuredPagePlan {
         (block.startPosition!==undefined&&!['flow','page-top'].includes(block.startPosition))||
         (block.startPositionSource!==undefined&&!['component','explicit'].includes(block.startPositionSource))||
         (block.startPosition==='page-top'&&!block.startPositionSource))return fail('PG_INVALID','Invalid measured block',o);
+      const padding=block.fragmentPadding;
+      if(padding!==undefined&&(!padding||!Number.isSafeInteger(padding.top)||padding.top<0||!Number.isSafeInteger(padding.bottom)||padding.bottom<0||!Number.isSafeInteger(padding.top+padding.bottom)))return fail('PG_INVALID','Invalid fragment padding',o);
       unitCount+=block.unitHeights.length;
       if(unitCount>1000000)return fail('PG_LIMIT','Unit limit exceeded',o);
       let total=0;
       for(const h of block.unitHeights){total+=h;if(!positive(h)||!positive(total))return fail('PG_INVALID','Invalid unit height',o);}
+      if(!positive(total+(padding?padding.top+padding.bottom:0)))return fail('PG_INVALID','Invalid padded block height',o);
     }
   }
   let used=0;
@@ -98,8 +103,9 @@ export function paginateMeasured(input:PaginationInput):MeasuredPagePlan {
       const suppress=first&&section.startOn==='continuous'&&block.startPositionSource==='component';
       first=false;
       if(block.startPosition==='page-top'&&!suppress&&used>0)newPage('page-top');
-      const total=block.unitHeights.reduce((a,b)=>a+b,0);
-      if(block.unitHeights.some(h=>h>height)||(block.splitPolicy==='strict'&&total>height))return fail('PG_TOO_LARGE','Indivisible content exceeds page',block.origin);
+      const overhead=block.fragmentPadding?block.fragmentPadding.top+block.fragmentPadding.bottom:0;
+      const total=block.unitHeights.reduce((a,b)=>a+b,0)+overhead;
+      if(block.unitHeights.some(h=>h+overhead>height)||(block.splitPolicy==='strict'&&total>height))return fail('PG_TOO_LARGE','Indivisible content exceeds page',block.origin);
       if(block.splitPolicy==='strict'||(block.splitPolicy==='avoid'&&total<=height)){
         if(total>height-used)newPage('overflow');
       }else if(block.splitPolicy==='avoid'){
@@ -107,8 +113,8 @@ export function paginateMeasured(input:PaginationInput):MeasuredPagePlan {
       }
       let cursor=0, continuationIndex=0;
       while(cursor<block.unitHeights.length){
-        if(block.unitHeights[cursor]>height-used)newPage(cursor?'continuation':'overflow');
-        let end=cursor,h=0;
+        if(block.unitHeights[cursor]+overhead>height-used)newPage(cursor?'continuation':'overflow');
+        let end=cursor,h=overhead;
         while(end<block.unitHeights.length&&block.unitHeights[end]<=height-used-h){h+=block.unitHeights[end];end++;}
         if(end===cursor)return fail('PG_TOO_LARGE','No safe progress',block.origin);
         if(used===0){
