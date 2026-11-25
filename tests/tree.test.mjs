@@ -1,0 +1,8 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {layoutTree} from '../dist/index.js';
+const leaf=(id,width,height,extra={})=>({id,type:'leaf',width,height,...extra});
+test('row fill and auto height with decorative bar',()=>{const r=layoutTree({id:'row',type:'row',width:'fill',height:'auto',gap:3,children:[leaf('bar',2,'fill'),leaf('title','fill','auto',{natural:{width:50,height:24}})]},{width:100,height:100});assert.equal(r.rect.height,24);assert.deepEqual(r.children.map(n=>n.rect),[{x:0,y:0,width:2,height:24},{x:5,y:0,width:95,height:24}]);});
+test('nested stack with anchored canvas overlay follows measured flow',()=>{const r=layoutTree({id:'root',type:'stack',width:'fill',height:'auto',children:[{id:'column',type:'column',width:'fill',height:'auto',children:[leaf('title',30,20),leaf('text',50,30)]},{id:'dec',type:'canvas',role:'overlay',width:'fill',height:'fill',children:[leaf('dot',10,10,{anchorX:'end',x:5,y:2})]}]},{width:100,height:100});assert.equal(r.rect.height,50);assert.deepEqual(r.children[1].children[0].rect,{x:85,y:2,width:10,height:10});});
+test('auto-fill cycle and overflow rejected',()=>{assert.throws(()=>layoutTree({id:'a',type:'row',width:'auto',height:10,children:[leaf('b','fill',5)]},{width:100,height:100}),/Fill/);assert.throws(()=>layoutTree({id:'a',type:'canvas',width:10,height:10,children:[leaf('b',5,5,{x:8})]},{width:100,height:100}),/overflow/);});
+test('duplicate IDs and cyclic objects rejected',()=>{assert.throws(()=>layoutTree({id:'a',type:'row',width:100,height:100,children:[leaf('b',5,5),leaf('b',5,5)]},{width:100,height:100}));const n={id:'n',type:'stack',width:10,height:10,children:[]};n.children.push(n);assert.throws(()=>layoutTree(n,{width:100,height:100}));});
