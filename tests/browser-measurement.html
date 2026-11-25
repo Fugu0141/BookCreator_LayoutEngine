@@ -314,44 +314,46 @@ try{
   assert([...mixedRoot.querySelectorAll('[data-start]')].map(n=>n.textContent).join('')===mixedText,'mixed face rendering preserves text');
   assert([...mixedRoot.querySelectorAll('[data-inline-style]')].some(n=>n.style.fontFamily==='monospace'&&n.style.fontStyle==='italic'&&n.style.textDecorationLine==='underline'),'composite mixed-face style preserved');
   assert(document.body.children.length===before,'mixed-font cleanup');
-  // List markers are generated separately from the semantic text. Hanging indents
-  // apply to all wrapped lines and all continuation fragments.
-  const listText='日本語の項目を折り返して表示します。 List item with several wrapped lines. '.repeat(4);
-  const itemStyle={kind:'ordered',number:12,depth:2,indentStep:5000,markerWidth:9000,gap:2000};
-  const listBlock={origin:{documentId:'list',revision:'1',blockKey:'a',range:{start:30,end:30+listText.length}},request:{...request,text:listText},splitPolicy:'allow',sourceTextStart:30,listItem:itemStyle};
-  const listOptions={revision:'15',fingerprint:'list',width:65000,height:30000,blocks:[listBlock]};
-  await phase("list pagination");
-  const listPreview=await createPlainTextPagePreview(document,listOptions);
-  const listRoot=listPreview.element.shadowRoot,fragments=[...listRoot.querySelectorAll('[data-list-item]')];
-  assert(fragments.length>1&&listPreview.plan.pages.length>1,'long list item paginates');
-  assert(listRoot.querySelectorAll('[data-list-marker]').length===1&&listRoot.querySelector('[data-list-marker]').textContent==='12.','only first fragment displays derived number');
-  assert(fragments.every(e=>e.dataset.listDepth==='2'&&Math.abs(parseFloat(e.querySelector('[data-list-body]').style.left)-21000*96/25400)<.01),'hanging indent survives page fragmentation');
-  assert([...listRoot.querySelectorAll('[data-start]')].map(e=>e.textContent).join('')===listText,'markers excluded from logical row text');
-  assert(listPreview.slices.map(s=>listText.slice(s.sourceSlice.start-30,s.sourceSlice.end-30)).join('')===listText,'list fragments preserve exact raw ranges');
-  const bulletItems=[0,1,2].map((depth,i)=>({...makeText('list','bullet-'+i,'短い項目。'),listItem:{kind:'bullet',depth,indentStep:5000,markerWidth:9000,gap:2000}}));
-  await phase("bullet marker geometry");
-  const bulletPreview=await createPlainTextPagePreview(document,{...listOptions,height:150000,blocks:bulletItems});
-  assert([...bulletPreview.element.shadowRoot.querySelectorAll('[data-list-marker]')].map(e=>e.textContent).join('')==='•◦▪','depth-specific bullet markers');
-  document.body.append(bulletPreview.element);
-  try{
-    for(const el of bulletPreview.element.shadowRoot.querySelectorAll('[data-list-item]')){
-      const mark=el.querySelector('[data-list-marker]').getBoundingClientRect(),body=el.querySelector('[data-list-body]').getBoundingClientRect(),outer=el.getBoundingClientRect();
-      assert(mark.right<body.left&&body.right<=outer.right+.1&&body.bottom<=outer.bottom+.1,'marker and text columns fit within item geometry');
+  {
+    // List markers are generated separately from the semantic text. Hanging indents
+    // apply to all wrapped lines and all continuation fragments.
+    const listText='日本語の項目を折り返して表示します。 List item with several wrapped lines. '.repeat(4);
+    const itemStyle={kind:'ordered',number:12,depth:2,indentStep:5000,markerWidth:9000,gap:2000};
+    const listBlock={origin:{documentId:'list',revision:'1',blockKey:'a',range:{start:30,end:30+listText.length}},request:{...request,text:listText},splitPolicy:'allow',sourceTextStart:30,listItem:itemStyle};
+    const listOptions={revision:'15',fingerprint:'list',width:65000,height:30000,blocks:[listBlock]};
+    await phase("list pagination");
+    const listPreview=await createPlainTextPagePreview(document,listOptions);
+    const listRoot=listPreview.element.shadowRoot,fragments=[...listRoot.querySelectorAll('[data-list-item]')];
+    assert(fragments.length>1&&listPreview.plan.pages.length>1,'long list item paginates');
+    assert(listRoot.querySelectorAll('[data-list-marker]').length===1&&listRoot.querySelector('[data-list-marker]').textContent==='12.','only first fragment displays derived number');
+    assert(fragments.every(e=>e.dataset.listDepth==='2'&&Math.abs(parseFloat(e.querySelector('[data-list-body]').style.left)-21000*96/25400)<.01),'hanging indent survives page fragmentation');
+    assert([...listRoot.querySelectorAll('[data-start]')].map(e=>e.textContent).join('')===listText,'markers excluded from logical row text');
+    assert(listPreview.slices.map(s=>listText.slice(s.sourceSlice.start-30,s.sourceSlice.end-30)).join('')===listText,'list fragments preserve exact raw ranges');
+    const bulletItems=[0,1,2].map((depth,i)=>({...makeText('list','bullet-'+i,'短い項目。'),listItem:{kind:'bullet',depth,indentStep:5000,markerWidth:9000,gap:2000}}));
+    await phase("bullet marker geometry");
+    const bulletPreview=await createPlainTextPagePreview(document,{...listOptions,height:150000,blocks:bulletItems});
+    assert([...bulletPreview.element.shadowRoot.querySelectorAll('[data-list-marker]')].map(e=>e.textContent).join('')==='•◦▪','depth-specific bullet markers');
+    document.body.append(bulletPreview.element);
+    try{
+      for(const el of bulletPreview.element.shadowRoot.querySelectorAll('[data-list-item]')){
+        const mark=el.querySelector('[data-list-marker]').getBoundingClientRect(),body=el.querySelector('[data-list-body]').getBoundingClientRect(),outer=el.getBoundingClientRect();
+        assert(mark.right<body.left&&body.right<=outer.right+.1&&body.bottom<=outer.bottom+.1,'marker and text columns fit within item geometry');
+      }
+    }finally{bulletPreview.element.remove();}
+    await phase("invalid list geometry");
+    for(const item of [
+      {...itemStyle,depth:8},{...itemStyle,depth:1.5},{...itemStyle,number:0},{...itemStyle,number:'1'},
+      {...itemStyle,gap:-1},{...itemStyle,indentStep:30001},{...itemStyle,markerWidth:0},
+      {...itemStyle,depth:7,indentStep:20000},{...itemStyle,markerWidth:1000,number:999999999},
+      {...itemStyle,kind:'bullet'},{...itemStyle,marker:'custom'}
+    ]){
+      let failed=false;try{await createPlainTextPagePreview(document,{...listOptions,blocks:[{...listBlock,listItem:item}]});}catch{failed=true;}
+      assert(failed,'invalid list item or marker overflow rejected');
     }
-  }finally{bulletPreview.element.remove();}
-  await phase("invalid list geometry");
-  for(const item of [
-    {...itemStyle,depth:8},{...itemStyle,depth:1.5},{...itemStyle,number:0},{...itemStyle,number:'1'},
-    {...itemStyle,gap:-1},{...itemStyle,indentStep:30001},{...itemStyle,markerWidth:0},
-    {...itemStyle,depth:7,indentStep:20000},{...itemStyle,markerWidth:1000,number:999999999},
-    {...itemStyle,kind:'bullet'},{...itemStyle,marker:'custom'}
-  ]){
-    let failed=false;try{await createPlainTextPagePreview(document,{...listOptions,blocks:[{...listBlock,listItem:item}]});}catch{failed=true;}
-    assert(failed,'invalid list item or marker overflow rejected');
+    let listComponentRejected=false;try{await createPlainTextPagePreview(document,{...listOptions,blocks:[{...listBlock,component:frame}]});}catch{listComponentRejected=true;}
+    assert(listComponentRejected,'list item plus component frame is not silently combined');
+    assert(document.body.children.length===before,'list measurement cleanup');
   }
-  let listComponentRejected=false;try{await createPlainTextPagePreview(document,{...listOptions,blocks:[{...listBlock,component:frame}]});}catch{listComponentRejected=true;}
-  assert(listComponentRejected,'list item plus component frame is not silently combined');
-  assert(document.body.children.length===before,'list measurement cleanup');
   result.textContent='PASS '+JSON.stringify({lineCount:lines.lines.length,previewPages:preview.plan.pages.length,lineRanges:preview.slices.map(s=>[s.textStart,s.textEnd])})+' '+JSON.stringify({wide,narrow,pages:plan.pages.length});
 }catch(error){result.textContent='FAIL '+String(error);}
 await fetch('/test-result',{method:'POST',body:result.textContent});
