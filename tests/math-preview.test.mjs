@@ -14,8 +14,7 @@ test('bounded TeX subset yields fraction, root and paired scripts',()=>{
   assert.deepEqual(parsePreviewMath('x^12').children.map(x=>x.kind),['script','mn']);
 });
 test('reject malformed or unsafe formula syntax and enforce work bounds',()=>{
-  for(const value of ['', ' ', 'x^', 'x^2^3', '{}','{x','x}', '\frac{x}', '\sqrt{}','\\input{a}','\\href{x}{y}','\\htmlClass{x}{y}','\\def\\x{y}','\\begin{matrix}a&b\\end{matrix}','<script>alert(1)</script>','x\n+y','x'.repeat(513),'{'.repeat(26)+'x'+'}'.repeat(26),'a'.repeat(2049)])
-    // Angle brackets themselves are safe comparison operators; no HTML is ever parsed.
-    if(value!=='<script>alert(1)</script>')assert.throws(()=>parsePreviewMath(value),RangeError,value);
+  for(const value of ['', ' ', 'x^', 'x^2^3', '{}','{x','x}', '\\frac{x}', '\\sqrt{}','\\input{a}','\\href{x}{y}','\\htmlClass{x}{y}','\\def\\x{y}','\\begin{matrix}a&b\\end{matrix}','x\n+y','x'.repeat(513),'{'.repeat(26)+'x'+'}'.repeat(26),'a'.repeat(2049)])
+    assert.throws(()=>parsePreviewMath(value),RangeError,value);
   assert.equal(parsePreviewMath('x<y').children[1].text,'<');
 });
