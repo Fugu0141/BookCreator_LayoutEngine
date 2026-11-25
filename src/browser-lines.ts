@@ -1,3 +1,4 @@
+import {applyPreviewFont,readyPreviewFont,isPreviewFontFamily,isPreviewFontWeight} from './preview-font.js';
 import {paginateMeasured,type Origin,type MeasuredPagePlan,type SplitPolicy} from './pagination.js';
 import type {PlainTextMeasureRequest} from './browser-measurement.js';
 
@@ -18,12 +19,12 @@ function validate(request:PlainTextMeasureRequest){
   if(typeof request.text!=='string'||!request.text.length||request.text.length>10000||
     /[\p{Cc}\p{Cs}\p{Cf}\p{Zl}\p{Zp}]/u.test(request.text)||
     !positive(request.width)||request.width>2000000||!positive(request.fontSize)||request.fontSize>100000||
-    !['serif','sans-serif','monospace'].includes(request.fontFamily)||!Number.isFinite(request.lineHeight)||request.lineHeight<1.25||request.lineHeight>4)
+    !isPreviewFontFamily(request.fontFamily)||!isPreviewFontWeight(request.fontWeight)||!Number.isFinite(request.lineHeight)||request.lineHeight<1.25||request.lineHeight>4)
     throw new RangeError('Unsupported plain line measurement request');
 }
 function styleText(el:HTMLElement,r:PlainTextMeasureRequest,wrap:boolean){
   el.style.cssText='all:initial;display:block;box-sizing:border-box;padding:0;border:0;margin:0;overflow-wrap:anywhere;word-break:normal;writing-mode:horizontal-tb;direction:ltr;text-align:start;font-kerning:none;font-variant-ligatures:none;';
-  el.style.width=px(r.width)+'px';el.style.fontSize=px(r.fontSize)+'px';el.style.fontFamily=r.fontFamily;
+  el.style.width=px(r.width)+'px';el.style.fontSize=px(r.fontSize)+'px';applyPreviewFont(el,r.fontFamily,r.fontWeight);
   el.style.lineHeight=px(r.fontSize*r.lineHeight)+'px';
   el.style.whiteSpace=wrap?'break-spaces':'pre';
 }
@@ -39,7 +40,7 @@ export async function measurePlainTextLines(document:Document,request:PlainTextM
   const root=host.attachShadow({mode:'closed'}), el=document.createElement('div');
   styleText(el,r,true);const node=document.createTextNode(r.text);el.append(node);root.append(el);document.body.append(host);
   try{
-    el.getBoundingClientRect();await document.fonts.ready;
+    el.getBoundingClientRect();await readyPreviewFont(document,r.fontFamily,r.fontWeight,r.text);
     const height=el.getBoundingClientRect().height;
     const linePx=px(r.fontSize*r.lineHeight);
     const count=Math.round(height/linePx);
