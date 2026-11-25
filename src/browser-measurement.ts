@@ -9,6 +9,10 @@ export interface PlainTextMeasureRequest {
   fontFamily:PreviewFontFamily;
   fontWeight?:number; // 100–900; host owns face availability
   lineHeight:number; // multiplier
+  /** Opt-in for the line-based preview: exact LF/CRLF hard breaks. */
+  multiline?:boolean;
+  /** Extra physical spacing on each empty logical line (line-based preview only). */
+  paragraphGap?:number;
 }
 export interface PlainTextMeasurement {
   width:number;
