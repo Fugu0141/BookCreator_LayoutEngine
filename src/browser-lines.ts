@@ -1,3 +1,4 @@
+import {measureDisplayMath,parsePreviewMath,type MeasuredDisplayMath} from './math-preview.js';
 import {validateImageCrop,imageSourceRect,type ImageCrop} from './image-crop.js';
 import {layoutTree} from './tree.js';
 import {applyPreviewFont,readyPreviewFont,isPreviewFontFamily,isPreviewFontWeight} from './preview-font.js';
@@ -326,6 +327,8 @@ function snapshotListItem(value:PreviewListItem,width:number):PreviewListItem{
 function listInset(item:PreviewListItem){return item.depth*item.indentStep+item.markerWidth+item.gap;}
 function listMarker(item:PreviewListItem){return item.kind==='ordered'?item.number+'.':['•','◦','▪'][item.depth%3];}
 export interface PreviewTextBlock {
+  /** Standalone strict math; request.text is the exact formula, not rendered glyphs. */
+  displayMath?:true;
   listItem?:PreviewListItem;
   namedSlots?:readonly PreviewNamedSlot[];
   component?:PreviewComponent; // strict tree or splittable single-slot column frame
@@ -398,6 +401,10 @@ export async function createPlainTextPagePreview(document:Document,options:{
     const namedSlots=snapshotNamedSlots(b,component);
     const listItem=b.listItem===undefined?undefined:snapshotListItem(b.listItem,b.request.width);
     if(listItem&&component)throw RangeError('List items do not support component frames yet');
+    if(b.displayMath!==undefined){
+      if(b.displayMath!==true||b.splitPolicy!=='strict'||component||listItem||namedSlots.length||b.request.inlineStyles!==undefined||b.request.multiline||b.request.paragraphGap!==undefined)throw RangeError('Display math requires an independent strict block');
+      parsePreviewMath(b.request.text);
+    }
     return {...b,origin,request:snapshotRequest(b.request),component,namedSlots,listItem};
   })}));
   if(sections.flatMap(s=>s.blocks).reduce((n,b)=>n+(isBreak(b)?0:b.request.text.length+(b.namedSlots??[]).reduce((sum,s)=>sum+s.request.text.length,0)),0)>50000)throw RangeError('Preview source text limit exceeded');
@@ -425,7 +432,7 @@ export async function createPlainTextPagePreview(document:Document,options:{
     images.set(id,bitmap);
   }
   let renderedImagePixels=0;
-  const byKey=new Map<string,{block:PreviewTextBlock;measurement:MeasuredTextLines;labels:Map<string,MeasuredTextLines>;slots:Map<string,MeasuredTextLines>;placement?:ComponentPlacement;marker?:MeasuredTextLines}>();
+  const byKey=new Map<string,{block:PreviewTextBlock;measurement:MeasuredTextLines;labels:Map<string,MeasuredTextLines>;slots:Map<string,MeasuredTextLines>;placement?:ComponentPlacement;marker?:MeasuredTextLines;math?:MeasuredDisplayMath}>();
   const key=(o:Origin)=>JSON.stringify([o.documentId,o.blockKey]);
   const measuredSections:MeasuredSection[]=[];
   let totalLabelText=0;
@@ -448,7 +455,8 @@ export async function createPlainTextPagePreview(document:Document,options:{
       marker=await measurePlainTextLines(document,{...base,text:listMarker(b.listItem),width:b.listItem.markerWidth});
       if(marker.lines.length!==1)throw RangeError('List marker does not fit reserved width');
     }
-    let measurement=await measurePlainTextLines(document,{...b.request,width:textWidth});
+    const math=b.displayMath?await measureDisplayMath(document,b.request.text,textWidth,b.request.fontSize):undefined;
+    let measurement:MeasuredTextLines=math?{request:b.request,lines:[{start:0,end:b.request.text.length,height:math.height}],measurement:'browser-dom-lines',publicationReady:false}:await measurePlainTextLines(document,{...b.request,width:textWidth});
     if(marker){
       // Marker and the first text row are top-aligned. Reserve both measured boxes.
       const [first,...rest]=measurement.lines;
@@ -467,7 +475,7 @@ export async function createPlainTextPagePreview(document:Document,options:{
     }}
     if(b.component)await measureLabels(b.component.children);
     const placement=b.component&&!fragmentable?placeComponent(b.component,b.request.width,measurement,labels,slots,geometry!.widths,height):undefined;
-    byKey.set(k,{block:b,measurement,labels,slots,placement,marker});
+    byKey.set(k,{block:b,measurement,labels,slots,placement,marker,math});
     const heights=placement?[placement.rect.height]:measurement.lines.map(l=>l.height);
     blocks.push({kind:'block' as const,origin:b.origin,width:b.request.width,unitHeights:heights,splitPolicy:b.splitPolicy,...(fragmentable?{fragmentPadding:{top:b.component!.padding,bottom:b.component!.padding}}:{}),startPosition:b.startPosition,startPositionSource:b.startPositionSource});
   }
@@ -489,7 +497,7 @@ export async function createPlainTextPagePreview(document:Document,options:{
     if(paper){const guide=document.createElement('div');guide.dataset.contentGuide='true';guide.style.cssText='position:absolute;box-sizing:border-box;outline:1px dashed #ccc;pointer-events:none;';Object.assign(guide.style,{left:px(left)+'px',top:px(top)+'px',width:px(width)+'px',height:px(height)+'px'});page.append(guide);}
     for(const f of p.fragments){
       const entry=byKey.get(key(f.origin));if(!entry)throw Error('Missing preview block');
-      const {block,measurement,labels,slots,placement,marker}=entry, lineUnits=placement?measurement.lines:measurement.lines.slice(f.unitStart,f.unitEnd);
+      const {block,measurement,labels,slots,placement,marker,math}=entry, lineUnits=placement?measurement.lines:measurement.lines.slice(f.unitStart,f.unitEnd);
       if(!lineUnits.length)throw Error('Missing preview lines');
       const textStart=lineUnits[0].start,textEnd=lineUnits.at(-1)!.end;
       // Origin may refer to markup; only a caller-verified contiguous mapping enables raw source ranges.
@@ -499,6 +507,11 @@ export async function createPlainTextPagePreview(document:Document,options:{
       const fragment=document.createElement('div');fragment.dataset.block=f.origin.blockKey;fragment.dataset.document=f.origin.documentId;
       fragment.style.cssText='all:initial;display:block;position:absolute;box-sizing:border-box;';
       Object.assign(fragment.style,{left:px(left+f.rect.x)+'px',top:px(top+f.rect.y)+'px',width:px(f.rect.width)+'px',height:px(f.rect.height)+'px'});
+      if(math){
+        fragment.dataset.displayMath='true';
+        math.element.dataset.start='0';math.element.dataset.end=String(block.request.text.length);
+        fragment.append(math.element);page.append(fragment);continue;
+      }
       let textParent=fragment;
       if(block.listItem&&marker){
         const item=block.listItem,inset=listInset(item);
