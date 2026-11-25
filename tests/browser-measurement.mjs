@@ -26,7 +26,7 @@ const profile=await mkdtemp(join(tmpdir(),'layout-chrome-'));
 try{
   await new Promise((resolve,reject)=>{server.once('error',reject);server.listen(0,'127.0.0.1',resolve);});
   const browser=process.env.CHROME_BIN??'google-chrome';
-  const args=['--headless','--disable-gpu','--disable-dev-shm-usage','--no-first-run','--no-default-browser-check','--disable-background-networking','--user-data-dir='+profile,'http://127.0.0.1:'+server.address().port+'/tests/browser-measurement.html'];
+  const args=['--headless','--enable-logging=stderr','--disable-gpu','--disable-dev-shm-usage','--no-first-run','--no-default-browser-check','--disable-background-networking','--user-data-dir='+profile,'http://127.0.0.1:'+server.address().port+'/tests/browser-measurement.html'];
   if(process.env.CHROME_NO_SANDBOX==='1')args.unshift('--no-sandbox');
   const child=spawn(browser,args);let stderr='';
   child.stdout.resume();child.stderr.on('data',d=>stderr=(stderr+d).slice(-4000));
