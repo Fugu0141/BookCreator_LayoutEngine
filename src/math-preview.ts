@@ -75,20 +75,36 @@ export function assertNativeMathLayout(document:Document,root:ShadowRoot){
 }
 export interface MeasuredDisplayMath {element:HTMLElement;width:number;height:number;publicationReady:false}
 /** Measure the exact native MathML node used for final drawing, not a text estimate. */
-export async function measureDisplayMath(document:Document,source:string,width:number,fontSize:number):Promise<MeasuredDisplayMath>{
+export async function measureDisplayMath(document:Document,source:string,width:number,fontSize:number,equationNumber?:string):Promise<MeasuredDisplayMath>{
+  if(equationNumber!==undefined&&(typeof equationNumber!=='string'||!/^([1-9][0-9]{0,5})\.([1-9][0-9]{0,5})$/.test(equationNumber)))throw RangeError('Invalid equation number');
   if(!document.body||!document.defaultView||!Number.isSafeInteger(width)||width<1||width>2000000||!Number.isSafeInteger(fontSize)||fontSize<1000||fontSize>30000)throw RangeError('Invalid display math geometry');
   const px=(v:number)=>v*96/25400,um=(v:number)=>Math.ceil(v*25400/96);
   const host=document.createElement('div');host.style.cssText='all:initial;position:absolute;left:-100000px;top:0;visibility:hidden;';
   const root=host.attachShadow({mode:'open'}),element=document.createElement('div');
   element.style.cssText='all:initial;display:flex;justify-content:center;align-items:center;box-sizing:border-box;direction:ltr;writing-mode:horizontal-tb;color:black;font-family:math,serif;';
   element.style.width=px(width)+'px';element.style.fontSize=px(fontSize)+'px';
-  const math=createPreviewMath(document,source);math.setAttribute('style','flex:none;');element.append(math);root.append(element);document.body.append(host);
+  const math=createPreviewMath(document,source);math.setAttribute('style','flex:none;');element.append(math);
+  let label:HTMLElement|undefined;
+  if(equationNumber!==undefined){
+    // Equal clearance on both sides preserves the equation's page-center position.
+    element.style.position='relative';
+    label=document.createElement('span');label.dataset.equationNumber='true';
+    label.style.cssText='position:absolute;right:0;top:50%;transform:translateY(-50%);white-space:nowrap;font-family:serif;font-style:normal;font-weight:400;line-height:normal;font-variant-numeric:tabular-nums;';
+    label.textContent='('+equationNumber+')';element.append(label);
+  }
+  root.append(element);document.body.append(host);
   try{
     await document.fonts.ready;
     // Detect actual fraction layout, rather than silently accepting unsupported MathML.
     assertNativeMathLayout(document,root);
+    if(label){
+      const labelBox=label.getBoundingClientRect(),mathBox=math.getBoundingClientRect(),gap=px(2000);
+      if(!Number.isFinite(labelBox.width)||labelBox.width<=0||labelBox.height<=0||mathBox.width+2*(labelBox.width+gap)>px(width)+.01)throw RangeError('Numbered equation exceeds available centered width');
+      element.style.minHeight=Math.max(labelBox.height,mathBox.height)+'px';
+    }
     const box=element.getBoundingClientRect(),ink=math.getBoundingClientRect();
     if(!Number.isFinite(ink.width)||!Number.isFinite(box.height)||ink.width<=0||box.height<=0||ink.left<box.left-.1||ink.right>box.right+.1||ink.top<box.top-.1||ink.bottom>box.bottom+.1||um(ink.width)>width)throw RangeError('Display math exceeds available width or has invalid geometry');
+    if(label){const q=label.getBoundingClientRect();if(q.left<ink.right+px(2000)-.1||q.right>box.right+.1||q.top<box.top-.1||q.bottom>box.bottom+.1)throw RangeError('Invalid equation number geometry');}
     const height=um(box.height);
     element.style.height=px(height)+'px';
     return {element,width:um(ink.width),height,publicationReady:false};

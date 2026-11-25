@@ -364,6 +364,8 @@ function listMarker(item:PreviewListItem){return item.kind==='ordered'?item.numb
 export interface PreviewTextBlock {
   /** Standalone strict math; request.text is the exact formula, not rendered glyphs. */
   displayMath?:true;
+  /** Host-resolved chapter.index; derived label is not part of request.text or source offsets. */
+  equationNumber?:string;
   listItem?:PreviewListItem;
   namedSlots?:readonly PreviewNamedSlot[];
   component?:PreviewComponent; // strict tree or splittable single-slot column frame
@@ -438,6 +440,7 @@ export async function createPlainTextPagePreview(document:Document,options:{
     const listItem=b.listItem===undefined?undefined:snapshotListItem(b.listItem,b.request.width);
     if(listItem&&component)throw RangeError('List items do not support component frames yet');
     if(b.request.inlineMath!==undefined&&(component||listItem||namedSlots.length||b.sourceTextStart!==undefined||b.displayMath!==undefined))throw RangeError('Inline math requires an independent logical text block and host-owned source map');
+    if(b.equationNumber!==undefined&&(b.displayMath!==true||typeof b.equationNumber!=='string'||!/^([1-9][0-9]{0,5})\.([1-9][0-9]{0,5})$/.test(b.equationNumber)))throw RangeError('Equation number requires a valid strict display math block');
     if(b.displayMath!==undefined){
       if(b.displayMath!==true||b.splitPolicy!=='strict'||component||listItem||namedSlots.length||b.request.inlineStyles!==undefined||b.request.multiline||b.request.paragraphGap!==undefined)throw RangeError('Display math requires an independent strict block');
       parsePreviewMath(b.request.text);
@@ -494,7 +497,7 @@ export async function createPlainTextPagePreview(document:Document,options:{
       marker=await measurePlainTextLines(document,{...base,text:listMarker(b.listItem),width:b.listItem.markerWidth});
       if(marker.lines.length!==1)throw RangeError('List marker does not fit reserved width');
     }
-    const math=b.displayMath?await measureDisplayMath(document,b.request.text,textWidth,b.request.fontSize):undefined;
+    const math=b.displayMath?await measureDisplayMath(document,b.request.text,textWidth,b.request.fontSize,b.equationNumber):undefined;
     let measurement:MeasuredTextLines=math?{request:b.request,lines:[{start:0,end:b.request.text.length,height:math.height}],measurement:'browser-dom-lines',publicationReady:false}:await measurePlainTextLines(document,{...b.request,width:textWidth});
     if(marker){
       // Marker and the first text row are top-aligned. Reserve both measured boxes.

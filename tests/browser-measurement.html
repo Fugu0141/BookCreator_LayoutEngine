@@ -441,6 +441,36 @@ try{
     }
     assert(document.body.children.length===before,'inline math measurement cleanup');
   }
+  await phase("numbered equation geometry and source offsets");
+  {
+    const formula='\\frac{-b+\\sqrt{b^2-4ac}}{2a}',width=100000,fontSize=5000;
+    const measured=await measureDisplayMath(document,formula,width,fontSize,'2.13');
+    const block={origin:{documentId:'equation',revision:'1',blockKey:'eq',range:{start:30,end:30+formula.length}},request:{text:formula,width,fontSize,fontFamily:'serif',lineHeight:1.8},displayMath:true,equationNumber:'2.13',sourceTextStart:30,splitPolicy:'strict'};
+    const options={revision:'1',fingerprint:'numbered',width,height:measured.height+1000,blocks:[block]};
+    const preview=await createPlainTextPagePreview(document,options);
+    assert(preview.slices.length===1&&preview.slices[0].sourceSlice.start===30&&preview.slices[0].sourceSlice.end===30+formula.length,'number excluded from exact source slice');
+    document.body.append(preview.element);
+    try{
+      const fragment=preview.element.shadowRoot.querySelector('[data-display-math]'),math=fragment.querySelector('math'),label=fragment.querySelector('[data-equation-number]');
+      assert(label.textContent==='(2.13)','derived label');
+      const b=fragment.getBoundingClientRect(),m=math.getBoundingClientRect(),l=label.getBoundingClientRect();
+      assert(Math.abs((m.left+m.right)/2-(b.left+b.right)/2)<.2,'formula centered across content width');
+      assert(Math.abs(l.right-b.right)<.2&&Math.abs((l.top+l.bottom)/2-(b.top+b.bottom)/2)<.2,'number right aligned and vertically centered');
+      assert(l.left-m.right>=2000*96/25400-.1&&l.bottom<=b.bottom+.1&&m.bottom<=b.bottom+.1,'number and formula fit without overlap');
+    }finally{preview.element.remove();}
+    for(const bad of ['0.1','1.0','01.2','1','1.2.3','1.1234567','<b>1.2</b>',null,42]){
+      let rejected=false;try{await createPlainTextPagePreview(document,{...options,blocks:[{...block,equationNumber:bad}]});}catch{rejected=true;}
+      assert(rejected,'invalid equation number rejected');
+    }
+    for(const bad of [{...block,displayMath:undefined},{...block,splitPolicy:'allow'}]){
+      let rejected=false;try{await createPlainTextPagePreview(document,{...options,blocks:[bad]});}catch{rejected=true;}
+      assert(rejected,'number must belong to strict display math');
+    }
+    const unnumbered=await measureDisplayMath(document,'x^2',100000,fontSize);
+    let overflow=false;try{await measureDisplayMath(document,'x^2',unnumbered.width+1000,fontSize,'123456.123456');}catch{overflow=true;}
+    assert(overflow,'number cannot overlap equation or be clipped');
+    assert(document.body.children.length===before,'numbered equation measurement cleanup');
+  }
   result.textContent='PASS '+JSON.stringify({lineCount:lines.lines.length,previewPages:preview.plan.pages.length,lineRanges:preview.slices.map(s=>[s.textStart,s.textEnd])})+' '+JSON.stringify({wide,narrow,pages:plan.pages.length});
 }catch(error){result.textContent='FAIL '+String(error);}
 await fetch('/test-result',{method:'POST',body:result.textContent});
