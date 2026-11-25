@@ -20,6 +20,13 @@ BookCreator Layout Engineは、宣言的な文書・部品データからペー�
 - [BookCreator application design](https://github.com/Fugu0141/BookCreator/blob/main/DESIGN.md)
 - [BookCreator Markdown](https://github.com/Fugu0141/BookCreator_Markdown)
 
+- [Layout model](docs/LAYOUT_MODEL.md)
+- [Pagination](docs/PAGINATION.md)
+- [Publication and rendering](docs/PUBLICATION_RENDERING.md)
+- [Implementation and fixture plan](docs/DEVELOPMENT.md)
+
+- [Cross-project development plan](https://github.com/Fugu0141/BookCreator/blob/main/docs/DEVELOPMENT_PLAN.md)
+
 ## License / ライセンス
 
 MIT is the intended license, subject to dependency review and final confirmation. No final license has been selected and no package has been released.
