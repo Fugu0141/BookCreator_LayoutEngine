@@ -1,3 +1,4 @@
+import {layoutTree} from './tree.js';
 import {applyPreviewFont,readyPreviewFont,isPreviewFontFamily,isPreviewFontWeight} from './preview-font.js';
 import {paginateMeasured,type Origin,type MeasuredPagePlan,type SplitPolicy,type PageBreak,type MeasuredSection} from './pagination.js';
 import type {PlainTextMeasureRequest} from './browser-measurement.js';
@@ -73,7 +74,44 @@ export async function measurePlainTextLines(document:Document,request:PlainTextM
     return {request:r,lines,measurement:'browser-dom-lines',publicationReady:false};
   }finally{host.remove();}
 }
+
+// Restricted component geometry: flat flow with exactly one semantic content slot.
+// Decorative rectangles never contribute source text. All lengths are integer micrometres.
+export interface PreviewComponent {
+  direction:'row'|'column'; gap:number; padding:number; background:string; textColor:string;
+  children:readonly ({id:string;type:'content'}|{id:string;type:'rect';width:number|'fill';height:number;color:string})[];
+}
+type ComponentPlacement=import('./tree.js').PlacedNode;
+const isColor=(v:unknown):v is string=>typeof v==='string'&&/^#[0-9a-fA-F]{6}$/.test(v);
+function checkComponent(c:PreviewComponent,width:number){
+  const length=(n:number)=>Number.isSafeInteger(n)&&n>=0&&n<=100000;
+  if(!c||!['row','column'].includes(c.direction)||!length(c.gap)||!length(c.padding)||!isColor(c.background)||!isColor(c.textColor)||!Array.isArray(c.children)||c.children.length<1||c.children.length>8)
+    throw RangeError('Invalid preview component');
+  const ids=new Set<string>();let slots=0,occupied=2*c.padding+(c.direction==='row'?c.gap*(c.children.length-1):0);
+  for(const child of c.children){
+    if(!child||!/^[-A-Za-z0-9_]{1,64}$/.test(child.id)||child.id==='root'||ids.has(child.id))throw Error('Invalid component child ID');
+    ids.add(child.id);
+    if(child.type==='content'){slots++;continue;}
+    if(child.type!=='rect'||!isColor(child.color)||!length(child.height)||child.height===0||
+      !(child.width==='fill'?c.direction==='column':length(child.width)&&child.width>0))throw RangeError('Invalid decorative rectangle');
+    if(c.direction==='row')occupied+=child.width as number;
+    else if(child.width!=='fill'&&child.width>width-2*c.padding)throw RangeError('Rectangle exceeds component width');
+  }
+  if(slots!==1||occupied>=width)throw RangeError('Component needs one fitting content slot');
+  return width-occupied;
+}
+function placeComponent(c:PreviewComponent,outerWidth:number,measurement:MeasuredTextLines,capHeight:number):ComponentPlacement{
+  const innerWidth=outerWidth-2*c.padding;
+  const textHeight=measurement.lines.reduce((n,l)=>n+l.height,0);
+  return layoutTree({id:'root',type:c.direction,width:innerWidth,height:'auto',gap:c.gap,
+    children:c.children.map(child=>child.type==='content'?
+      {id:child.id,type:'leaf',width:measurement.request.width,height:textHeight}:
+      {id:child.id,type:'leaf',width:child.width,height:child.height})},
+    {width:innerWidth,height:Math.max(0,capHeight-2*c.padding)});
+}
+
 export interface PreviewTextBlock {
+  component?:PreviewComponent; // strict unsplittable component only
   origin:Origin; request:PlainTextMeasureRequest; splitPolicy:SplitPolicy;
   startPosition?:'page-top'; startPositionSource?:'component'|'explicit';
   // The host must verify the logical text is an exact raw source substring before setting this.
@@ -108,9 +146,9 @@ export async function createPlainTextPagePreview(document:Document,options:{
     allBlocks.length<1||allBlocks.length>128||allBlocks.reduce((n,b)=>n+(isBreak(b)?0:b.request.text.length),0)>50000)
     throw RangeError('Invalid or oversized preview');
   // Snapshot caller-owned values before the first await.
-  const sections=sourceSections.map(s=>({...s,blocks:s.blocks.map(b=>({...b,origin:{...b.origin,range:b.origin.range?{...b.origin.range}:undefined},...(isBreak(b)?{}:{request:{...b.request}})}))}));
+  const sections=sourceSections.map(s=>({...s,blocks:s.blocks.map(b=>({...b,origin:{...b.origin,range:b.origin.range?{...b.origin.range}:undefined},...(isBreak(b)?{}:{request:{...b.request},...(b.component?{component:{...b.component,children:b.component.children.map(c=>({...c}))}}:{})})}))}));
   const {revision,fingerprint,width,height}=options;
-  const byKey=new Map<string,{block:PreviewTextBlock;measurement:MeasuredTextLines}>();
+  const byKey=new Map<string,{block:PreviewTextBlock;measurement:MeasuredTextLines;placement?:ComponentPlacement}>();
   const key=(o:Origin)=>JSON.stringify([o.documentId,o.blockKey]);
   const measuredSections:MeasuredSection[]=[];
   for(const section of sections){
@@ -121,9 +159,13 @@ export async function createPlainTextPagePreview(document:Document,options:{
     if(b.sourceTextStart!==undefined&&(!b.origin.range||!Number.isSafeInteger(b.sourceTextStart)||
       b.sourceTextStart<b.origin.range.start||!Number.isSafeInteger(b.sourceTextStart+b.request.text.length)||
       b.sourceTextStart+b.request.text.length>b.origin.range.end))throw Error('Invalid exact source mapping');
-    const measurement=await measurePlainTextLines(document,b.request);
-    byKey.set(k,{block:b,measurement});
-    blocks.push({kind:'block' as const,origin:b.origin,width:b.request.width,unitHeights:measurement.lines.map(l=>l.height),splitPolicy:b.splitPolicy,startPosition:b.startPosition,startPositionSource:b.startPositionSource});
+    if(b.component&&b.splitPolicy!=='strict')throw Error('Components require strict pagination');
+    const textWidth=b.component?checkComponent(b.component,b.request.width):b.request.width;
+    const measurement=await measurePlainTextLines(document,{...b.request,width:textWidth});
+    const placement=b.component?placeComponent(b.component,b.request.width,measurement,height):undefined;
+    byKey.set(k,{block:b,measurement,placement});
+    const heights=placement?[placement.rect.height+2*b.component!.padding]:measurement.lines.map(l=>l.height);
+    blocks.push({kind:'block' as const,origin:b.origin,width:b.request.width,unitHeights:heights,splitPolicy:b.splitPolicy,startPosition:b.startPosition,startPositionSource:b.startPositionSource});
   }
     measuredSections.push({id:section.id,startOn:section.startOn,blocks});
   }
@@ -143,7 +185,7 @@ export async function createPlainTextPagePreview(document:Document,options:{
     if(paper){const guide=document.createElement('div');guide.dataset.contentGuide='true';guide.style.cssText='position:absolute;box-sizing:border-box;outline:1px dashed #ccc;pointer-events:none;';Object.assign(guide.style,{left:px(left)+'px',top:px(top)+'px',width:px(width)+'px',height:px(height)+'px'});page.append(guide);}
     for(const f of p.fragments){
       const entry=byKey.get(key(f.origin));if(!entry)throw Error('Missing preview block');
-      const {block,measurement}=entry, lineUnits=measurement.lines.slice(f.unitStart,f.unitEnd);
+      const {block,measurement,placement}=entry, lineUnits=placement?measurement.lines:measurement.lines.slice(f.unitStart,f.unitEnd);
       if(!lineUnits.length)throw Error('Missing preview lines');
       const textStart=lineUnits[0].start,textEnd=lineUnits.at(-1)!.end;
       // Origin may refer to markup; only a caller-verified contiguous mapping enables raw source ranges.
@@ -152,10 +194,23 @@ export async function createPlainTextPagePreview(document:Document,options:{
       const fragment=document.createElement('div');fragment.dataset.block=f.origin.blockKey;fragment.dataset.document=f.origin.documentId;
       fragment.style.cssText='all:initial;display:block;position:absolute;box-sizing:border-box;';
       Object.assign(fragment.style,{left:px(left+f.rect.x)+'px',top:px(top+f.rect.y)+'px',width:px(f.rect.width)+'px',height:px(f.rect.height)+'px'});
+      let textParent=fragment;
+      if(placement&&block.component){
+        const c=block.component;fragment.dataset.component='true';fragment.style.background=c.background;
+        for(const child of c.children){
+          const rect=placement.children.find(n=>n.id===child.id)!.rect;
+          const el=document.createElement('div');el.style.cssText='all:initial;position:absolute;display:block;box-sizing:border-box;';
+          Object.assign(el.style,{left:px(rect.x+c.padding)+'px',top:px(rect.y+c.padding)+'px',width:px(rect.width)+'px',height:px(rect.height)+'px'});
+          el.dataset.componentNode=child.id;
+          if(child.type==='rect'){el.style.background=child.color;el.setAttribute('aria-hidden','true');}
+          else{textParent=el;el.dataset.contentSlot='true';}
+          fragment.append(el);
+        }
+      }
       for(const line of lineUnits){
         const item=document.createElement('div');styleText(item,measurement.request,false);item.style.height=px(line.height)+'px';
         item.dataset.start=String(line.start);item.dataset.end=String(line.end);
-        item.textContent=measurement.request.text.slice(line.start,line.end);fragment.append(item);
+        item.textContent=measurement.request.text.slice(line.start,line.end);if(block.component)item.style.color=block.component.textColor;textParent.append(item);
       }
       page.append(fragment);
     }
