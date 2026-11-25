@@ -79,7 +79,7 @@ export async function measurePlainTextLines(document:Document,request:PlainTextM
 // Decorative rectangles never contribute source text. All lengths are integer micrometres.
 export interface PreviewComponent {
   direction:'row'|'column'; gap:number; padding:number; background:string; textColor:string;
-  children:readonly ({id:string;type:'content'}|{id:string;type:'rect';width:number|'fill';height:number;color:string})[];
+  children:readonly ({id:string;type:'content'}|{id:string;type:'rect';width:number|'fill';height:number;color:string}|{id:string;type:'label';width:number|'fill';text:string;fontFamily:PlainTextMeasureRequest['fontFamily'];fontWeight:number;fontSize:number;lineHeight:number;color:string})[];
 }
 type ComponentPlacement=import('./tree.js').PlacedNode;
 const isColor=(v:unknown):v is string=>typeof v==='string'&&/^#[0-9a-fA-F]{6}$/.test(v);
@@ -92,7 +92,10 @@ function checkComponent(c:PreviewComponent,width:number){
     if(!child||!/^[-A-Za-z0-9_]{1,64}$/.test(child.id)||child.id==='root'||ids.has(child.id))throw Error('Invalid component child ID');
     ids.add(child.id);
     if(child.type==='content'){slots++;continue;}
-    if(child.type!=='rect'||!isColor(child.color)||!length(child.height)||child.height===0||
+    if(child.type==='label'){
+      if(typeof child.text!=='string'||!child.text.length||child.text.length>256||!isColor(child.color)||!isPreviewFontFamily(child.fontFamily)||!isPreviewFontWeight(child.fontWeight)||!positive(child.fontSize)||child.fontSize>30000||!Number.isFinite(child.lineHeight)||child.lineHeight<1.25||child.lineHeight>4)throw RangeError('Invalid component label');
+    }else if(child.type!=='rect'||!isColor(child.color)||!length(child.height)||child.height===0)throw RangeError('Invalid decorative rectangle');
+    if(
       !(child.width==='fill'?c.direction==='column':length(child.width)&&child.width>0))throw RangeError('Invalid decorative rectangle');
     if(c.direction==='row')occupied+=child.width as number;
     else if(child.width!=='fill'&&child.width>width-2*c.padding)throw RangeError('Rectangle exceeds component width');
@@ -100,13 +103,13 @@ function checkComponent(c:PreviewComponent,width:number){
   if(slots!==1||occupied>=width)throw RangeError('Component needs one fitting content slot');
   return width-occupied;
 }
-function placeComponent(c:PreviewComponent,outerWidth:number,measurement:MeasuredTextLines,capHeight:number):ComponentPlacement{
+function placeComponent(c:PreviewComponent,outerWidth:number,measurement:MeasuredTextLines,labels:Map<string,MeasuredTextLines>,capHeight:number):ComponentPlacement{
   const innerWidth=outerWidth-2*c.padding;
   const textHeight=measurement.lines.reduce((n,l)=>n+l.height,0);
   return layoutTree({id:'root',type:c.direction,width:innerWidth,height:'auto',gap:c.gap,
     children:c.children.map(child=>child.type==='content'?
       {id:child.id,type:'leaf',width:measurement.request.width,height:textHeight}:
-      {id:child.id,type:'leaf',width:child.width,height:child.height})},
+      {id:child.id,type:'leaf',width:child.width,height:child.type==='label'?labels.get(child.id)!.lines.reduce((n,l)=>n+l.height,0):child.height})},
     {width:innerWidth,height:Math.max(0,capHeight-2*c.padding)});
 }
 
@@ -148,9 +151,10 @@ export async function createPlainTextPagePreview(document:Document,options:{
   // Snapshot caller-owned values before the first await.
   const sections=sourceSections.map(s=>({...s,blocks:s.blocks.map(b=>({...b,origin:{...b.origin,range:b.origin.range?{...b.origin.range}:undefined},...(isBreak(b)?{}:{request:{...b.request},...(b.component?{component:{...b.component,children:b.component.children.map(c=>({...c}))}}:{})})}))}));
   const {revision,fingerprint,width,height}=options;
-  const byKey=new Map<string,{block:PreviewTextBlock;measurement:MeasuredTextLines;placement?:ComponentPlacement}>();
+  const byKey=new Map<string,{block:PreviewTextBlock;measurement:MeasuredTextLines;labels:Map<string,MeasuredTextLines>;placement?:ComponentPlacement}>();
   const key=(o:Origin)=>JSON.stringify([o.documentId,o.blockKey]);
   const measuredSections:MeasuredSection[]=[];
+  let totalLabelText=0;
   for(const section of sections){
     const blocks: (MeasuredSection['blocks'][number])[]=[];
     for(const b of section.blocks){
@@ -162,8 +166,14 @@ export async function createPlainTextPagePreview(document:Document,options:{
     if(b.component&&b.splitPolicy!=='strict')throw Error('Components require strict pagination');
     const textWidth=b.component?checkComponent(b.component,b.request.width):b.request.width;
     const measurement=await measurePlainTextLines(document,{...b.request,width:textWidth});
-    const placement=b.component?placeComponent(b.component,b.request.width,measurement,height):undefined;
-    byKey.set(k,{block:b,measurement,placement});
+    const labels=new Map<string,MeasuredTextLines>();
+    if(b.component)for(const child of b.component.children){
+      if(child.type!=='label')continue;
+      totalLabelText+=child.text.length;if(totalLabelText>50000)throw RangeError('Component label text limit exceeded');
+      labels.set(child.id,await measurePlainTextLines(document,{text:child.text,width:child.width==='fill'?b.request.width-2*b.component.padding:child.width,fontFamily:child.fontFamily,fontWeight:child.fontWeight,fontSize:child.fontSize,lineHeight:child.lineHeight}));
+    }
+    const placement=b.component?placeComponent(b.component,b.request.width,measurement,labels,height):undefined;
+    byKey.set(k,{block:b,measurement,labels,placement});
     const heights=placement?[placement.rect.height+2*b.component!.padding]:measurement.lines.map(l=>l.height);
     blocks.push({kind:'block' as const,origin:b.origin,width:b.request.width,unitHeights:heights,splitPolicy:b.splitPolicy,startPosition:b.startPosition,startPositionSource:b.startPositionSource});
   }
@@ -185,7 +195,7 @@ export async function createPlainTextPagePreview(document:Document,options:{
     if(paper){const guide=document.createElement('div');guide.dataset.contentGuide='true';guide.style.cssText='position:absolute;box-sizing:border-box;outline:1px dashed #ccc;pointer-events:none;';Object.assign(guide.style,{left:px(left)+'px',top:px(top)+'px',width:px(width)+'px',height:px(height)+'px'});page.append(guide);}
     for(const f of p.fragments){
       const entry=byKey.get(key(f.origin));if(!entry)throw Error('Missing preview block');
-      const {block,measurement,placement}=entry, lineUnits=placement?measurement.lines:measurement.lines.slice(f.unitStart,f.unitEnd);
+      const {block,measurement,labels,placement}=entry, lineUnits=placement?measurement.lines:measurement.lines.slice(f.unitStart,f.unitEnd);
       if(!lineUnits.length)throw Error('Missing preview lines');
       const textStart=lineUnits[0].start,textEnd=lineUnits.at(-1)!.end;
       // Origin may refer to markup; only a caller-verified contiguous mapping enables raw source ranges.
@@ -203,7 +213,13 @@ export async function createPlainTextPagePreview(document:Document,options:{
           Object.assign(el.style,{left:px(rect.x+c.padding)+'px',top:px(rect.y+c.padding)+'px',width:px(rect.width)+'px',height:px(rect.height)+'px'});
           el.dataset.componentNode=child.id;
           if(child.type==='rect'){el.style.background=child.color;el.setAttribute('aria-hidden','true');}
-          else{textParent=el;el.dataset.contentSlot='true';}
+          else if(child.type==='label'){
+            el.dataset.fixedLabel='true';
+            const measured=labels.get(child.id)!;
+            for(const line of measured.lines){
+              const item=document.createElement('div');styleText(item,measured.request,false);item.style.height=px(line.height)+'px';item.style.color=child.color;item.textContent=measured.request.text.slice(line.start,line.end);el.append(item);
+            }
+          }else{textParent=el;el.dataset.contentSlot='true';}
           fragment.append(el);
         }
       }
