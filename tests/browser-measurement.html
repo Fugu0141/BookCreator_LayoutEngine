@@ -122,6 +122,14 @@ try{
   assert(pixels[1]===255&&pixels[6]===255&&pixels[0]===0&&pixels[4]===0,'cover crops source without distortion');
   assert(contain.getAttribute('aria-label')==='Sample illustration'&&cover.getAttribute('aria-hidden')==='true','image semantics');
   assert(picturePreview.plan.pages[0].fragments[0].rect.height>44000&&picturePreview.slices[0].textEnd===7,'image geometry included without extra source slices');
+  const cropped={...imageNode,crop:{left:2500,top:0,right:2500,bottom:0}};
+  const cropPreview=await createPlainTextPagePreview(document,{...imageOptions,blocks:[makeText('sample','head','Heading',{component:{...picture,children:[cropped,{id:'content',type:'content'}]}})]});
+  const croppedCanvas=cropPreview.element.shadowRoot.querySelector('[data-component-image] canvas');
+  assert(croppedCanvas.width===2&&croppedCanvas.height===2,'explicit crop before contain');
+  assert(croppedCanvas.getContext('2d').getImageData(0,0,2,1).data[1]===255,'cropped pixels reflect inset');
+  assert(cropPreview.slices[0].textEnd===7,'crop does not affect source mapping');
+  let badCrop=false;try{await createPlainTextPagePreview(document,{...imageOptions,blocks:[makeText('sample','head','Heading',{component:{...picture,children:[{...cropped,crop:{left:9000,top:0,right:1000,bottom:0}},{id:'content',type:'content'}]}})]});}catch{badCrop=true;}
+  assert(badCrop,'empty crop rejected');
   const inCanvas={...canvas,children:[{...canvas.children[0],children:[{...imageNode,x:1000,y:1000},...canvas.children[0].children.slice(1)]}]};
   const imageCanvas=await createPlainTextPagePreview(document,{...imageOptions,blocks:[makeText('sample','head','Heading',{component:inCanvas})]});
   assert(imageCanvas.element.shadowRoot.querySelector('[data-component-canvas] > [data-component-image] canvas')!==null,'image in Canvas');

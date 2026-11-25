@@ -1,3 +1,4 @@
+import {validateImageCrop,imageSourceRect,type ImageCrop} from './image-crop.js';
 import {layoutTree} from './tree.js';
 import {applyPreviewFont,readyPreviewFont,isPreviewFontFamily,isPreviewFontWeight} from './preview-font.js';
 import {paginateMeasured,type Origin,type MeasuredPagePlan,type SplitPolicy,type PageBreak,type MeasuredSection} from './pagination.js';
@@ -80,7 +81,7 @@ export async function measurePlainTextLines(document:Document,request:PlainTextM
 export type PreviewComponentChild = (
   | {id:string;type:'content';width?:number}
   | {id:string;type:'rect';width:number|'fill';height:number;color:string}
-  | {id:string;type:'image';width:number|'fill';height:number;assetId:string;fit:'contain'|'cover';alt:string}
+  | {id:string;type:'image';width:number|'fill';height:number;assetId:string;fit:'contain'|'cover';alt:string;crop?:ImageCrop}
   | {id:string;type:'label';width:number|'fill';text:string;fontFamily:PlainTextMeasureRequest['fontFamily'];fontWeight:number;fontSize:number;lineHeight:number;color:string}
   | {id:string;type:'group';width:number|'fill';direction:'row'|'column'|'canvas';height?:number;gap:number;padding:number;background:string;children:readonly PreviewComponentChild[]}) & {x?:number;y?:number};
 export interface PreviewComponent {
@@ -110,6 +111,7 @@ function snapshotComponent(c:PreviewComponent):PreviewComponent{
         if(typeof child.text!=='string'||!child.text.length||child.text.length>256||!isColor(child.color)||!isPreviewFontFamily(child.fontFamily)||!isPreviewFontWeight(child.fontWeight)||!positive(child.fontSize)||child.fontSize>30000||!Number.isFinite(child.lineHeight)||child.lineHeight<1.25||child.lineHeight>4)throw RangeError('Invalid component label');
       }else if(child.type==='image'){
         if(typeof child.assetId!=='string'||!/^[a-f0-9]{64}$/.test(child.assetId)||!length(child.height)||child.height===0||!['contain','cover'].includes(child.fit)||typeof child.alt!=='string'||child.alt.length>256||/[\p{Cc}\p{Cs}]/u.test(child.alt))throw RangeError('Invalid component image');
+        return {...child,...(child.crop!==undefined?{crop:validateImageCrop(child.crop)}:{})};
       }else if(child.type!=='rect'||!isColor(child.color)||!length(child.height)||child.height===0)throw RangeError('Invalid decorative rectangle');
       return {...child};
     });
@@ -299,15 +301,15 @@ export async function createPlainTextPagePreview(document:Document,options:{
             // Raster dimensions follow source pixels, not layout CSS pixels; fit does not distort the image.
             const canvas=document.createElement('canvas');
             const ratio=rect.width/rect.height;
-            let sw=bitmap.width,sh=bitmap.height;
-            if(child.fit==='cover'){if(sw/sh>ratio)sw=sh*ratio;else sh=sw/ratio;}
+            const source=imageSourceRect(bitmap.width,bitmap.height,rect.width,rect.height,child.fit,child.crop);
+            const sw=source.width,sh=source.height;
             const scale=Math.min(1,2048/Math.max(sw,sh));
             canvas.width=Math.max(1,Math.round(sw*scale));canvas.height=Math.max(1,Math.round(sh*scale));
             if((renderedImagePixels+=canvas.width*canvas.height)>64000000)throw RangeError('Rendered image pixel limit exceeded');
             const ctx=canvas.getContext('2d');if(!ctx)throw Error('Image canvas unavailable');
-            ctx.drawImage(bitmap,(bitmap.width-sw)/2,(bitmap.height-sh)/2,sw,sh,0,0,canvas.width,canvas.height);
+            ctx.drawImage(bitmap,source.x,source.y,sw,sh,0,0,canvas.width,canvas.height);
             canvas.style.cssText='all:initial;position:absolute;display:block;left:50%;top:50%;transform:translate(-50%,-50%);';
-            const boxRatio=child.fit==='cover'?ratio:bitmap.width/bitmap.height;
+            const boxRatio=child.fit==='cover'?ratio:sw/sh;
             const w=Math.min(rect.width,rect.height*boxRatio),h=Math.min(rect.height,rect.width/boxRatio);
             canvas.style.width=px(w)+'px';canvas.style.height=px(h)+'px';
             if(child.alt){canvas.setAttribute('role','img');canvas.setAttribute('aria-label',child.alt);}else canvas.setAttribute('aria-hidden','true');
