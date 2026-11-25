@@ -1,3 +1,7 @@
 # First development milestone (0.0.1)
 
 Implemented: integer micrometre length conversion, deterministic equal fill distribution, simple row/column positioning of premeasured rectangles, anchor offsets and overflow rejection. This is geometry only, not a document pagination engine. LayoutDocument/PagePlan, dynamic measurement, recursive tree, stack/canvas, break constraints, page faces, rendering and PDF remain unimplemented. API experimental. Local Node 22.16.0 / TypeScript 5.8.3: five unit tests passed on the working copy. Full conformance not run. npm installation/lockfile generation could not be performed due to network restrictions. Generate and commit package-lock.json and switch CI to npm ci before reproducible release. License remains undecided, no npm publication.
+
+## Second development milestone
+
+Added layoutTree, recursive row/column/stack/canvas and premeasured leaf geometry, fixed/auto/fill sizing, equal main-axis fill, cross-axis fill for fixed-main decorative leaves, anchored overlay and duplicate-ID/cycle/overflow rejection. Coordinates are parent-relative integer micrometres. This is a limited geometry PoC: no real text measurement or wrapping, percentage/min/max/padding/margin, rotation, complete stretch/align, pagination or rendering. Unsupported sizing combinations may be rejected; no publication use yet. Four new tests; 9/9 local tests passed (Node 22.16.0, TypeScript 5.8.3).
