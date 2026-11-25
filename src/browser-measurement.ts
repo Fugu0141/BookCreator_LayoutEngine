@@ -11,6 +11,8 @@ export interface InlineStyleRun {
   fontSize?:number;
   baseline?:'normal'|'super'|'sub';
 }
+/** One indivisible formula replaces a U+FFFC logical atom; host owns raw-source mapping. */
+export interface InlineMathAtom {start:number;formula:string}
 export interface PlainTextMeasureRequest {
   text:string;
   width:number; // integer micrometres
@@ -24,6 +26,8 @@ export interface PlainTextMeasureRequest {
   paragraphGap?:number;
   /** Typed line-preview styling; absent means the existing uniform text style. */
   inlineStyles?:readonly InlineStyleRun[];
+  /** Line preview only; exactly one atom for each U+FFFC placeholder. */
+  inlineMath?:readonly InlineMathAtom[];
 }
 export interface PlainTextMeasurement {
   width:number;
@@ -37,7 +41,7 @@ const positive=(n:number)=>Number.isSafeInteger(n)&&n>0;
 const px=(um:number)=>um*96/25400;
 export async function measurePlainText(document:Document,request:PlainTextMeasureRequest):Promise<PlainTextMeasurement>{
   if(!document.body||!document.defaultView||!document.fonts)throw new Error('A live browser document is required');
-  if(request.inlineStyles!==undefined)throw RangeError('Inline styles require line-based measurement');
+  if(request.inlineStyles!==undefined||request.inlineMath!==undefined||request.text?.includes('\uFFFC'))throw RangeError('Inline styles and math require line-based measurement');
   if(typeof request.text!=='string'||!request.text.length||request.text.length>100000||
     !positive(request.width)||request.width>2000000||!positive(request.fontSize)||request.fontSize>100000||
     !isPreviewFontFamily(request.fontFamily)||!isPreviewFontWeight(request.fontWeight)||!Number.isFinite(request.lineHeight)||request.lineHeight<1||request.lineHeight>4)
