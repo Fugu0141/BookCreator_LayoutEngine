@@ -4,7 +4,7 @@ A proposed independent TypeScript pagination and document layout engine for stru
 
 BookCreator Layout Engineは、宣言的な文書・部品データからページ割付、部品の伸縮、見開き、ページ番号、脚注等を処理する独立した組版ライブラリです。BookCreatorを最初の利用アプリとしますが、BCMや特定のGUIに必須依存しない中立入力を目指します。
 
-**Status / 状態:** Architecture draft only. No implementation, conformance results, or npm release yet.
+**Status:** Initial implementation 0.0.1: physical units, simple flow geometry and anchor offsets. Pagination and rendering remain pending.
 
 ## Goals / 目標
 
@@ -26,6 +26,19 @@ BookCreator Layout Engineは、宣言的な文書・部品データからペー�
 - [Implementation and fixture plan](docs/DEVELOPMENT.md)
 
 - [Cross-project development plan](https://github.com/Fugu0141/BookCreator/blob/main/docs/DEVELOPMENT_PLAN.md)
+
+
+## Local development / ローカル開発
+
+Node.js 22 or later and npm are required. Run from this repository:
+
+```sh
+npm install
+npm run typecheck
+npm test
+```
+
+TypeScript 5.8.3 is pinned. The lockfile is not yet generated; see [implementation status](docs/IMPLEMENTATION_STATUS.md). GitHub Actions is configured for initial checks; full conformance is pending.
 
 ## License / ライセンス
 
