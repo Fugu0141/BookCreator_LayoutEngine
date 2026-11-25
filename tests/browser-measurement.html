@@ -108,7 +108,7 @@ try{
     assert(rejected,'canvas overflow rejected');
   }
   // Four distinct source columns, two rows. Cover crops the central two columns.
-  const imageId='a'.repeat(64),png=new Blob([Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAAAQAAAACCAIAAADwyuo0AAAAGUlEQVR4nGP4z8DA8J+BgeH///8MTAxIAABd1gT+zHUtvAAAAABJRU5ErkJggg=='),c=>c.charCodeAt(0))],{type:'image/png'});
+  const imageId='a'.repeat(64),png=new Blob([Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAAAQAAAACCAIAAADwyuo0AAAAGUlEQVR4nGP4z8DA8J+BgeH/////mRiQAABryAX9SqklXwAAAABJRU5ErkJggg=='),c=>c.charCodeAt(0))],{type:'image/png'});
   const imageNode={id:'art',type:'image',assetId:imageId,width:20000,height:20000,fit:'contain',alt:'Sample illustration'};
   const picture={...component,direction:'column',children:[imageNode,{...imageNode,id:'cover',fit:'cover',alt:''},{id:'content',type:'content'}]};
   let resolves=0;
@@ -136,4 +136,5 @@ try{
   }
   result.textContent='PASS '+JSON.stringify({lineCount:lines.lines.length,previewPages:preview.plan.pages.length,lineRanges:preview.slices.map(s=>[s.textStart,s.textEnd])})+' '+JSON.stringify({wide,narrow,pages:plan.pages.length});
 }catch(error){result.textContent='FAIL '+String(error);}
+await fetch('/test-result',{method:'POST',body:result.textContent});
 </script></body></html>
