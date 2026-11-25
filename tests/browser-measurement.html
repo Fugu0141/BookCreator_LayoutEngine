@@ -83,6 +83,16 @@ try{
   assert(labeled.slices.length===1&&labeled.slices[0].sourceSlice.start===10&&labeled.slices[0].sourceSlice.end===26,'label does not change source slice');
   assert(labeled.element.shadowRoot.querySelector('[data-content-slot]').textContent==='Original heading','original heading unchanged');
   assert(parseFloat(fixed.style.top)<parseFloat(labeled.element.shadowRoot.querySelector('[data-content-slot]').style.top),'label flow order');
+  const nested={...component,children:[{id:'bar',type:'rect',width:2000,height:18000,color:'#315b86'},{id:'group',type:'group',width:'fill',direction:'column',gap:1000,padding:2000,background:'#eeeeee',children:labelComponent.children}]};
+  const nestedPreview=await createPlainTextPagePreview(document,{revision:'6',fingerprint:'nested',width:65000,height:150000,blocks:[makeText('sample','head','Original heading',{component:nested})]});
+  const group=nestedPreview.element.shadowRoot.querySelector('[data-component-group]');
+  assert(group.querySelector('[data-fixed-label]').textContent==='CHAPTER','nested label');
+  assert(group.querySelector('[data-content-slot]').textContent==='Original heading','nested content');
+  assert(parseFloat(group.style.left)>parseFloat(nestedPreview.element.shadowRoot.querySelector('[data-component-node=bar]').style.left),'nested group row position');
+  assert(parseFloat(group.querySelector('[data-content-slot]').style.top)>parseFloat(group.querySelector('[data-fixed-label]').style.top),'nested group column position');
+  assert(nestedPreview.plan.pages[0].fragments[0].rect.height>=22000,'nested height in plan');
+  let badGroup=false;try{await createPlainTextPagePreview(document,{revision:'6',fingerprint:'invalid',width:65000,height:150000,blocks:[makeText('sample','head','Heading',{component:{...nested,children:[...nested.children,{id:'extra',type:'rect',width:'fill',height:1000,color:'#123456'}]}})]});}catch{badGroup=true;}
+  assert(badGroup,'ambiguous flexible row rejected');
   result.textContent='PASS '+JSON.stringify({lineCount:lines.lines.length,previewPages:preview.plan.pages.length,lineRanges:preview.slices.map(s=>[s.textStart,s.textEnd])})+' '+JSON.stringify({wide,narrow,pages:plan.pages.length});
 }catch(error){result.textContent='FAIL '+String(error);}
 </script></body></html>
