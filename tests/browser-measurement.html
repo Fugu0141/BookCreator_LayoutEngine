@@ -107,6 +107,33 @@ try{
     let rejected=false;try{await createPlainTextPagePreview(document,{revision:'7',fingerprint:'bad-canvas',width:65000,height:150000,blocks:[makeText('sample','head','Heading',{component:bad})]});}catch{rejected=true;}
     assert(rejected,'canvas overflow rejected');
   }
+  // Four distinct source columns, two rows. Cover crops the central two columns.
+  const imageId='a'.repeat(64),png=new Blob([Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAAAQAAAACCAIAAADwyuo0AAAAGUlEQVR4nGP4z8DA8J+BgeH///8MTAxIAABd1gT+zHUtvAAAAABJRU5ErkJggg=='),c=>c.charCodeAt(0))],{type:'image/png'});
+  const imageNode={id:'art',type:'image',assetId:imageId,width:20000,height:20000,fit:'contain',alt:'Sample illustration'};
+  const picture={...component,direction:'column',children:[imageNode,{...imageNode,id:'cover',fit:'cover',alt:''},{id:'content',type:'content'}]};
+  let resolves=0;
+  const imageOptions={revision:'8',fingerprint:'image',width:65000,height:150000,blocks:[makeText('sample','head','Heading',{component:picture})],resolveImage:async id=>{assert(id===imageId,'resolve ID only');resolves++;return png;}};
+  const picturePreview=await createPlainTextPagePreview(document,imageOptions);
+  assert(resolves===1,'shared image decoded once');
+  const contain=picturePreview.element.shadowRoot.querySelector('[data-component-node=art] canvas'),cover=picturePreview.element.shadowRoot.querySelector('[data-component-node=cover] canvas');
+  assert(contain.width===4&&contain.height===2&&Math.abs(parseFloat(contain.style.height)-10000*96/25400)<.02,'contain preserves ratio and centers');
+  assert(cover.width===2&&cover.height===2&&Math.abs(parseFloat(cover.style.height)-20000*96/25400)<.02,'cover uses full box');
+  const pixels=cover.getContext('2d').getImageData(0,0,2,1).data;
+  assert(pixels[1]===255&&pixels[6]===255&&pixels[0]===0&&pixels[4]===0,'cover crops source without distortion');
+  assert(contain.getAttribute('aria-label')==='Sample illustration'&&cover.getAttribute('aria-hidden')==='true','image semantics');
+  assert(picturePreview.plan.pages[0].fragments[0].rect.height>44000&&picturePreview.slices[0].textEnd===7,'image geometry included without extra source slices');
+  const inCanvas={...canvas,children:[{...canvas.children[0],children:[{...imageNode,x:1000,y:1000},...canvas.children[0].children.slice(1)]}]};
+  const imageCanvas=await createPlainTextPagePreview(document,{...imageOptions,blocks:[makeText('sample','head','Heading',{component:inCanvas})]});
+  assert(imageCanvas.element.shadowRoot.querySelector('[data-component-canvas] > [data-component-image] canvas')!==null,'image in Canvas');
+  for(const invalid of [
+    {...imageOptions,resolveImage:undefined},
+    {...imageOptions,resolveImage:async()=>new Blob(['bad'],{type:'image/png'})},
+    {...imageOptions,blocks:[makeText('sample','head','Heading',{component:{...picture,children:[{...imageNode,assetId:'https://example.com/a.png'},{id:'content',type:'content'}]}})]},
+    {...imageOptions,blocks:[makeText('sample','head','Heading',{component:{...picture,children:[{...imageNode,height:0},{id:'content',type:'content'}]}})]}
+  ]){
+    let failed=false;try{await createPlainTextPagePreview(document,invalid);}catch{failed=true;}
+    assert(failed,'invalid image resource or geometry rejected');
+  }
   result.textContent='PASS '+JSON.stringify({lineCount:lines.lines.length,previewPages:preview.plan.pages.length,lineRanges:preview.slices.map(s=>[s.textStart,s.textEnd])})+' '+JSON.stringify({wide,narrow,pages:plan.pages.length});
 }catch(error){result.textContent='FAIL '+String(error);}
 </script></body></html>
