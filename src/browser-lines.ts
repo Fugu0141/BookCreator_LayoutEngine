@@ -77,40 +77,78 @@ export async function measurePlainTextLines(document:Document,request:PlainTextM
 
 // Restricted component geometry: flat flow with exactly one semantic content slot.
 // Decorative rectangles never contribute source text. All lengths are integer micrometres.
+export type PreviewComponentChild =
+  | {id:string;type:'content'}
+  | {id:string;type:'rect';width:number|'fill';height:number;color:string}
+  | {id:string;type:'label';width:number|'fill';text:string;fontFamily:PlainTextMeasureRequest['fontFamily'];fontWeight:number;fontSize:number;lineHeight:number;color:string}
+  | {id:string;type:'group';width:number|'fill';direction:'row'|'column';gap:number;padding:number;background:string;children:readonly PreviewComponentChild[]};
 export interface PreviewComponent {
   direction:'row'|'column'; gap:number; padding:number; background:string; textColor:string;
-  children:readonly ({id:string;type:'content'}|{id:string;type:'rect';width:number|'fill';height:number;color:string}|{id:string;type:'label';width:number|'fill';text:string;fontFamily:PlainTextMeasureRequest['fontFamily'];fontWeight:number;fontSize:number;lineHeight:number;color:string})[];
+  children:readonly PreviewComponentChild[];
 }
 type ComponentPlacement=import('./tree.js').PlacedNode;
+type Group=Pick<PreviewComponent,'direction'|'gap'|'padding'|'background'|'children'>;
 const isColor=(v:unknown):v is string=>typeof v==='string'&&/^#[0-9a-fA-F]{6}$/.test(v);
-function checkComponent(c:PreviewComponent,width:number){
-  const length=(n:number)=>Number.isSafeInteger(n)&&n>=0&&n<=100000;
-  if(!c||!['row','column'].includes(c.direction)||!length(c.gap)||!length(c.padding)||!isColor(c.background)||!isColor(c.textColor)||!Array.isArray(c.children)||c.children.length<1||c.children.length>8)
-    throw RangeError('Invalid preview component');
-  const ids=new Set<string>();let slots=0,occupied=2*c.padding+(c.direction==='row'?c.gap*(c.children.length-1):0);
-  for(const child of c.children){
-    if(!child||!/^[-A-Za-z0-9_]{1,64}$/.test(child.id)||child.id==='root'||ids.has(child.id))throw Error('Invalid component child ID');
-    ids.add(child.id);
-    if(child.type==='content'){slots++;continue;}
-    if(child.type==='label'){
-      if(typeof child.text!=='string'||!child.text.length||child.text.length>256||!isColor(child.color)||!isPreviewFontFamily(child.fontFamily)||!isPreviewFontWeight(child.fontWeight)||!positive(child.fontSize)||child.fontSize>30000||!Number.isFinite(child.lineHeight)||child.lineHeight<1.25||child.lineHeight>4)throw RangeError('Invalid component label');
-    }else if(child.type!=='rect'||!isColor(child.color)||!length(child.height)||child.height===0)throw RangeError('Invalid decorative rectangle');
-    if(
-      !(child.width==='fill'?c.direction==='column':length(child.width)&&child.width>0))throw RangeError('Invalid decorative rectangle');
-    if(c.direction==='row')occupied+=child.width as number;
-    else if(child.width!=='fill'&&child.width>width-2*c.padding)throw RangeError('Rectangle exceeds component width');
+const length=(n:number)=>Number.isSafeInteger(n)&&n>=0&&n<=100000;
+// Validate and copy before await; never recursively clone an unbounded/cyclic caller tree.
+function snapshotComponent(c:PreviewComponent):PreviewComponent{
+  const ids=new Set<string>();let slots=0,count=0;
+  function group(g:Group,depth:number):PreviewComponentChild[]{
+    if(depth>4||!g||!['row','column'].includes(g.direction)||!length(g.gap)||!length(g.padding)||!isColor(g.background)||!Array.isArray(g.children)||g.children.length<1||g.children.length>8)throw RangeError('Invalid component group');
+    return g.children.map(child=>{
+      if(++count>32||!child||!/^[-A-Za-z0-9_]{1,64}$/.test(child.id)||child.id==='root'||ids.has(child.id))throw Error('Invalid component child ID or limit');
+      ids.add(child.id);
+      if(child.type==='content'){slots++;return {...child};}
+      if(!(child.width==='fill'||length(child.width)&&child.width>0))throw RangeError('Invalid component width');
+      if(child.type==='group')return {...child,children:group(child,depth+1)};
+      if(child.type==='label'){
+        if(typeof child.text!=='string'||!child.text.length||child.text.length>256||!isColor(child.color)||!isPreviewFontFamily(child.fontFamily)||!isPreviewFontWeight(child.fontWeight)||!positive(child.fontSize)||child.fontSize>30000||!Number.isFinite(child.lineHeight)||child.lineHeight<1.25||child.lineHeight>4)throw RangeError('Invalid component label');
+      }else if(child.type!=='rect'||!isColor(child.color)||!length(child.height)||child.height===0)throw RangeError('Invalid decorative rectangle');
+      return {...child};
+    });
   }
-  if(slots!==1||occupied>=width)throw RangeError('Component needs one fitting content slot');
-  return width-occupied;
+  if(!c||!isColor(c.textColor))throw RangeError('Invalid component color');
+  const children=group(c,0);
+  if(slots!==1)throw RangeError('Component requires exactly one content slot');
+  return {...c,children};
 }
-function placeComponent(c:PreviewComponent,outerWidth:number,measurement:MeasuredTextLines,labels:Map<string,MeasuredTextLines>,capHeight:number):ComponentPlacement{
-  const innerWidth=outerWidth-2*c.padding;
-  const textHeight=measurement.lines.reduce((n,l)=>n+l.height,0);
-  return layoutTree({id:'root',type:c.direction,width:innerWidth,height:'auto',gap:c.gap,
-    children:c.children.map(child=>child.type==='content'?
-      {id:child.id,type:'leaf',width:measurement.request.width,height:textHeight}:
-      {id:child.id,type:'leaf',width:child.width,height:child.type==='label'?labels.get(child.id)!.lines.reduce((n,l)=>n+l.height,0):child.height})},
-    {width:innerWidth,height:Math.max(0,capHeight-2*c.padding)});
+function resolveComponentWidths(c:PreviewComponent,width:number){
+  const widths=new Map<string,number>();let contentWidth=0;
+  function visit(g:Group,outer:number){
+    const inner=outer-2*g.padding;
+    if(inner<=0)throw RangeError('Component padding exceeds width');
+    const flexible=(n:PreviewComponentChild)=>n.type==='content'||n.width==='fill';
+    const fixed=g.children.reduce((sum,n)=>sum+(n.type==='content'||n.width==='fill'?0:n.width),0);
+    const remaining=inner-fixed-g.gap*(g.children.length-1);
+    const flexCount=g.children.filter(flexible).length;
+    if(g.direction==='row'&&(flexCount>1||remaining<0||(flexCount===1&&remaining===0)))throw RangeError('Row requires at most one fitting flexible child');
+    for(const n of g.children){
+      const w=flexible(n)?(g.direction==='row'?remaining:inner):(n as Exclude<PreviewComponentChild,{type:'content'}>).width as number;
+      if(w<=0||w>inner)throw RangeError('Component child exceeds width');
+      widths.set(n.id,w);
+      if(n.type==='content')contentWidth=w;
+      if(n.type==='group')visit(n,w);
+    }
+  }
+  visit(c,width);return {widths,contentWidth};
+}
+function placeComponent(c:PreviewComponent,outerWidth:number,measurement:MeasuredTextLines,labels:Map<string,MeasuredTextLines>,widths:Map<string,number>,capHeight:number):ComponentPlacement{
+  const textHeight=(m:MeasuredTextLines)=>m.lines.reduce((n,l)=>n+l.height,0);
+  function place(g:Group,id:string,outer:number,cap:number):ComponentPlacement{
+    const inner=outer-2*g.padding,innerCap=cap-2*g.padding;
+    if(innerCap<=0)throw RangeError('Component padding exceeds height');
+    const kids=g.children.map(n=>{
+      const w=widths.get(n.id)!;
+      if(n.type==='group')return place(n,n.id,w,innerCap);
+      const height=n.type==='content'?textHeight(measurement):n.type==='label'?textHeight(labels.get(n.id)!):n.height;
+      return {id:n.id,rect:{x:0,y:0,width:w,height},children:[]};
+    });
+    const flow=layoutTree({id:'root',type:g.direction,width:inner,height:'auto',gap:g.gap,
+      children:kids.map(n=>({id:n.id,type:'leaf',width:n.rect.width,height:n.rect.height}))},{width:inner,height:innerCap});
+    return {id,rect:{x:0,y:0,width:outer,height:flow.rect.height+2*g.padding},
+      children:kids.map((n,i)=>({...n,rect:{...flow.children[i].rect,x:flow.children[i].rect.x+g.padding,y:flow.children[i].rect.y+g.padding}}))};
+  }
+  return place(c,'root',outerWidth,capHeight);
 }
 
 export interface PreviewTextBlock {
@@ -149,7 +187,7 @@ export async function createPlainTextPagePreview(document:Document,options:{
     allBlocks.length<1||allBlocks.length>128||allBlocks.reduce((n,b)=>n+(isBreak(b)?0:b.request.text.length),0)>50000)
     throw RangeError('Invalid or oversized preview');
   // Snapshot caller-owned values before the first await.
-  const sections=sourceSections.map(s=>({...s,blocks:s.blocks.map(b=>({...b,origin:{...b.origin,range:b.origin.range?{...b.origin.range}:undefined},...(isBreak(b)?{}:{request:{...b.request},...(b.component?{component:{...b.component,children:b.component.children.map(c=>({...c}))}}:{})})}))}));
+  const sections=sourceSections.map(s=>({...s,blocks:s.blocks.map(b=>({...b,origin:{...b.origin,range:b.origin.range?{...b.origin.range}:undefined},...(isBreak(b)?{}:{request:{...b.request},...(b.component?{component:snapshotComponent(b.component)}:{})})}))}));
   const {revision,fingerprint,width,height}=options;
   const byKey=new Map<string,{block:PreviewTextBlock;measurement:MeasuredTextLines;labels:Map<string,MeasuredTextLines>;placement?:ComponentPlacement}>();
   const key=(o:Origin)=>JSON.stringify([o.documentId,o.blockKey]);
@@ -164,17 +202,20 @@ export async function createPlainTextPagePreview(document:Document,options:{
       b.sourceTextStart<b.origin.range.start||!Number.isSafeInteger(b.sourceTextStart+b.request.text.length)||
       b.sourceTextStart+b.request.text.length>b.origin.range.end))throw Error('Invalid exact source mapping');
     if(b.component&&b.splitPolicy!=='strict')throw Error('Components require strict pagination');
-    const textWidth=b.component?checkComponent(b.component,b.request.width):b.request.width;
+    const geometry=b.component?resolveComponentWidths(b.component,b.request.width):undefined;
+    const textWidth=geometry?.contentWidth??b.request.width;
     const measurement=await measurePlainTextLines(document,{...b.request,width:textWidth});
     const labels=new Map<string,MeasuredTextLines>();
-    if(b.component)for(const child of b.component.children){
+    async function measureLabels(children:readonly PreviewComponentChild[]){for(const child of children){
+      if(child.type==='group'){await measureLabels(child.children);continue;}
       if(child.type!=='label')continue;
       totalLabelText+=child.text.length;if(totalLabelText>50000)throw RangeError('Component label text limit exceeded');
-      labels.set(child.id,await measurePlainTextLines(document,{text:child.text,width:child.width==='fill'?b.request.width-2*b.component.padding:child.width,fontFamily:child.fontFamily,fontWeight:child.fontWeight,fontSize:child.fontSize,lineHeight:child.lineHeight}));
-    }
-    const placement=b.component?placeComponent(b.component,b.request.width,measurement,labels,height):undefined;
+      labels.set(child.id,await measurePlainTextLines(document,{text:child.text,width:geometry!.widths.get(child.id)!,fontFamily:child.fontFamily,fontWeight:child.fontWeight,fontSize:child.fontSize,lineHeight:child.lineHeight}));
+    }}
+    if(b.component)await measureLabels(b.component.children);
+    const placement=b.component?placeComponent(b.component,b.request.width,measurement,labels,geometry!.widths,height):undefined;
     byKey.set(k,{block:b,measurement,labels,placement});
-    const heights=placement?[placement.rect.height+2*b.component!.padding]:measurement.lines.map(l=>l.height);
+    const heights=placement?[placement.rect.height]:measurement.lines.map(l=>l.height);
     blocks.push({kind:'block' as const,origin:b.origin,width:b.request.width,unitHeights:heights,splitPolicy:b.splitPolicy,startPosition:b.startPosition,startPositionSource:b.startPositionSource});
   }
     measuredSections.push({id:section.id,startOn:section.startOn,blocks});
@@ -207,12 +248,14 @@ export async function createPlainTextPagePreview(document:Document,options:{
       let textParent=fragment;
       if(placement&&block.component){
         const c=block.component;fragment.dataset.component='true';fragment.style.background=c.background;
-        for(const child of c.children){
-          const rect=placement.children.find(n=>n.id===child.id)!.rect;
+        function renderChildren(children:readonly PreviewComponentChild[],placed:ComponentPlacement,parent:HTMLElement){
+        for(const child of children){
+          const node=placed.children.find(n=>n.id===child.id)!,rect=node.rect;
           const el=document.createElement('div');el.style.cssText='all:initial;position:absolute;display:block;box-sizing:border-box;';
-          Object.assign(el.style,{left:px(rect.x+c.padding)+'px',top:px(rect.y+c.padding)+'px',width:px(rect.width)+'px',height:px(rect.height)+'px'});
+          Object.assign(el.style,{left:px(rect.x)+'px',top:px(rect.y)+'px',width:px(rect.width)+'px',height:px(rect.height)+'px'});
           el.dataset.componentNode=child.id;
           if(child.type==='rect'){el.style.background=child.color;el.setAttribute('aria-hidden','true');}
+          else if(child.type==='group'){el.dataset.componentGroup='true';el.style.background=child.background;renderChildren(child.children,node,el);}
           else if(child.type==='label'){
             el.dataset.fixedLabel='true';
             const measured=labels.get(child.id)!;
@@ -220,8 +263,9 @@ export async function createPlainTextPagePreview(document:Document,options:{
               const item=document.createElement('div');styleText(item,measured.request,false);item.style.height=px(line.height)+'px';item.style.color=child.color;item.textContent=measured.request.text.slice(line.start,line.end);el.append(item);
             }
           }else{textParent=el;el.dataset.contentSlot='true';}
-          fragment.append(el);
-        }
+          parent.append(el);
+        }}
+        renderChildren(c.children,placement,fragment);
       }
       for(const line of lineUnits){
         const item=document.createElement('div');styleText(item,measurement.request,false);item.style.height=px(line.height)+'px';

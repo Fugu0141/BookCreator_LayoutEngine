@@ -37,3 +37,7 @@ A plain text block may carry a neutral restricted row/column component: exactly 
 ## M04 — fixed component labels
 
 Strict flat row/column preview components accept measured fixed text labels (bounded text, physical width, independent registered font, weight, size and line height, hex color). Labels participate in geometry and pagination but never alter semantic content-slot source slices. No nested structures or publication readiness. Browser verification pending.
+
+## M04 — recursive flow component groups
+
+Nested row/column groups (depth ≤4, 32 total children, 8 per group), fixed/fill widths, one flexible child per row, physical padding/gap/background. Resolve widths top-down, measure leaves, place groups bottom-up with layoutTree, render recursively from the resulting geometry. Exactly one source slot across the tree. Reject overflow and ambiguous fill; strict pagination only. Browser tests pending.
