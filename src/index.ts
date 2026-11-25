@@ -36,3 +36,4 @@ export function anchoredOffset(parent: number, child: number, anchor: 'start'|'c
   if(!Number.isSafeInteger(result)) throw new RangeError('Invalid coordinate');
   return result;
 }
+export {layoutTree, type TreeNode, type PlacedNode, type Dimension} from './tree.js';
