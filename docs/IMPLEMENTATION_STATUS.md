@@ -21,3 +21,7 @@ Added measurePlainText for actual DOM height/wrapping at a specified physical wi
 ## M04 continuation — actual line measurement and frozen HTML preview
 
 Added measurePlainTextLines and createPlainTextPagePreview for a restricted plain-text subset: actual browser grapheme geometry, UTF-16 logical ranges, measured line units, multi-page plan and fixed-position DOM. No newline/control/format characters; ambiguous geometry and overflow rejected. Origin is preserved but logical offsets are not presumed raw Markdown offsets. No font fingerprint, bidi/shaping fidelity guarantee, resource measurement, orphan/widow rules, renderer equivalence or PDF. Preview is never publication-ready. Extended browser smoke test; CI pending.
+
+## M04 — registered font faces and weights
+
+Browser measurement and frozen HTML use identical font family/weight settings. Supports generic families and host-registered opaque BCFont_ aliases, rejects arbitrary CSS and unavailable registered faces, waits for FontFaceSet.load and disables synthetic styling. The host owns actual font files, registration and fingerprint. This does not prove glyph coverage or exact face/weight selection; no font import, embedding or publication readiness. Browser tests pending.

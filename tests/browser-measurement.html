@@ -44,6 +44,15 @@ try{
   assert(rejected,'unsupported line contexts refused');
   preview.element.remove();
   assert(document.body.children.length===before,'measurement cleanup');
+  const weighted=await measurePlainTextLines(document,{...request,fontFamily:'monospace',fontWeight:700});
+  assert(weighted.request.fontWeight===700,'weight preserved');
+  const weightedPreview=await createPlainTextPagePreview(document,{revision:'2',fingerprint:'font-weight',width:65000,height:200000,blocks:[{origin:{documentId:'demo',revision:'2',blockKey:'weight'},request:{...request,fontFamily:'monospace',fontWeight:700},splitPolicy:'allow'}]});
+  assert(weightedPreview.element.shadowRoot.querySelector('[data-start]').style.fontWeight==='700','rendered weight matches measurement');
+  for(const patch of [{fontFamily:'BCFont_missing'},{fontFamily:'serif; color:red'},{fontWeight:901}]){
+    let failed=false;try{await measurePlainTextLines(document,{...request,...patch});}catch{failed=true;}
+    assert(failed,'missing registered font or invalid settings must fail');
+  }
+  assert(document.body.children.length===before,'font failure cleanup');
   result.textContent='PASS '+JSON.stringify({lineCount:lines.lines.length,previewPages:preview.plan.pages.length,lineRanges:preview.slices.map(s=>[s.textStart,s.textEnd])})+' '+JSON.stringify({wide,narrow,pages:plan.pages.length});
 }catch(error){result.textContent='FAIL '+String(error);}
 </script></body></html>
