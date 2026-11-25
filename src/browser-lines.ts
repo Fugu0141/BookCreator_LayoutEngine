@@ -74,6 +74,9 @@ export async function measurePlainTextLines(document:Document,request:PlainTextM
 }
 export interface PreviewTextBlock {
   origin:Origin; request:PlainTextMeasureRequest; splitPolicy:SplitPolicy;
+  startPosition?:'page-top'; startPositionSource?:'component'|'explicit';
+  // The host must verify the logical text is an exact raw source substring before setting this.
+  sourceTextStart?:number;
 }
 export interface PreviewTextSlice {
   pageIndex:number; origin:Origin; textStart:number; textEnd:number;
@@ -94,14 +97,19 @@ export async function createPlainTextPagePreview(document:Document,options:{
   if(!positive(options.width)||!positive(options.height)||options.width>2000000||options.height>2000000||
     options.blocks.length<1||options.blocks.length>128||options.blocks.reduce((n,b)=>n+b.request.text.length,0)>50000)
     throw RangeError('Invalid or oversized preview');
+  // Snapshot caller-owned values before the first await.
+  options={...options,blocks:options.blocks.map(b=>({...b,origin:{...b.origin,range:b.origin.range?{...b.origin.range}:undefined},request:{...b.request}}))};
   const byKey=new Map<string,{block:PreviewTextBlock;measurement:MeasuredTextLines}>();
   const key=(o:Origin)=>JSON.stringify([o.documentId,o.blockKey]);
   const blocks=[];
   for(const b of options.blocks){
     const k=key(b.origin);if(byKey.has(k)||b.request.width>options.width)throw Error('Invalid or duplicate preview block');
+    if(b.sourceTextStart!==undefined&&(!b.origin.range||!Number.isSafeInteger(b.sourceTextStart)||
+      b.sourceTextStart<b.origin.range.start||!Number.isSafeInteger(b.sourceTextStart+b.request.text.length)||
+      b.sourceTextStart+b.request.text.length>b.origin.range.end))throw Error('Invalid exact source mapping');
     const measurement=await measurePlainTextLines(document,b.request);
     byKey.set(k,{block:b,measurement});
-    blocks.push({kind:'block' as const,origin:b.origin,width:b.request.width,unitHeights:measurement.lines.map(l=>l.height),splitPolicy:b.splitPolicy});
+    blocks.push({kind:'block' as const,origin:b.origin,width:b.request.width,unitHeights:measurement.lines.map(l=>l.height),splitPolicy:b.splitPolicy,startPosition:b.startPosition,startPositionSource:b.startPositionSource});
   }
   const plan=paginateMeasured({schemaVersion:1,revision:options.revision,fingerprint:options.fingerprint,content:{width:options.width,height:options.height},sections:[{id:'preview',startOn:'page',blocks}]});
   if(plan.completeness!=='full')throw Error('Cannot render partial preview: '+plan.diagnostics.map(d=>d.code).join(', '));
@@ -117,15 +125,16 @@ export async function createPlainTextPagePreview(document:Document,options:{
       const {block,measurement}=entry, lineUnits=measurement.lines.slice(f.unitStart,f.unitEnd);
       if(!lineUnits.length)throw Error('Missing preview lines');
       const textStart=lineUnits[0].start,textEnd=lineUnits.at(-1)!.end;
-      // Origin may refer to markup, so the default is logical text offsets only.
-      slices.push({pageIndex:p.index,origin:f.origin,textStart,textEnd});
+      // Origin may refer to markup; only a caller-verified contiguous mapping enables raw source ranges.
+      const sourceSlice=block.sourceTextStart===undefined?undefined:{start:block.sourceTextStart+textStart,end:block.sourceTextStart+textEnd};
+      slices.push({pageIndex:p.index,origin:f.origin,textStart,textEnd,...(sourceSlice?{sourceSlice}:{})});
       const fragment=document.createElement('div');fragment.dataset.block=f.origin.blockKey;
       fragment.style.cssText='all:initial;display:block;position:absolute;box-sizing:border-box;';
       Object.assign(fragment.style,{left:px(f.rect.x)+'px',top:px(f.rect.y)+'px',width:px(f.rect.width)+'px',height:px(f.rect.height)+'px'});
       for(const line of lineUnits){
-        const item=document.createElement('div');styleText(item,block.request,false);item.style.height=px(line.height)+'px';
+        const item=document.createElement('div');styleText(item,measurement.request,false);item.style.height=px(line.height)+'px';
         item.dataset.start=String(line.start);item.dataset.end=String(line.end);
-        item.textContent=block.request.text.slice(line.start,line.end);fragment.append(item);
+        item.textContent=measurement.request.text.slice(line.start,line.end);fragment.append(item);
       }
       page.append(fragment);
     }

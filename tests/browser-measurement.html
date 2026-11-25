@@ -28,7 +28,8 @@ try{
   const boundaries=new Set([...new Intl.Segmenter(undefined,{granularity:'grapheme'}).segment(original)].map(g=>g.index));boundaries.add(original.length);
   assert(lines.lines.every(l=>boundaries.has(l.start)&&boundaries.has(l.end)),'grapheme boundaries');
   assert(lines.lines.map(l=>original.slice(l.start,l.end)).join('')===original,'lossless logical text');
-  const preview=await createPlainTextPagePreview(document,{revision:'1',fingerprint:'line-preview',width:65000,height:lines.lines[0].height*3,blocks:[{origin:{documentId:'demo',revision:'1',blockKey:'line-block',range:{start:100,end:100+original.length}},request,splitPolicy:'allow'}]});
+  const preview=await createPlainTextPagePreview(document,{revision:'1',fingerprint:'line-preview',width:65000,height:lines.lines[0].height*3,blocks:[{origin:{documentId:'demo',revision:'1',blockKey:'line-block',range:{start:100,end:100+original.length}},request,splitPolicy:'allow',sourceTextStart:100}]});
+  assert(preview.slices.every(s=>s.sourceSlice.start===100+s.textStart&&s.sourceSlice.end===100+s.textEnd),'explicit contiguous source mapping');
   document.body.append(preview.element);
   const rendered=[...preview.element.shadowRoot.querySelectorAll('[data-start]')];
   assert(rendered.map(x=>x.textContent).join('')===original,'preview text order');
