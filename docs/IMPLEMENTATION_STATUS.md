@@ -17,3 +17,7 @@ Added inspectMeasuredInput for strict JSON shape checks and a read-only fixture 
 ## M04 — browser text measurement PoC
 
 Added measurePlainText for actual DOM height/wrapping at a specified physical width, generic font family and line height, after document fonts readiness. Literal text only, isolated shadow tree, cleanup, bounded input, whole-block only. A real Chromium smoke test compares narrow/wide wrapping, conversion, cleanup and pagination using measured heights. No line-break/source-slice mapping, font fingerprint, image measurement, app UI, rendering or PDF yet; never publication-ready. New browser CI pending verification.
+
+## M04 continuation — actual line measurement and frozen HTML preview
+
+Added measurePlainTextLines and createPlainTextPagePreview for a restricted plain-text subset: actual browser grapheme geometry, UTF-16 logical ranges, measured line units, multi-page plan and fixed-position DOM. No newline/control/format characters; ambiguous geometry and overflow rejected. Origin is preserved but logical offsets are not presumed raw Markdown offsets. No font fingerprint, bidi/shaping fidelity guarantee, resource measurement, orphan/widow rules, renderer equivalence or PDF. Preview is never publication-ready. Extended browser smoke test; CI pending.

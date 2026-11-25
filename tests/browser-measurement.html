@@ -2,7 +2,7 @@
 <html lang="en"><meta charset="utf-8"><title>Browser measurement smoke test</title>
 <body><pre id="result">RUNNING</pre>
 <script type="module">
-import {measurePlainText,paginateMeasured} from '/dist/index.js';
+import {measurePlainText,paginateMeasured,measurePlainTextLines,createPlainTextPagePreview} from '/dist/index.js';
 const result=document.querySelector('#result');
 const assert=(condition,message)=>{if(!condition)throw Error(message);};
 try{
@@ -21,6 +21,28 @@ try{
   const makeBlock=(id)=>({kind:'block',origin:{documentId:'demo',revision:'1',blockKey:id},width:wide.width,unitHeights:[wide.height],splitPolicy:'strict'});
   const plan=paginateMeasured({schemaVersion:1,revision:'1',fingerprint:'browser-smoke',content:{width:wide.width,height:wide.height},sections:[{id:'demo',startOn:'page',blocks:[makeBlock('a'),makeBlock('b')]}]});
   assert(plan.completeness==='full'&&plan.pages.length===2&&!plan.publicationReady,'measured blocks paginate');
-  result.textContent='PASS '+JSON.stringify({wide,narrow,pages:plan.pages.length});
+  const original='日本語の原稿を実測します。 Café and English text with spaces. '.repeat(5);
+  const request={text:original,width:65000,fontSize:4200,fontFamily:'sans-serif',lineHeight:1.8};
+  const lines=await measurePlainTextLines(document,request);
+  assert(lines.lines.length>3,'multiple browser lines');
+  const boundaries=new Set([...new Intl.Segmenter(undefined,{granularity:'grapheme'}).segment(original)].map(g=>g.index));boundaries.add(original.length);
+  assert(lines.lines.every(l=>boundaries.has(l.start)&&boundaries.has(l.end)),'grapheme boundaries');
+  assert(lines.lines.map(l=>original.slice(l.start,l.end)).join('')===original,'lossless logical text');
+  const preview=await createPlainTextPagePreview(document,{revision:'1',fingerprint:'line-preview',width:65000,height:lines.lines[0].height*3,blocks:[{origin:{documentId:'demo',revision:'1',blockKey:'line-block',range:{start:100,end:100+original.length}},request,splitPolicy:'allow'}]});
+  document.body.append(preview.element);
+  const rendered=[...preview.element.shadowRoot.querySelectorAll('[data-start]')];
+  assert(rendered.map(x=>x.textContent).join('')===original,'preview text order');
+  assert(preview.plan.pages.length>1&&preview.slices.map(s=>original.slice(s.textStart,s.textEnd)).join('')===original,'split across pages with exact logical offsets');
+  for(const fragment of preview.element.shadowRoot.querySelectorAll('[data-block]')){
+    const r=fragment.getBoundingClientRect(),p=fragment.parentElement.getBoundingClientRect();
+    assert(r.bottom<=p.bottom+0.1&&r.right<=p.right+0.1,'fragment bounds');
+    for(const line of fragment.children)assert(line.scrollWidth<=line.clientWidth+1,'frozen line fits');
+  }
+  assert(preview.publicationReady===false&&!preview.plan.publicationReady,'preview cannot authorize publication');
+  let rejected=false;try{await measurePlainTextLines(document,{...request,text:'a\nb'});}catch{rejected=true;}
+  assert(rejected,'unsupported line contexts refused');
+  preview.element.remove();
+  assert(document.body.children.length===before,'measurement cleanup');
+  result.textContent='PASS '+JSON.stringify({lineCount:lines.lines.length,previewPages:preview.plan.pages.length,lineRanges:preview.slices.map(s=>[s.textStart,s.textEnd])})+' '+JSON.stringify({wide,narrow,pages:plan.pages.length});
 }catch(error){result.textContent='FAIL '+String(error);}
 </script></body></html>
