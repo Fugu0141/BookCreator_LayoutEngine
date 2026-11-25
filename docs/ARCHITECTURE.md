@@ -144,13 +144,12 @@ Chromium/HTML/CSS/SVGを最初の計測・描画候補とするが、完全一�
 
 ## 7. 詳細設計・PoCの順番
 
-1. LAYOUT_MODEL: 中立入力、部品の型とサイズ意味論、計測契約、PagePlan。
-2. PAGINATION: 改ページ・分割アルゴリズム、制約優先順位、断片とorigin。
-3. PUBLICATION: 内頁面・固定見開き・番号区間・電子/両面印刷投影。
-4. RENDERING: HTML描画・計測アダプタ、PDFの再現性検証。
-5. POC_PLAN: 独立fixtureとBCM/BookCreator統合fixture、比較条件、合格判定。
+- [LAYOUT_MODEL.md](LAYOUT_MODEL.md): 中立入力、部品の型とサイズ意味論、計測契約、PagePlan。
+- [PAGINATION.md](PAGINATION.md): 改ページ・分割アルゴリズム、制約優先順位、断片とorigin。
+- [PUBLICATION_RENDERING.md](PUBLICATION_RENDERING.md): 内頁面・固定見開き・番号区間・電子/両面印刷投影、計測・描画。
+- [DEVELOPMENT.md](DEVELOPMENT.md): 独立fixtureとBCM/BookCreator統合fixture、実装順・合格判定。
 
-上記は予定ファイルであり未作成。各契約はBookCreatorの部品仕様と整合させ、同一の意味を複数リポジトリで独立に定義しない。PoCの結果により未達機能を記録し、利用者に必要な判断を求める。
+詳細設計の初稿を作成済み。各契約はBookCreatorの部品仕様と整合させ、同一の意味を複数リポジトリで独立に定義しない。PoCの結果により未達機能を記録し、利用者に必要な判断を求める。
 
 | ID | 最小検証 | 合格条件（提案） |
 | --- | --- | --- |
