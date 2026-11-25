@@ -155,6 +155,45 @@ try{
   }
   let unsupportedSplit=false;try{await createPlainTextPagePreview(document,{revision:'9',fingerprint:'bad-frame',width:65000,height:35000,blocks:[{...makeText('p','bad','Text',{component}),splitPolicy:'allow'}]});}catch{unsupportedSplit=true;}
   assert(unsupportedSplit,'complex components remain strict');
+  // Primary and named slots have independent fonts, wrapping and contiguous source ranges.
+  const multiple={...component,direction:'column',padding:2000,gap:1000,children:[
+    {id:'label',type:'label',width:'fill',text:'QUESTION',fontFamily:'monospace',fontWeight:400,fontSize:3000,lineHeight:1.5,color:'#224466'},
+    {id:'question',type:'content'},
+    {id:'details',type:'group',direction:'column',width:'fill',padding:1000,gap:1000,background:'#eeeeee',children:[
+      {id:'hint',type:'slot',name:'hint',width:'fill',color:'#225533'},
+      {id:'answer',type:'slot',name:'answer',width:35000,color:'#662244'}
+    ]}
+  ]};
+  const question='Question text',hint='Hint text that wraps with a narrower available width. '.repeat(2),answer='Answer text';
+  const slotRequest={fontFamily:'monospace',fontWeight:700,fontSize:3500,lineHeight:1.5};
+  const multiBlock={...makeText('sample','multi',question,{component:multiple}),origin:{documentId:'sample',revision:'1',blockKey:'multi',range:{start:0,end:500}},sourceTextStart:10,namedSlots:[
+    {name:'hint',request:{...slotRequest,text:hint},sourceTextStart:40},
+    {name:'answer',request:{...slotRequest,text:answer,fontFamily:'serif',fontSize:4500},sourceTextStart:200}
+  ]};
+  const multiOptions={revision:'10',fingerprint:'multi',width:65000,height:150000,blocks:[multiBlock]};
+  const multi=await createPlainTextPagePreview(document,multiOptions);
+  const multiRoot=multi.element.shadowRoot,q=multiRoot.querySelector('[data-content-slot]'),h=multiRoot.querySelector('[data-named-slot=hint]'),aSlot=multiRoot.querySelector('[data-named-slot=answer]');
+  assert(q.textContent===question&&h.textContent===hint&&aSlot.textContent===answer,'all semantic slot texts preserved independently');
+  assert(h.children.length>1&&h.firstElementChild.style.fontFamily==='monospace'&&aSlot.firstElementChild.style.fontFamily==='serif'&&aSlot.firstElementChild.style.color==='rgb(102, 34, 68)','independent slot typography, color and wrap');
+  assert(parseFloat(aSlot.style.top)>=parseFloat(h.style.top)+parseFloat(h.style.height),'measured slot placement');
+  assert(multi.slices.length===1&&multi.slices[0].sourceSlice.start===10&&multi.slices[0].sourceSlice.end===10+question.length,'primary slice compatibility');
+  assert(JSON.stringify(multi.slices[0].namedSlots)===JSON.stringify([
+    {name:'hint',textStart:0,textEnd:hint.length,sourceSlice:{start:40,end:40+hint.length}},
+    {name:'answer',textStart:0,textEnd:answer.length,sourceSlice:{start:200,end:200+answer.length}}
+  ]),'named slot exact independent source ranges');
+  for(const invalid of [
+    {...multiBlock,namedSlots:[]},
+    {...multiBlock,namedSlots:[multiBlock.namedSlots[0],multiBlock.namedSlots[0]]},
+    {...multiBlock,namedSlots:[{...multiBlock.namedSlots[0],name:'unknown'},multiBlock.namedSlots[1]]},
+    {...multiBlock,namedSlots:[{...multiBlock.namedSlots[0],sourceTextStart:12},multiBlock.namedSlots[1]]},
+    {...multiBlock,namedSlots:[multiBlock.namedSlots[0],{...multiBlock.namedSlots[1],sourceTextStart:495}]},
+    {...multiBlock,splitPolicy:'allow'},
+    {...multiBlock,component:{...multiple,children:[...multiple.children,{id:'duplicate',type:'slot',name:'hint',width:'fill',color:'#123456'}]}},
+    {...multiBlock,component:undefined}
+  ]){
+    let failed=false;try{await createPlainTextPagePreview(document,{...multiOptions,blocks:[invalid]});}catch{failed=true;}
+    assert(failed,'invalid named slot declaration, source range or split rejected');
+  }
   result.textContent='PASS '+JSON.stringify({lineCount:lines.lines.length,previewPages:preview.plan.pages.length,lineRanges:preview.slices.map(s=>[s.textStart,s.textEnd])})+' '+JSON.stringify({wide,narrow,pages:plan.pages.length});
 }catch(error){result.textContent='FAIL '+String(error);}
 await fetch('/test-result',{method:'POST',body:result.textContent});
