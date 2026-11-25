@@ -142,6 +142,19 @@ try{
     let failed=false;try{await createPlainTextPagePreview(document,invalid);}catch{failed=true;}
     assert(failed,'invalid image resource or geometry rejected');
   }
+  const framedText='日本語の本文を複数ページにわたって表示します。 English text with spaces. '.repeat(28);
+  const frame={direction:'column',gap:0,padding:2000,background:'#eeeeee',textColor:'#224466',children:[{id:'content',type:'content'}]};
+  const framed=await createPlainTextPagePreview(document,{revision:'9',fingerprint:'paragraph-frame',width:65000,height:35000,blocks:[{origin:{documentId:'p',revision:'9',blockKey:'0',range:{start:0,end:framedText.length}},request:{...request,text:framedText},splitPolicy:'allow',sourceTextStart:0,component:frame}]});
+  assert(framed.plan.pages.length>1&&framed.slices.map(s=>framedText.slice(s.textStart,s.textEnd)).join('')===framedText,'framed paragraph splits without source loss');
+  const fragments=framed.element.shadowRoot.querySelectorAll('[data-fragmentable-frame]');
+  assert(fragments.length===framed.slices.length,'frame repeats on each fragment');
+  for(const f of fragments){
+    const slot=f.querySelector('[data-content-slot]'),sum=Array.from(slot.children).reduce((n,e)=>n+parseFloat(e.style.height),0);
+    assert(Math.abs(parseFloat(slot.style.top)-2000*96/25400)<.02&&Math.abs(parseFloat(slot.style.height)-sum)<.05,'repeated padding exactly reserved');
+    assert(parseFloat(f.style.height)<=35000*96/25400+.02&&slot.firstElementChild.style.color==='rgb(34, 68, 102)','bounded frame and text color');
+  }
+  let unsupportedSplit=false;try{await createPlainTextPagePreview(document,{revision:'9',fingerprint:'bad-frame',width:65000,height:35000,blocks:[{...makeText('p','bad','Text',{component}),splitPolicy:'allow'}]});}catch{unsupportedSplit=true;}
+  assert(unsupportedSplit,'complex components remain strict');
   result.textContent='PASS '+JSON.stringify({lineCount:lines.lines.length,previewPages:preview.plan.pages.length,lineRanges:preview.slices.map(s=>[s.textStart,s.textEnd])})+' '+JSON.stringify({wide,narrow,pages:plan.pages.length});
 }catch(error){result.textContent='FAIL '+String(error);}
 await fetch('/test-result',{method:'POST',body:result.textContent});
