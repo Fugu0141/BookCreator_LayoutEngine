@@ -392,6 +392,55 @@ try{
     assert(tooTall,'oversized formula rejected rather than clipped');
     assert(document.body.children.length===before,'math measurement cleanup');
   }
+  await phase("inline math atom wrapping and pagination");
+  {
+    const prefix='数式 ',suffix=' を含む文章。',unit=prefix+'\uFFFC'+suffix+' ';
+    const text=unit.repeat(6)+'\r\n'+prefix+'\uFFFC'+suffix;
+    const atoms=[...text.matchAll(/\uFFFC/g)].map((m,i)=>({start:m.index,formula:i%2?'\\sqrt{x^2+1}':'\\frac{a}{\\frac{b}{c}}'}));
+    const req={...request,text,width:48000,fontSize:5000,lineHeight:1.25,fontFamily:'serif',multiline:true,inlineMath:atoms,inlineStyles:[{start:0,end:2,fontWeight:700}]};
+    const measured=await measurePlainTextLines(document,req);
+    assert(measured.lines.length>2,'inline math wraps with surrounding text');
+    assert(measured.lines.map(l=>text.slice(l.start,l.end)).join('')===text,'all logical source units preserved');
+    for(const atom of atoms)assert(measured.lines.filter(l=>l.start<=atom.start&&l.end>=atom.start+1).length===1,'formula is an indivisible atom');
+    assert(measured.lines.some(l=>l.height>Math.ceil(req.fontSize*req.lineHeight)),'tall inline fraction grows line height');
+    const block={origin:{documentId:'inline-math',revision:'1',blockKey:'mixed'},request:req,splitPolicy:'allow'};
+    const options={revision:'1',fingerprint:'inline-math',width:req.width,height:Math.max(...measured.lines.map(l=>l.height))+1000,blocks:[block]};
+    const preview=await createPlainTextPagePreview(document,options);
+    assert(preview.plan.pages.length>1,'mixed lines paginate');
+    assert(preview.slices.every(s=>s.sourceSlice===undefined)&&preview.slices.map(s=>text.slice(s.textStart,s.textEnd)).join('')===text,'host owns formula-to-raw mapping');
+    document.body.append(preview.element);
+    try{
+      const root=preview.element.shadowRoot,nodes=[...root.querySelectorAll('[data-inline-math]')];
+      assert(nodes.length===atoms.length&&nodes.every((e,i)=>Number(e.dataset.mathStart)===atoms[i].start&&Number(e.dataset.mathEnd)===atoms[i].start+1),'atom offsets retained across page fragments');
+      assert(nodes.every(e=>e.querySelector('math').getAttribute('display')==='inline'),'native inline MathML');
+      assert(root.querySelector('[data-inline-style]')?.textContent==='数式','adjacent text style retained');
+      for(const node of nodes){
+        const q=node.getBoundingClientRect(),line=node.closest('[data-start]').getBoundingClientRect();
+        assert(q.left>=line.left-1&&q.right<=line.right+1&&q.top>=line.top-1&&q.bottom<=line.bottom+1,'math fits frozen line box');
+      }
+      const frac=nodes[0].querySelector('mfrac');
+      assert(frac.children[0].getBoundingClientRect().bottom<frac.children[1].getBoundingClientRect().top+1,'fraction vertically arranged');
+    }finally{preview.element.remove();}
+    const simple={...request,text:'A\uFFFCB',fontSize:5000,inlineMath:[{start:1,formula:'x^2'}]};
+    for(const bad of [
+      {...simple,inlineMath:undefined},
+      {...simple,inlineMath:[{start:0,formula:'x'}]},
+      {...simple,inlineMath:[{start:1,formula:'\\input{secret}'}]},
+      {...simple,inlineMath:[{start:1,formula:'x',style:'color:red'}]},
+      {...simple,inlineStyles:[{start:0,end:2,fontWeight:700}]},
+      {...simple,text:'A\uFFFC\u0301B'},
+      {...simple,width:1000,inlineMath:[{start:1,formula:'x'.repeat(100)}]},
+      {...simple,text:'AB'}
+    ]){
+      let rejected=false;try{await measurePlainTextLines(document,bad);}catch{rejected=true;}
+      assert(rejected,'invalid or overflowing math atom rejected');
+    }
+    for(const bad of [{...block,sourceTextStart:0},{...block,listItem:{kind:'bullet',depth:0,indentStep:5000,markerWidth:9000,gap:2000}},{...block,displayMath:true,splitPolicy:'strict'}]){
+      let rejected=false;try{await createPlainTextPagePreview(document,{...options,blocks:[bad]});}catch{rejected=true;}
+      assert(rejected,'incompatible block context refused');
+    }
+    assert(document.body.children.length===before,'inline math measurement cleanup');
+  }
   result.textContent='PASS '+JSON.stringify({lineCount:lines.lines.length,previewPages:preview.plan.pages.length,lineRanges:preview.slices.map(s=>[s.textStart,s.textEnd])})+' '+JSON.stringify({wide,narrow,pages:plan.pages.length});
 }catch(error){result.textContent='FAIL '+String(error);}
 await fetch('/test-result',{method:'POST',body:result.textContent});

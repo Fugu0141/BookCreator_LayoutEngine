@@ -52,7 +52,7 @@ export function parsePreviewMath(source:string):MathNode{
 }
 const NS='http://www.w3.org/1998/Math/MathML';
 /** Only engine-produced MathML elements, with textContent for every token. */
-export function createPreviewMath(document:Document,source:string):Element{
+export function createPreviewMath(document:Document,source:string,display:'block'|'inline'='block'):Element{
   const ast=parsePreviewMath(source);
   function render(n:MathNode):Element{
     const tag=n.kind==='row'?'mrow':n.kind==='frac'?'mfrac':n.kind==='sqrt'?'msqrt':n.kind==='script'?(n.sub&&n.sup?'msubsup':n.sub?'msub':'msup'):n.kind;
@@ -64,7 +64,14 @@ export function createPreviewMath(document:Document,source:string):Element{
     else el.textContent=n.text;
     return el;
   }
-  const math=document.createElementNS(NS,'math');math.setAttribute('display','block');math.append(render(ast));return math;
+  const math=document.createElementNS(NS,'math');math.setAttribute('display',display);math.append(render(ast));return math;
+}
+/** Check native fraction support in the actual measurement document. */
+export function assertNativeMathLayout(document:Document,root:ShadowRoot){
+  const probe=document.createElementNS(NS,'math'),frac=document.createElementNS(NS,'mfrac'),a=document.createElementNS(NS,'mn'),b=document.createElementNS(NS,'mn');
+  a.textContent='1';b.textContent='2';frac.append(a,b);probe.append(frac);root.append(probe);
+  const supported=b.getBoundingClientRect().top>a.getBoundingClientRect().bottom-1;probe.remove();
+  if(!supported)throw Error('Native MathML layout unavailable');
 }
 export interface MeasuredDisplayMath {element:HTMLElement;width:number;height:number;publicationReady:false}
 /** Measure the exact native MathML node used for final drawing, not a text estimate. */
@@ -79,10 +86,7 @@ export async function measureDisplayMath(document:Document,source:string,width:n
   try{
     await document.fonts.ready;
     // Detect actual fraction layout, rather than silently accepting unsupported MathML.
-    const probe=document.createElementNS(NS,'math'),frac=document.createElementNS(NS,'mfrac'),a=document.createElementNS(NS,'mn'),b=document.createElementNS(NS,'mn');
-    a.textContent='1';b.textContent='2';frac.append(a,b);probe.append(frac);root.append(probe);
-    const supported=b.getBoundingClientRect().top>a.getBoundingClientRect().bottom-1;probe.remove();
-    if(!supported)throw Error('Native MathML layout unavailable');
+    assertNativeMathLayout(document,root);
     const box=element.getBoundingClientRect(),ink=math.getBoundingClientRect();
     if(!Number.isFinite(ink.width)||!Number.isFinite(box.height)||ink.width<=0||box.height<=0||ink.left<box.left-.1||ink.right>box.right+.1||ink.top<box.top-.1||ink.bottom>box.bottom+.1||um(ink.width)>width)throw RangeError('Display math exceeds available width or has invalid geometry');
     const height=um(box.height);
