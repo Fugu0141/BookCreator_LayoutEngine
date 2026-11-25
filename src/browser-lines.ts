@@ -217,7 +217,12 @@ export async function createPlainTextPagePreview(document:Document,options:{
     if(!resolveImage)throw Error('Component image resolver required');
     const blob=await resolveImage(id);
     if(!blob||blob.type!=='image/png'||!positive(blob.size)||blob.size>16*1024*1024)throw Error('Invalid PNG image resource');
+    const header=new Uint8Array(await blob.slice(0,24).arrayBuffer());
+    if(header.length!==24||![137,80,78,71,13,10,26,10,0,0,0,13,73,72,68,82].every((v,i)=>header[i]===v))throw Error('Invalid PNG header');
+    const view=new DataView(header.buffer),w=view.getUint32(16),h=view.getUint32(20);
+    if(!positive(w)||!positive(h)||w>8192||h>8192||w*h>16000000||imagePixels+w*h>32000000)throw RangeError('Image resource pixel limit exceeded');
     const bitmap=await document.defaultView!.createImageBitmap(blob);
+    if(bitmap.width!==w||bitmap.height!==h){bitmap.close();throw Error('PNG decoded size mismatch');}
     if(!positive(bitmap.width)||!positive(bitmap.height)||bitmap.width>8192||bitmap.height>8192||bitmap.width*bitmap.height>16000000||(imagePixels+=bitmap.width*bitmap.height)>32000000){bitmap.close();throw RangeError('Image resource pixel limit exceeded');}
     images.set(id,bitmap);
   }
