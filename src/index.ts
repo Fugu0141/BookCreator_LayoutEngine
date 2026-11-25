@@ -37,3 +37,5 @@ export function anchoredOffset(parent: number, child: number, anchor: 'start'|'c
   return result;
 }
 export {layoutTree, type TreeNode, type PlacedNode, type Dimension} from './tree.js';
+export * from './pagination.js';
+export * from './inspector.js';

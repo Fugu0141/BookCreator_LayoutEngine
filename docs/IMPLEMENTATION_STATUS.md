@@ -5,3 +5,11 @@ Implemented: integer micrometre length conversion, deterministic equal fill dist
 ## Second development milestone
 
 Added layoutTree, recursive row/column/stack/canvas and premeasured leaf geometry, fixed/auto/fill sizing, equal main-axis fill, cross-axis fill for fixed-main decorative leaves, anchored overlay and duplicate-ID/cycle/overflow rejection. Coordinates are parent-relative integer micrometres. This is a limited geometry PoC: no real text measurement or wrapping, percentage/min/max/padding/margin, rotation, complete stretch/align, pagination or rendering. Unsupported sizing combinations may be rejected; no publication use yet. Four new tests; 9/9 local tests passed (Node 22.16.0, TypeScript 5.8.3).
+
+## Third milestone — measured pagination PoC
+
+Experimental paginateMeasured: single-column premeasured units, origin ranges, allow/avoid/strict, explicit pagebreak and continuous first component page-top suppression, partial/error and resource limits. Not the final PagePlan contract; never publication-ready. No actual measurement, page faces, margins, footnotes or rendering. Added five tests; local full run and CI not yet verified.
+
+## M03 continuation — Layout Inspector CLI
+
+Added inspectMeasuredInput for strict JSON shape checks and a read-only fixture pagination CLI. Invalid and unknown layout fields are rejected; no actual text measurement, faces, margins or PDF. Added a sample input and two tests. Prior pagination core CI succeeded; new tests pending verification.
