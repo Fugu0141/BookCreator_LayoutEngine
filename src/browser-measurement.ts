@@ -7,6 +7,9 @@ export interface InlineStyleRun {
   start:number;end:number;
   fontFamily?:PreviewFontFamily;fontWeight?:number;
   italic?:boolean;underline?:boolean;color?:string;
+  /** Absolute physical size in micrometres. Script defaults to 70% of the base size. */
+  fontSize?:number;
+  baseline?:'normal'|'super'|'sub';
 }
 export interface PlainTextMeasureRequest {
   text:string;

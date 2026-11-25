@@ -35,10 +35,12 @@ function snapshotRequest(r:PlainTextMeasureRequest):Readonly<PlainTextMeasureReq
   const boundaries=new Set([...new Intl.Segmenter(undefined,{granularity:'grapheme'}).segment(r.text)].map(g=>g.index));boundaries.add(r.text.length);
   let previous=0;
   const runs=r.inlineStyles.map(run=>{
-    if(!run||typeof run!=='object'||Object.keys(run).some(k=>!['start','end','fontFamily','fontWeight','italic','underline','color'].includes(k))||
+    if(!run||typeof run!=='object'||Object.keys(run).some(k=>!['start','end','fontFamily','fontWeight','italic','underline','color','fontSize','baseline'].includes(k))||
       !Number.isSafeInteger(run.start)||!Number.isSafeInteger(run.end)||run.start<previous||run.end<=run.start||!boundaries.has(run.start)||!boundaries.has(run.end)||
       (run.fontFamily!==undefined&&!isPreviewFontFamily(run.fontFamily))||!isPreviewFontWeight(run.fontWeight)||
       (run.italic!==undefined&&typeof run.italic!=='boolean')||(run.underline!==undefined&&typeof run.underline!=='boolean')||
+      (run.fontSize!==undefined&&(!Number.isSafeInteger(run.fontSize)||run.fontSize<1000||run.fontSize>30000))||
+      (run.baseline!==undefined&&run.baseline!=='normal'&&run.baseline!=='super'&&run.baseline!=='sub')||
       (run.color!==undefined&&(typeof run.color!=='string'||!/^#[0-9a-fA-F]{6}$/.test(run.color))))throw RangeError('Invalid inline style range or property');
     previous=run.end;return Object.freeze({...run});
   });
@@ -61,6 +63,11 @@ function appendStyled(el:HTMLElement,r:PlainTextMeasureRequest,start:number,end:
       if(run.italic){span.style.fontStyle='italic';span.style.fontSynthesis='style';}
       if(run.underline)span.style.textDecorationLine='underline';
       if(run.color)span.style.color=run.color;
+      if(run.fontSize!==undefined||(run.baseline&&run.baseline!=='normal')){
+        const size=run.fontSize??Math.round(r.fontSize*.7);
+        span.style.fontSize=px(size)+'px';span.style.lineHeight=px(size*r.lineHeight)+'px';
+      }
+      if(run.baseline)span.style.verticalAlign=run.baseline;
       span.append(node);el.append(span);
     }else el.append(node);
     segments.push({start:a,end:b,node});
@@ -78,6 +85,52 @@ function styleText(el:HTMLElement,r:PlainTextMeasureRequest,wrap:boolean){
   el.style.width=px(r.width)+'px';el.style.fontSize=px(r.fontSize)+'px';applyPreviewFont(el,r.fontFamily,r.fontWeight);
   el.style.lineHeight=px(r.fontSize*r.lineHeight)+'px';
   el.style.whiteSpace=wrap?'break-spaces':'pre';
+}
+type StyledSegment=ReturnType<typeof appendStyled>[number];
+type GlyphBox={start:number;end:number;left:number;right:number;top:number;bottom:number};
+/** Variable line boxes cannot be inferred from a single fixed pitch or glyph center.
+ * Recover candidate LTR rows using advance resets, then independently verify every
+ * frozen row against the actual wrapped DOM, including its natural height. */
+function glyphBoxes(document:Document,r:PlainTextMeasureRequest,segments:StyledSegment[],start:number,end:number,rect:DOMRect):GlyphBox[]{
+  const range=document.createRange(),boxes:GlyphBox[]=[];let i=0;
+  for(const g of new Intl.Segmenter(undefined,{granularity:'grapheme'}).segment(r.text.slice(start,end))){
+    const a=start+g.index,b=a+g.segment.length;
+    while(i<segments.length&&segments[i].end<=a)i++;
+    const seg=segments[i];if(!seg||a<seg.start||b>seg.end)throw Error('Style crosses grapheme boundary');
+    range.setStart(seg.node,a-seg.start);range.setEnd(seg.node,b-seg.start);
+    const rs=Array.from(range.getClientRects());
+    if(rs.length!==1||!['left','right','top','bottom'].every(k=>Number.isFinite(rs[0][k as 'left'|'right'|'top'|'bottom'])))throw Error('Ambiguous variable-height glyph geometry');
+    const q=rs[0];boxes.push({start:a,end:b,left:q.left-rect.left,right:q.right-rect.left,top:q.top-rect.top,bottom:q.bottom-rect.top});
+  }
+  return boxes;
+}
+function measureVariableLines(document:Document,root:ShadowRoot,el:HTMLElement,r:PlainTextMeasureRequest,segments:StyledSegment[]):MeasuredTextLine[]{
+  const rect=el.getBoundingClientRect(),glyphs=glyphBoxes(document,r,segments,0,r.text.length,rect);
+  if(!glyphs.length||rect.height<=0||el.scrollWidth>el.clientWidth+1)throw Error('Invalid variable line geometry');
+  const groups:GlyphBox[][]=[];
+  for(const glyph of glyphs){
+    const group=groups.at(-1),prev=group?.at(-1);
+    // This experimental path supports simple left-to-right advances only.
+    if(glyph.right-glyph.left<=0||glyph.left< -1||glyph.right>rect.width+1)throw Error('Unsupported variable-height glyph advance');
+    if(!prev||glyph.left<prev.right-.25){
+      if(Math.abs(glyph.left)>1)throw Error('Ambiguous variable-height line break');
+      groups.push([glyph]);
+    }else group!.push(glyph);
+  }
+  const lines:MeasuredTextLine[]=[];let top=0;
+  for(const group of groups){
+    const start=group[0].start,end=group.at(-1)!.end;
+    const line=document.createElement('div');styleText(line,r,false);
+    const rowSegments=appendStyled(line,r,start,end);root.append(line);
+    const q=line.getBoundingClientRect(),row=glyphBoxes(document,r,rowSegments,start,end,q);
+    if(q.height<=0||line.scrollWidth>line.clientWidth+1||row.length!==group.length||
+      row.some((g,i)=>Math.abs(g.left-group[i].left)>1||Math.abs(g.right-group[i].right)>1||
+        Math.abs(g.top+top-group[i].top)>1||Math.abs(g.bottom+top-group[i].bottom)>1||
+        g.top< -1||g.bottom>q.height+1))throw Error('Frozen variable-height line does not match wrapped geometry');
+    lines.push({start,end,height:um(q.height)});top+=q.height;line.remove();
+  }
+  if(Math.abs(top-rect.height)>1||lines[0].start!==0||lines.at(-1)!.end!==r.text.length||lines.some((l,i)=>i>0&&l.start!==lines[i-1].end))throw Error('Incomplete variable-height line mapping');
+  return lines;
 }
 function live(document:Document){
   if(!document.body||!document.defaultView||!document.fonts)throw Error('A live browser document is required');
@@ -107,6 +160,10 @@ export async function measurePlainTextLines(document:Document,request:PlainTextM
   try{
     el.getBoundingClientRect();await readyPreviewFont(document,r.fontFamily,r.fontWeight,r.text);
     for(const run of r.inlineStyles??[])await readyPreviewFont(document,run.fontFamily??r.fontFamily,run.fontWeight??r.fontWeight,r.text.slice(run.start,run.end));
+    if(r.inlineStyles?.some(s=>s.fontSize!==undefined||(s.baseline&&s.baseline!=='normal'))){
+      const lines=measureVariableLines(document,root,el,r,segments);
+      return {request:r,lines,measurement:'browser-dom-lines',publicationReady:false};
+    }
     const height=el.getBoundingClientRect().height;
     const linePx=px(r.fontSize*r.lineHeight);
     const count=Math.round(height/linePx);
