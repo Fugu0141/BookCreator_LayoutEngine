@@ -292,6 +292,19 @@ try{
     assert(failed,'invalid inline metric rejected');
   }
   assert(document.body.children.length===before,'variable-height measurement cleanup');
+  // A family override can change the baseline/line box even with unchanged font size.
+  const mixedText='第一段落。 Mixed fonts and Japanese text 日本語。'.repeat(4);
+  const mixedRequest={...request,text:mixedText,fontFamily:'serif',inlineStyles:[
+    {start:0,end:4,fontFamily:'monospace',fontWeight:400,italic:true,underline:true,color:'#c2410c'},
+    {start:6,end:17,fontFamily:'sans-serif',fontWeight:700}
+  ]};
+  const mixed=await measurePlainTextLines(document,mixedRequest);
+  assert(mixed.lines.length>1&&mixed.lines.map(l=>mixedText.slice(l.start,l.end)).join('')===mixedText,'mixed font metrics and exact offsets');
+  const mixedPreview=await createPlainTextPagePreview(document,{revision:'14',fingerprint:'mixed-faces',width:65000,height:40000,blocks:[{origin:{documentId:'mixed',revision:'14',blockKey:'0'},request:mixedRequest,splitPolicy:'allow'}]});
+  const mixedRoot=mixedPreview.element.shadowRoot;
+  assert([...mixedRoot.querySelectorAll('[data-start]')].map(n=>n.textContent).join('')===mixedText,'mixed face rendering preserves text');
+  assert([...mixedRoot.querySelectorAll('[data-inline-style]')].some(n=>n.style.fontFamily==='monospace'&&n.style.fontStyle==='italic'&&n.style.textDecorationLine==='underline'),'composite mixed-face style preserved');
+  assert(document.body.children.length===before,'mixed-font cleanup');
   result.textContent='PASS '+JSON.stringify({lineCount:lines.lines.length,previewPages:preview.plan.pages.length,lineRanges:preview.slices.map(s=>[s.textStart,s.textEnd])})+' '+JSON.stringify({wide,narrow,pages:plan.pages.length});
 }catch(error){result.textContent='FAIL '+String(error);}
 await fetch('/test-result',{method:'POST',body:result.textContent});
