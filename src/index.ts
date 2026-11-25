@@ -40,3 +40,4 @@ export {layoutTree, type TreeNode, type PlacedNode, type Dimension} from './tree
 export * from './pagination.js';
 export * from './inspector.js';
 export * from './browser-measurement.js';
+export * from './browser-lines.js';
