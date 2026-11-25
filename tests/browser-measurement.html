@@ -2,7 +2,7 @@
 <html lang="en"><meta charset="utf-8"><title>Browser measurement smoke test</title>
 <body><pre id="result">RUNNING</pre>
 <script type="module">
-import {measurePlainText,paginateMeasured,measurePlainTextLines,createPlainTextPagePreview} from '/dist/index.js';
+import {measurePlainText,paginateMeasured,measurePlainTextLines,createPlainTextPagePreview,measureDisplayMath,createPreviewMath} from '/dist/index.js';
 const result=document.querySelector('#result');
 const assert=(condition,message)=>{if(!condition)throw Error(message);};
 const phase=async name=>{await fetch('/test-progress',{method:'POST',body:name});};
@@ -353,6 +353,44 @@ try{
     let listComponentRejected=false;try{await createPlainTextPagePreview(document,{...listOptions,blocks:[{...listBlock,component:frame}]});}catch{listComponentRejected=true;}
     assert(listComponentRejected,'list item plus component frame is not silently combined');
     assert(document.body.children.length===before,'list measurement cleanup');
+  }
+  await phase("display math measurement and pagination");
+  {
+    const formula='\\frac{-b+\\sqrt{b^2-4ac}}{2a}';
+    const measured=await measureDisplayMath(document,formula,90000,5000);
+    assert(measured.height>5000&&measured.width>0&&measured.width<90000,'native display math physical geometry');
+    const bodyText='数式の説明です。';
+    const mathBlock={origin:{documentId:'math',revision:'1',blockKey:'formula',range:{start:100,end:100+formula.length}},request:{text:formula,width:90000,fontFamily:'serif',fontSize:5000,lineHeight:1.8},displayMath:true,splitPolicy:'strict',sourceTextStart:100};
+    const plainBlock={origin:{documentId:'math',revision:'1',blockKey:'text'},request:{...mathBlock.request,text:bodyText},splitPolicy:'allow'};
+    const options={revision:'1',fingerprint:'math',width:90000,height:measured.height+1000,blocks:[plainBlock,mathBlock,{...plainBlock,origin:{...plainBlock.origin,blockKey:'after'}}]};
+    const previewMath=await createPlainTextPagePreview(document,options);
+    const mathSlice=previewMath.slices.find(s=>s.origin.blockKey==='formula');
+    assert(mathSlice.textStart===0&&mathSlice.textEnd===formula.length&&mathSlice.sourceSlice.start===100&&mathSlice.sourceSlice.end===100+formula.length,'one exact formula source slice');
+    assert(previewMath.plan.pages.length>=3&&previewMath.slices.filter(s=>s.origin.blockKey==='formula').length===1,'strict formula moves to next page');
+    document.body.append(previewMath.element);
+    try{
+      const root=previewMath.element.shadowRoot,fragment=root.querySelector('[data-display-math]'),math=fragment.querySelector('math'),fraction=math.querySelector('mfrac'),radical=math.querySelector('msqrt'),script=math.querySelector('msup');
+      assert(math.namespaceURI==='http://www.w3.org/1998/Math/MathML'&&fraction&&radical&&script,'actual MathML fraction, radical and exponent');
+      const numerator=fraction.children[0].getBoundingClientRect(),denominator=fraction.children[1].getBoundingClientRect();
+      assert(numerator.bottom<denominator.top+1,'fraction vertically stacked');
+      const box=fragment.getBoundingClientRect(),ink=math.getBoundingClientRect();
+      assert(ink.top>=box.top-.1&&ink.bottom<=box.bottom+.1&&ink.left>=box.left-.1&&ink.right<=box.right+.1,'formula fits reserved paper rectangle');
+      assert(Math.abs((ink.left+ink.right)/2-(box.left+box.right)/2)<.2,'centered formula');
+    }finally{previewMath.element.remove();}
+    const comparison=createPreviewMath(document,'x<y');
+    assert(comparison.querySelector('mo').textContent==='<'&&!comparison.querySelector('script'),'operators are text nodes, never HTML');
+    for(const bad of [
+      {...mathBlock,splitPolicy:'allow'},
+      {...mathBlock,request:{...mathBlock.request,text:'\\input{secret}'}},
+      {...mathBlock,request:{...mathBlock.request,text:'x'.repeat(300)}},
+      {...mathBlock,request:{...mathBlock.request,inlineStyles:[]}}
+    ]){
+      let rejected=false;try{await createPlainTextPagePreview(document,{...options,blocks:[bad]});}catch{rejected=true;}
+      assert(rejected,'invalid display math or overflow rejected');
+    }
+    let tooTall=false;try{await createPlainTextPagePreview(document,{...options,height:1000,blocks:[mathBlock]});}catch{tooTall=true;}
+    assert(tooTall,'oversized formula rejected rather than clipped');
+    assert(document.body.children.length===before,'math measurement cleanup');
   }
   result.textContent='PASS '+JSON.stringify({lineCount:lines.lines.length,previewPages:preview.plan.pages.length,lineRanges:preview.slices.map(s=>[s.textStart,s.textEnd])})+' '+JSON.stringify({wide,narrow,pages:plan.pages.length});
 }catch(error){result.textContent='FAIL '+String(error);}
