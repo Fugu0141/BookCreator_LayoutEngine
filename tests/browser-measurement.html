@@ -53,6 +53,16 @@ try{
     assert(failed,'missing registered font or invalid settings must fail');
   }
   assert(document.body.children.length===before,'font failure cleanup');
+  const makeText=(id,key,text,extra={})=>({origin:{documentId:id,revision:'1',blockKey:key},request:{...request,text},splitPolicy:'strict',...extra});
+  const sectionPreview=await createPlainTextPagePreview(document,{revision:'3',fingerprint:'book',width:65000,height:200000,paper:{width:100000,height:230000,inner:20000,outer:15000,top:10000,bottom:20000,firstSide:'right'},sections:[
+    {id:'a',startOn:'page',blocks:[makeText('a','0','First')]},
+    {id:'b',startOn:'continuous',blocks:[makeText('b','0','Second',{startPosition:'page-top',startPositionSource:'component'}),{kind:'pagebreak',origin:{documentId:'b',revision:'1',blockKey:'break'}},makeText('b','1','Third')]},
+    {id:'c',startOn:'page',blocks:[makeText('c','0','Fourth')]}]});
+  assert(sectionPreview.plan.pages.length===3,'sections and explicit break');
+  assert(sectionPreview.plan.pages[0].fragments.map(f=>f.origin.documentId).join(',')==='a,b','continuous heading suppression');
+  const sheets=sectionPreview.element.shadowRoot.querySelectorAll('[data-page]');
+  assert(sheets[0].dataset.side==='right'&&sheets[1].dataset.side==='left','page parity');
+  assert(parseFloat(sheets[0].querySelector('[data-block]').style.left)>parseFloat(sheets[1].querySelector('[data-block]').style.left),'mirrored margins');
   result.textContent='PASS '+JSON.stringify({lineCount:lines.lines.length,previewPages:preview.plan.pages.length,lineRanges:preview.slices.map(s=>[s.textStart,s.textEnd])})+' '+JSON.stringify({wide,narrow,pages:plan.pages.length});
 }catch(error){result.textContent='FAIL '+String(error);}
 </script></body></html>

@@ -1,5 +1,5 @@
 import {applyPreviewFont,readyPreviewFont,isPreviewFontFamily,isPreviewFontWeight} from './preview-font.js';
-import {paginateMeasured,type Origin,type MeasuredPagePlan,type SplitPolicy} from './pagination.js';
+import {paginateMeasured,type Origin,type MeasuredPagePlan,type SplitPolicy,type PageBreak,type MeasuredSection} from './pagination.js';
 import type {PlainTextMeasureRequest} from './browser-measurement.js';
 
 export interface MeasuredTextLine {
@@ -88,23 +88,36 @@ export interface TextPagePreview {
   element:HTMLElement; plan:MeasuredPagePlan; slices:readonly PreviewTextSlice[];
   publicationReady:false;
 }
-// Single section, plain text only. Caller owns the exact mapping of logical text to raw source.
+// Multiple sections, plain text only. Caller owns the exact mapping of logical text to raw source.
 // No external HTML, CSS, resource fetching or publication output.
 export async function createPlainTextPagePreview(document:Document,options:{
   revision:string;fingerprint:string;width:number;height:number;
-  blocks:readonly PreviewTextBlock[];
+  blocks?:readonly PreviewTextBlock[];
+  sections?:readonly {id:string;startOn:'page'|'continuous';blocks:readonly (PreviewTextBlock|PageBreak)[]}[];
+  paper?:{width:number;height:number;top:number;bottom:number;inner:number;outer:number;firstSide:'right'|'left'};
 }):Promise<TextPagePreview>{
   live(document);
+  if((options.blocks===undefined)===(options.sections===undefined))throw RangeError('Specify exactly one block list or section list');
+  const sourceSections=options.sections??[{id:'preview',startOn:'page' as const,blocks:options.blocks!}];
+  if(!sourceSections.length||sourceSections.length>128)throw RangeError('Invalid preview sections');
+  const allBlocks=sourceSections.flatMap(s=>s.blocks);
+  const isBreak=(b:PreviewTextBlock|PageBreak):b is PageBreak=>'kind' in b&&b.kind==='pagebreak';
+  const paper=options.paper?{...options.paper}:undefined;
+  if(paper&&(!positive(paper.width)||!positive(paper.height)||paper.width>2000000||paper.height>2000000||![paper.top,paper.bottom,paper.inner,paper.outer].every(n=>Number.isSafeInteger(n)&&n>=0)||!['right','left'].includes(paper.firstSide)||paper.width-paper.inner-paper.outer!==options.width||paper.height-paper.top-paper.bottom!==options.height))throw RangeError('Invalid paper or margins');
   if(!positive(options.width)||!positive(options.height)||options.width>2000000||options.height>2000000||
-    options.blocks.length<1||options.blocks.length>128||options.blocks.reduce((n,b)=>n+b.request.text.length,0)>50000)
+    allBlocks.length<1||allBlocks.length>128||allBlocks.reduce((n,b)=>n+(isBreak(b)?0:b.request.text.length),0)>50000)
     throw RangeError('Invalid or oversized preview');
   // Snapshot caller-owned values before the first await.
-  options={...options,blocks:options.blocks.map(b=>({...b,origin:{...b.origin,range:b.origin.range?{...b.origin.range}:undefined},request:{...b.request}}))};
+  const sections=sourceSections.map(s=>({...s,blocks:s.blocks.map(b=>({...b,origin:{...b.origin,range:b.origin.range?{...b.origin.range}:undefined},...(isBreak(b)?{}:{request:{...b.request}})}))}));
+  const {revision,fingerprint,width,height}=options;
   const byKey=new Map<string,{block:PreviewTextBlock;measurement:MeasuredTextLines}>();
   const key=(o:Origin)=>JSON.stringify([o.documentId,o.blockKey]);
-  const blocks=[];
-  for(const b of options.blocks){
-    const k=key(b.origin);if(byKey.has(k)||b.request.width>options.width)throw Error('Invalid or duplicate preview block');
+  const measuredSections:MeasuredSection[]=[];
+  for(const section of sections){
+    const blocks: (MeasuredSection['blocks'][number])[]=[];
+    for(const b of section.blocks){
+    if(isBreak(b)){blocks.push(b);continue;}
+    const k=key(b.origin);if(byKey.has(k)||b.request.width>width)throw Error('Invalid or duplicate preview block');
     if(b.sourceTextStart!==undefined&&(!b.origin.range||!Number.isSafeInteger(b.sourceTextStart)||
       b.sourceTextStart<b.origin.range.start||!Number.isSafeInteger(b.sourceTextStart+b.request.text.length)||
       b.sourceTextStart+b.request.text.length>b.origin.range.end))throw Error('Invalid exact source mapping');
@@ -112,7 +125,10 @@ export async function createPlainTextPagePreview(document:Document,options:{
     byKey.set(k,{block:b,measurement});
     blocks.push({kind:'block' as const,origin:b.origin,width:b.request.width,unitHeights:measurement.lines.map(l=>l.height),splitPolicy:b.splitPolicy,startPosition:b.startPosition,startPositionSource:b.startPositionSource});
   }
-  const plan=paginateMeasured({schemaVersion:1,revision:options.revision,fingerprint:options.fingerprint,content:{width:options.width,height:options.height},sections:[{id:'preview',startOn:'page',blocks}]});
+    measuredSections.push({id:section.id,startOn:section.startOn,blocks});
+  }
+  const plan=paginateMeasured({schemaVersion:1,revision,fingerprint,content:{width,height},sections:measuredSections});
+  if(!plan.pages.length)throw Error('No drawable content');
   if(plan.completeness!=='full')throw Error('Cannot render partial preview: '+plan.diagnostics.map(d=>d.code).join(', '));
   const element=document.createElement('div');element.style.cssText='all:initial;display:block;';
   const root=element.attachShadow({mode:'open'});
@@ -120,7 +136,11 @@ export async function createPlainTextPagePreview(document:Document,options:{
   for(const p of plan.pages){
     const page=document.createElement('div');page.dataset.page=String(p.index);
     page.style.cssText='all:initial;display:block;position:relative;box-sizing:content-box;background:white;color:black;border:1px solid #888;margin:0 0 12px 0;overflow:visible;';
-    page.style.width=px(options.width)+'px';page.style.height=px(options.height)+'px';
+    const right=(p.index%2===0)===(paper?.firstSide!=='left');
+    const left=paper?(right?paper.inner:paper.outer):0,top=paper?.top??0;
+    page.dataset.side=right?'right':'left';
+    page.style.width=px(paper?.width??width)+'px';page.style.height=px(paper?.height??height)+'px';
+    if(paper){const guide=document.createElement('div');guide.dataset.contentGuide='true';guide.style.cssText='position:absolute;box-sizing:border-box;outline:1px dashed #ccc;pointer-events:none;';Object.assign(guide.style,{left:px(left)+'px',top:px(top)+'px',width:px(width)+'px',height:px(height)+'px'});page.append(guide);}
     for(const f of p.fragments){
       const entry=byKey.get(key(f.origin));if(!entry)throw Error('Missing preview block');
       const {block,measurement}=entry, lineUnits=measurement.lines.slice(f.unitStart,f.unitEnd);
@@ -129,9 +149,9 @@ export async function createPlainTextPagePreview(document:Document,options:{
       // Origin may refer to markup; only a caller-verified contiguous mapping enables raw source ranges.
       const sourceSlice=block.sourceTextStart===undefined?undefined:{start:block.sourceTextStart+textStart,end:block.sourceTextStart+textEnd};
       slices.push({pageIndex:p.index,origin:f.origin,textStart,textEnd,...(sourceSlice?{sourceSlice}:{})});
-      const fragment=document.createElement('div');fragment.dataset.block=f.origin.blockKey;
+      const fragment=document.createElement('div');fragment.dataset.block=f.origin.blockKey;fragment.dataset.document=f.origin.documentId;
       fragment.style.cssText='all:initial;display:block;position:absolute;box-sizing:border-box;';
-      Object.assign(fragment.style,{left:px(f.rect.x)+'px',top:px(f.rect.y)+'px',width:px(f.rect.width)+'px',height:px(f.rect.height)+'px'});
+      Object.assign(fragment.style,{left:px(left+f.rect.x)+'px',top:px(top+f.rect.y)+'px',width:px(f.rect.width)+'px',height:px(f.rect.height)+'px'});
       for(const line of lineUnits){
         const item=document.createElement('div');styleText(item,measurement.request,false);item.style.height=px(line.height)+'px';
         item.dataset.start=String(line.start);item.dataset.end=String(line.end);
