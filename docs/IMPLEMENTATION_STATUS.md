@@ -13,3 +13,7 @@ Experimental paginateMeasured: single-column premeasured units, origin ranges, a
 ## M03 continuation — Layout Inspector CLI
 
 Added inspectMeasuredInput for strict JSON shape checks and a read-only fixture pagination CLI. Invalid and unknown layout fields are rejected; no actual text measurement, faces, margins or PDF. Added a sample input and two tests. Prior pagination core CI succeeded; new tests pending verification.
+
+## M04 — browser text measurement PoC
+
+Added measurePlainText for actual DOM height/wrapping at a specified physical width, generic font family and line height, after document fonts readiness. Literal text only, isolated shadow tree, cleanup, bounded input, whole-block only. A real Chromium smoke test compares narrow/wide wrapping, conversion, cleanup and pagination using measured heights. No line-break/source-slice mapping, font fingerprint, image measurement, app UI, rendering or PDF yet; never publication-ready. New browser CI pending verification.

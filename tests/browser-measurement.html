@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><title>Browser measurement smoke test</title>
+<body><pre id="result">RUNNING</pre>
+<script type="module">
+import {measurePlainText,paginateMeasured} from '/dist/index.js';
+const result=document.querySelector('#result');
+const assert=(condition,message)=>{if(!condition)throw Error(message);};
+try{
+  const before=document.body.children.length;
+  const text='実測組版の検証。The quick brown fox jumps over the lazy dog. '.repeat(8);
+  const opts={text,fontSize:4200,fontFamily:'sans-serif',lineHeight:1.4};
+  const wide=await measurePlainText(document,{...opts,width:150000});
+  const narrow=await measurePlainText(document,{...opts,width:50000});
+  assert(narrow.height>wide.height,'narrow text should wrap to more lines');
+  assert(wide.height===Math.ceil(wide.cssHeight*25400/96),'physical unit conversion');
+  assert(narrow.publicationReady===false&&narrow.splitCapability==='none','experimental contract');
+  const literal=await measurePlainText(document,{...opts,text:'<img src=x onerror=alert(1)>',width:100000});
+  assert(literal.height>0&&!document.querySelector('img'),'literal text only');
+  let failed=false;try{await measurePlainText(document,{...opts,width:0});}catch{failed=true;}
+  assert(failed&&document.body.children.length===before,'invalid input and cleanup');
+  const makeBlock=(id)=>({kind:'block',origin:{documentId:'demo',revision:'1',blockKey:id},width:wide.width,unitHeights:[wide.height],splitPolicy:'strict'});
+  const plan=paginateMeasured({schemaVersion:1,revision:'1',fingerprint:'browser-smoke',content:{width:wide.width,height:wide.height},sections:[{id:'demo',startOn:'page',blocks:[makeBlock('a'),makeBlock('b')]}]});
+  assert(plan.completeness==='full'&&plan.pages.length===2&&!plan.publicationReady,'measured blocks paginate');
+  result.textContent='PASS '+JSON.stringify({wide,narrow,pages:plan.pages.length});
+}catch(error){result.textContent='FAIL '+String(error);}
+</script></body></html>
