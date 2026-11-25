@@ -39,7 +39,7 @@ function snapshotRequest(r:PlainTextMeasureRequest):Readonly<PlainTextMeasureReq
       !Number.isSafeInteger(run.start)||!Number.isSafeInteger(run.end)||run.start<previous||run.end<=run.start||!boundaries.has(run.start)||!boundaries.has(run.end)||
       (run.fontFamily!==undefined&&!isPreviewFontFamily(run.fontFamily))||!isPreviewFontWeight(run.fontWeight)||
       (run.italic!==undefined&&typeof run.italic!=='boolean')||(run.underline!==undefined&&typeof run.underline!=='boolean')||
-      (run.color!==undefined&&!/^#[0-9a-fA-F]{6}$/.test(run.color)))throw RangeError('Invalid inline style range or property');
+      (run.color!==undefined&&(typeof run.color!=='string'||!/^#[0-9a-fA-F]{6}$/.test(run.color))))throw RangeError('Invalid inline style range or property');
     previous=run.end;return Object.freeze({...run});
   });
   return Object.freeze({...r,inlineStyles:Object.freeze(runs)});
@@ -296,7 +296,7 @@ export interface TextPagePreview {
   element:HTMLElement; plan:MeasuredPagePlan; slices:readonly PreviewTextSlice[];
   publicationReady:false;
 }
-// Multiple sections, plain text only. Caller owns the exact mapping of logical text to raw source.
+// Multiple sections, logical text with typed inline styles. Caller owns exact mapping to raw source.
 // No external HTML, CSS, resource fetching or publication output.
 export async function createPlainTextPagePreview(document:Document,options:{
   revision:string;fingerprint:string;width:number;height:number;
