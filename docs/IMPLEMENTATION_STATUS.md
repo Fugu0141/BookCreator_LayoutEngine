@@ -25,3 +25,7 @@ Added measurePlainTextLines and createPlainTextPagePreview for a restricted plai
 ## M04 — registered font faces and weights
 
 Browser measurement and frozen HTML use identical font family/weight settings. Supports generic families and host-registered opaque BCFont_ aliases, rejects arbitrary CSS and unavailable registered faces, waits for FontFaceSet.load and disables synthetic styling. The host owns actual font files, registration and fingerprint. This does not prove glyph coverage or exact face/weight selection; no font import, embedding or publication readiness. Browser tests pending.
+
+## M04 — whole-book experimental paper preview
+
+Multiple ordered sections and explicit page breaks are accepted by the browser preview; continuous sections retain the core first-component suppression rule. Optional physical paper bounds and mirrored inner/outer margins wrap the existing content plan; first side controls parity. Content coordinates remain content-relative. No cover, blank, spread or publication output. Browser tests pending.
