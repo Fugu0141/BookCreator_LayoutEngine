@@ -80,6 +80,7 @@ export async function measurePlainTextLines(document:Document,request:PlainTextM
 export type PreviewComponentChild = (
   | {id:string;type:'content';width?:number}
   | {id:string;type:'rect';width:number|'fill';height:number;color:string}
+  | {id:string;type:'image';width:number|'fill';height:number;assetId:string;fit:'contain'|'cover';alt:string}
   | {id:string;type:'label';width:number|'fill';text:string;fontFamily:PlainTextMeasureRequest['fontFamily'];fontWeight:number;fontSize:number;lineHeight:number;color:string}
   | {id:string;type:'group';width:number|'fill';direction:'row'|'column'|'canvas';height?:number;gap:number;padding:number;background:string;children:readonly PreviewComponentChild[]}) & {x?:number;y?:number};
 export interface PreviewComponent {
@@ -107,6 +108,8 @@ function snapshotComponent(c:PreviewComponent):PreviewComponent{
       if(child.type==='group')return {...child,children:group(child,depth+1)};
       if(child.type==='label'){
         if(typeof child.text!=='string'||!child.text.length||child.text.length>256||!isColor(child.color)||!isPreviewFontFamily(child.fontFamily)||!isPreviewFontWeight(child.fontWeight)||!positive(child.fontSize)||child.fontSize>30000||!Number.isFinite(child.lineHeight)||child.lineHeight<1.25||child.lineHeight>4)throw RangeError('Invalid component label');
+      }else if(child.type==='image'){
+        if(typeof child.assetId!=='string'||!/^[a-f0-9]{64}$/.test(child.assetId)||!length(child.height)||child.height===0||!['contain','cover'].includes(child.fit)||typeof child.alt!=='string'||child.alt.length>256||/[\p{Cc}\p{Cs}]/u.test(child.alt))throw RangeError('Invalid component image');
       }else if(child.type!=='rect'||!isColor(child.color)||!length(child.height)||child.height===0)throw RangeError('Invalid decorative rectangle');
       return {...child};
     });
@@ -174,6 +177,8 @@ export interface PreviewTextSlice {
   /** Source offsets are available only if caller supplied an exact contiguous source slice. */
   sourceSlice?:{start:number;end:number};
 }
+// The host resolves a project-scoped resource to a verified PNG Blob. No URL from the component definition is loaded.
+export type PreviewImageResolver=(assetId:string)=>Promise<Blob>;
 export interface TextPagePreview {
   element:HTMLElement; plan:MeasuredPagePlan; slices:readonly PreviewTextSlice[];
   publicationReady:false;
@@ -185,6 +190,7 @@ export async function createPlainTextPagePreview(document:Document,options:{
   blocks?:readonly PreviewTextBlock[];
   sections?:readonly {id:string;startOn:'page'|'continuous';blocks:readonly (PreviewTextBlock|PageBreak)[]}[];
   paper?:{width:number;height:number;top:number;bottom:number;inner:number;outer:number;firstSide:'right'|'left'};
+  resolveImage?:PreviewImageResolver;
 }):Promise<TextPagePreview>{
   live(document);
   if((options.blocks===undefined)===(options.sections===undefined))throw RangeError('Specify exactly one block list or section list');
@@ -199,7 +205,28 @@ export async function createPlainTextPagePreview(document:Document,options:{
     throw RangeError('Invalid or oversized preview');
   // Snapshot caller-owned values before the first await.
   const sections=sourceSections.map(s=>({...s,blocks:s.blocks.map(b=>({...b,origin:{...b.origin,range:b.origin.range?{...b.origin.range}:undefined},...(isBreak(b)?{}:{request:{...b.request},...(b.component?{component:snapshotComponent(b.component)}:{})})}))}));
-  const {revision,fingerprint,width,height}=options;
+  const {revision,fingerprint,width,height,resolveImage}=options;
+  // Decode each unique resource before building the plan. Use a canvas snapshot so no object URL survives rendering.
+  const imageIds=new Set<string>();
+  function collectImages(children:readonly PreviewComponentChild[]){for(const n of children){if(n.type==='image')imageIds.add(n.assetId);else if(n.type==='group')collectImages(n.children);}}
+  for(const s of sections)for(const b of s.blocks)if(!isBreak(b)&&b.component)collectImages(b.component.children);
+  if(imageIds.size>32)throw RangeError('Too many preview image resources');
+  const images=new Map<string,ImageBitmap>();let imagePixels=0;
+  try{
+  for(const id of imageIds){
+    if(!resolveImage)throw Error('Component image resolver required');
+    const blob=await resolveImage(id);
+    if(!blob||blob.type!=='image/png'||!positive(blob.size)||blob.size>16*1024*1024)throw Error('Invalid PNG image resource');
+    const header=new Uint8Array(await blob.slice(0,24).arrayBuffer());
+    if(header.length!==24||![137,80,78,71,13,10,26,10,0,0,0,13,73,72,68,82].every((v,i)=>header[i]===v))throw Error('Invalid PNG header');
+    const view=new DataView(header.buffer),w=view.getUint32(16),h=view.getUint32(20);
+    if(!positive(w)||!positive(h)||w>8192||h>8192||w*h>16000000||imagePixels+w*h>32000000)throw RangeError('Image resource pixel limit exceeded');
+    const bitmap=await document.defaultView!.createImageBitmap(blob);
+    if(bitmap.width!==w||bitmap.height!==h){bitmap.close();throw Error('PNG decoded size mismatch');}
+    if(!positive(bitmap.width)||!positive(bitmap.height)||bitmap.width>8192||bitmap.height>8192||bitmap.width*bitmap.height>16000000||(imagePixels+=bitmap.width*bitmap.height)>32000000){bitmap.close();throw RangeError('Image resource pixel limit exceeded');}
+    images.set(id,bitmap);
+  }
+  let renderedImagePixels=0;
   const byKey=new Map<string,{block:PreviewTextBlock;measurement:MeasuredTextLines;labels:Map<string,MeasuredTextLines>;placement?:ComponentPlacement}>();
   const key=(o:Origin)=>JSON.stringify([o.documentId,o.blockKey]);
   const measuredSections:MeasuredSection[]=[];
@@ -266,6 +293,26 @@ export async function createPlainTextPagePreview(document:Document,options:{
           Object.assign(el.style,{left:px(rect.x)+'px',top:px(rect.y)+'px',width:px(rect.width)+'px',height:px(rect.height)+'px'});
           el.dataset.componentNode=child.id;
           if(child.type==='rect'){el.style.background=child.color;el.setAttribute('aria-hidden','true');}
+          else if(child.type==='image'){
+            el.dataset.componentImage=child.assetId;
+            const bitmap=images.get(child.assetId)!;
+            // Raster dimensions follow source pixels, not layout CSS pixels; fit does not distort the image.
+            const canvas=document.createElement('canvas');
+            const ratio=rect.width/rect.height;
+            let sw=bitmap.width,sh=bitmap.height;
+            if(child.fit==='cover'){if(sw/sh>ratio)sw=sh*ratio;else sh=sw/ratio;}
+            const scale=Math.min(1,2048/Math.max(sw,sh));
+            canvas.width=Math.max(1,Math.round(sw*scale));canvas.height=Math.max(1,Math.round(sh*scale));
+            if((renderedImagePixels+=canvas.width*canvas.height)>64000000)throw RangeError('Rendered image pixel limit exceeded');
+            const ctx=canvas.getContext('2d');if(!ctx)throw Error('Image canvas unavailable');
+            ctx.drawImage(bitmap,(bitmap.width-sw)/2,(bitmap.height-sh)/2,sw,sh,0,0,canvas.width,canvas.height);
+            canvas.style.cssText='all:initial;position:absolute;display:block;left:50%;top:50%;transform:translate(-50%,-50%);';
+            const boxRatio=child.fit==='cover'?ratio:bitmap.width/bitmap.height;
+            const w=Math.min(rect.width,rect.height*boxRatio),h=Math.min(rect.height,rect.width/boxRatio);
+            canvas.style.width=px(w)+'px';canvas.style.height=px(h)+'px';
+            if(child.alt){canvas.setAttribute('role','img');canvas.setAttribute('aria-label',child.alt);}else canvas.setAttribute('aria-hidden','true');
+            el.append(canvas);
+          }
           else if(child.type==='group'){el.dataset.componentGroup='true';if(child.direction==='canvas')el.dataset.componentCanvas='true';el.style.background=child.background;renderChildren(child.children,node,el);}
           else if(child.type==='label'){
             el.dataset.fixedLabel='true';
@@ -288,4 +335,5 @@ export async function createPlainTextPagePreview(document:Document,options:{
     root.append(page);
   }
   return {element,plan,slices,publicationReady:false};
+  }finally{for(const bitmap of images.values())bitmap.close();}
 }
