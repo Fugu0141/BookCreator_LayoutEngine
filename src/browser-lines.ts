@@ -19,7 +19,10 @@ const um=(css:number)=>Math.ceil(css*25400/96);
 const positive=(n:number)=>Number.isSafeInteger(n)&&n>0;
 function validate(request:PlainTextMeasureRequest){
   if(typeof request.text!=='string'||!request.text.length||request.text.length>10000||
-    /[\p{Cc}\p{Cs}\p{Cf}\p{Zl}\p{Zp}]/u.test(request.text)||
+    (request.multiline!==undefined&&typeof request.multiline!=='boolean')||
+    (request.paragraphGap!==undefined&&(!request.multiline||!Number.isSafeInteger(request.paragraphGap)||request.paragraphGap<0||request.paragraphGap>30000))||
+    /[\p{Cc}\p{Cs}\p{Cf}\p{Zl}\p{Zp}]/u.test(request.multiline?request.text.replace(/\r\n|\n/g,''):request.text)||
+    (request.multiline&&(!request.text.replace(/\r\n|\n/g,'').trim()||(request.text.match(/\n/g)?.length??0)>255))||
     !positive(request.width)||request.width>2000000||!positive(request.fontSize)||request.fontSize>100000||
     !isPreviewFontFamily(request.fontFamily)||!isPreviewFontWeight(request.fontWeight)||!Number.isFinite(request.lineHeight)||request.lineHeight<1.25||request.lineHeight>4)
     throw new RangeError('Unsupported plain line measurement request');
@@ -37,6 +40,21 @@ function live(document:Document){
 export async function measurePlainTextLines(document:Document,request:PlainTextMeasureRequest):Promise<MeasuredTextLines>{
   live(document);validate(request);
   const r=Object.freeze({...request});
+  if(r.multiline&&r.text.includes('\n')){
+    const lines:MeasuredTextLine[]=[];let start=0;
+    // Measure hard lines independently, then attach each original separator to its preceding row.
+    for(const match of r.text.matchAll(/[^\r\n]*(?:\r\n|\n|$)/g)){
+      const raw=match[0];if(!raw)continue;
+      const body=raw.replace(/(?:\r\n|\n)$/,'');
+      if(body.length){
+        const measured=await measurePlainTextLines(document,{...r,text:body,multiline:false,paragraphGap:undefined});
+        for(const [i,line] of measured.lines.entries())lines.push({start:start+line.start,end:start+(i===measured.lines.length-1?raw.length:line.end),height:line.height});
+      }else lines.push({start,end:start+raw.length,height:Math.ceil(r.fontSize*r.lineHeight)+(r.paragraphGap??0)});
+      start+=raw.length;
+    }
+    if(start!==r.text.length||!lines.length)throw Error('Incomplete hard-line mapping');
+    return {request:r,lines,measurement:'browser-dom-lines',publicationReady:false};
+  }
   const host=document.createElement('div');
   host.style.cssText='all:initial;position:fixed;top:0;left:0;visibility:hidden;pointer-events:none;contain:layout style paint;display:block;';
   const root=host.attachShadow({mode:'closed'}), el=document.createElement('div');
@@ -74,6 +92,13 @@ export async function measurePlainTextLines(document:Document,request:PlainTextM
     }
     return {request:r,lines,measurement:'browser-dom-lines',publicationReady:false};
   }finally{host.remove();}
+}
+
+// Preserve separator code units in DOM textContent without letting them create extra visual rows.
+function frozenText(el:HTMLElement,r:PlainTextMeasureRequest,line:MeasuredTextLine){
+  const raw=r.text.slice(line.start,line.end),body=raw.replace(/(?:\r\n|\n)$/,'');
+  el.textContent=body;
+  if(body.length!==raw.length){const ending=el.ownerDocument.createElement('span');ending.hidden=true;ending.style.display='none';ending.textContent=raw.slice(body.length);el.append(ending);}
 }
 
 // Restricted component geometry: one primary slot plus optional named source slots in strict trees.
@@ -252,6 +277,7 @@ export async function createPlainTextPagePreview(document:Document,options:{
     return {...b,origin,request:{...b.request},component,namedSlots};
   })}));
   if(sections.flatMap(s=>s.blocks).reduce((n,b)=>n+(isBreak(b)?0:b.request.text.length+(b.namedSlots??[]).reduce((sum,s)=>sum+s.request.text.length,0)),0)>50000)throw RangeError('Preview source text limit exceeded');
+  if(sections.flatMap(s=>s.blocks).reduce((n,b)=>n+(isBreak(b)?0:(b.request.text.match(/\n/g)?.length??0)+(b.namedSlots??[]).reduce((sum,s)=>sum+(s.request.text.match(/\n/g)?.length??0),0)),0)>1024)throw RangeError('Preview hard-line limit exceeded');
   const {revision,fingerprint,width,height,resolveImage}=options;
   // Decode each unique resource before building the plan. Use a canvas snapshot so no object URL survives rendering.
   const imageIds=new Set<string>();
@@ -371,14 +397,14 @@ export async function createPlainTextPagePreview(document:Document,options:{
             el.dataset.fixedLabel='true';
             const measured=labels.get(child.id)!;
             for(const line of measured.lines){
-              const item=document.createElement('div');styleText(item,measured.request,false);item.style.height=px(line.height)+'px';item.style.color=child.color;item.textContent=measured.request.text.slice(line.start,line.end);el.append(item);
+              const item=document.createElement('div');styleText(item,measured.request,false);item.style.height=px(line.height)+'px';item.style.color=child.color;frozenText(item,measured.request,line);el.append(item);
             }
           }else if(child.type==='slot'){
             el.dataset.namedSlot=child.name;
             const measured=slots.get(child.name)!;
             for(const line of measured.lines){
               const item=document.createElement('div');styleText(item,measured.request,false);item.style.height=px(line.height)+'px';item.style.color=child.color;
-              item.dataset.start=String(line.start);item.dataset.end=String(line.end);item.textContent=measured.request.text.slice(line.start,line.end);el.append(item);
+              item.dataset.start=String(line.start);item.dataset.end=String(line.end);frozenText(item,measured.request,line);el.append(item);
             }
           }else{textParent=el;el.dataset.contentSlot='true';}
           parent.append(el);
@@ -394,7 +420,7 @@ export async function createPlainTextPagePreview(document:Document,options:{
       for(const line of lineUnits){
         const item=document.createElement('div');styleText(item,measurement.request,false);item.style.height=px(line.height)+'px';
         item.dataset.start=String(line.start);item.dataset.end=String(line.end);
-        item.textContent=measurement.request.text.slice(line.start,line.end);if(block.component)item.style.color=block.component.textColor;textParent.append(item);
+        frozenText(item,measurement.request,line);if(block.component)item.style.color=block.component.textColor;textParent.append(item);
       }
       page.append(fragment);
     }
