@@ -168,7 +168,7 @@ function placeComponent(c:PreviewComponent,outerWidth:number,measurement:Measure
 }
 
 export interface PreviewTextBlock {
-  component?:PreviewComponent; // strict unsplittable component only
+  component?:PreviewComponent; // strict tree or splittable single-slot column frame
   origin:Origin; request:PlainTextMeasureRequest; splitPolicy:SplitPolicy;
   startPosition?:'page-top'; startPositionSource?:'component'|'explicit';
   // The host must verify the logical text is an exact raw source substring before setting this.
@@ -241,7 +241,8 @@ export async function createPlainTextPagePreview(document:Document,options:{
     if(b.sourceTextStart!==undefined&&(!b.origin.range||!Number.isSafeInteger(b.sourceTextStart)||
       b.sourceTextStart<b.origin.range.start||!Number.isSafeInteger(b.sourceTextStart+b.request.text.length)||
       b.sourceTextStart+b.request.text.length>b.origin.range.end))throw Error('Invalid exact source mapping');
-    if(b.component&&b.splitPolicy!=='strict')throw Error('Components require strict pagination');
+    const fragmentable=!!b.component&&b.splitPolicy!=='strict';
+    if(fragmentable&&(b.component!.direction!=='column'||b.component!.gap!==0||b.component!.children.length!==1||b.component!.children[0].type!=='content'))throw Error('Splittable components require a single content slot in a column frame');
     const geometry=b.component?resolveComponentWidths(b.component,b.request.width):undefined;
     const textWidth=geometry?.contentWidth??b.request.width;
     const measurement=await measurePlainTextLines(document,{...b.request,width:textWidth});
@@ -253,10 +254,10 @@ export async function createPlainTextPagePreview(document:Document,options:{
       labels.set(child.id,await measurePlainTextLines(document,{text:child.text,width:geometry!.widths.get(child.id)!,fontFamily:child.fontFamily,fontWeight:child.fontWeight,fontSize:child.fontSize,lineHeight:child.lineHeight}));
     }}
     if(b.component)await measureLabels(b.component.children);
-    const placement=b.component?placeComponent(b.component,b.request.width,measurement,labels,geometry!.widths,height):undefined;
+    const placement=b.component&&!fragmentable?placeComponent(b.component,b.request.width,measurement,labels,geometry!.widths,height):undefined;
     byKey.set(k,{block:b,measurement,labels,placement});
     const heights=placement?[placement.rect.height]:measurement.lines.map(l=>l.height);
-    blocks.push({kind:'block' as const,origin:b.origin,width:b.request.width,unitHeights:heights,splitPolicy:b.splitPolicy,startPosition:b.startPosition,startPositionSource:b.startPositionSource});
+    blocks.push({kind:'block' as const,origin:b.origin,width:b.request.width,unitHeights:heights,splitPolicy:b.splitPolicy,...(fragmentable?{fragmentPadding:{top:b.component!.padding,bottom:b.component!.padding}}:{}),startPosition:b.startPosition,startPositionSource:b.startPositionSource});
   }
     measuredSections.push({id:section.id,startOn:section.startOn,blocks});
   }
@@ -326,6 +327,12 @@ export async function createPlainTextPagePreview(document:Document,options:{
           parent.append(el);
         }}
         renderChildren(c.children,placement,fragment);
+      }else if(block.component){
+        const c=block.component;fragment.dataset.component='true';fragment.dataset.fragmentableFrame='true';fragment.style.background=c.background;
+        const slot=document.createElement('div');slot.dataset.componentNode=c.children[0].id;slot.dataset.contentSlot='true';
+        slot.style.cssText='all:initial;position:absolute;display:block;box-sizing:border-box;';
+        Object.assign(slot.style,{left:px(c.padding)+'px',top:px(c.padding)+'px',width:px(f.rect.width-2*c.padding)+'px',height:px(f.rect.height-2*c.padding)+'px'});
+        fragment.append(slot);textParent=slot;
       }
       for(const line of lineUnits){
         const item=document.createElement('div');styleText(item,measurement.request,false);item.style.height=px(line.height)+'px';

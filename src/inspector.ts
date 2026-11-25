@@ -12,8 +12,8 @@ function isInput(v:unknown):v is PaginationInput{
     !isRecord(v.content)||!validKeys(v.content,['width','height'])||!int(v.content.width)||!int(v.content.height)||!Array.isArray(v.sections)||v.sections.length>100000)return false;
   return v.sections.every(s=>isRecord(s)&&validKeys(s,['id','startOn','blocks'])&&str(s.id)&&choice(s.startOn,['page','continuous'])&&Array.isArray(s.blocks)&&s.blocks.length<=100000&&
     s.blocks.every(b=>isRecord(b)&&origin(b.origin)&&(b.kind==='pagebreak'?validKeys(b,['kind','origin']):
-      b.kind==='block'&&validKeys(b,['kind','origin','width','unitHeights','splitPolicy','startPosition','startPositionSource'])&&int(b.width)&&Array.isArray(b.unitHeights)&&b.unitHeights.length<=1000000&&b.unitHeights.every(int)&&
-      choice(b.splitPolicy,['allow','avoid','strict'])&&(b.startPosition===undefined||choice(b.startPosition,['flow','page-top']))&&(b.startPositionSource===undefined||choice(b.startPositionSource,['component','explicit'])))));
+      b.kind==='block'&&validKeys(b,['kind','origin','width','unitHeights','splitPolicy','fragmentPadding','startPosition','startPositionSource'])&&int(b.width)&&Array.isArray(b.unitHeights)&&b.unitHeights.length<=1000000&&b.unitHeights.every(int)&&
+      choice(b.splitPolicy,['allow','avoid','strict'])&&(b.fragmentPadding===undefined||(isRecord(b.fragmentPadding)&&validKeys(b.fragmentPadding,['top','bottom'])&&int(b.fragmentPadding.top)&&int(b.fragmentPadding.bottom)))&&(b.startPosition===undefined||choice(b.startPosition,['flow','page-top']))&&(b.startPositionSource===undefined||choice(b.startPositionSource,['component','explicit'])))));
 }
 // Boundary for untrusted JSON. Unknown fields are refused rather than silently dropping a layout constraint.
 export function inspectMeasuredInput(value:unknown):{ok:true;plan:MeasuredPagePlan}|{ok:false;diagnostics:{code:'PG_INPUT_SCHEMA';message:string}[]}{
