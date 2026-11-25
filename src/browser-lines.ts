@@ -309,7 +309,24 @@ export interface PreviewNamedSlot {
   sourceTextStart?:number;
 }
 export interface PreviewNamedSlotSlice {name:string;textStart:number;textEnd:number;sourceSlice?:{start:number;end:number}}
+/** A semantic list item supplied by the host; marker is generated, never source text. */
+export type PreviewListItem=({kind:'bullet'}|{kind:'ordered';number:number})&{
+  depth:number;indentStep:number;markerWidth:number;gap:number;
+};
+function snapshotListItem(value:PreviewListItem,width:number):PreviewListItem{
+  if(!value||typeof value!=='object'||!['bullet','ordered'].includes(value.kind)||
+    Object.keys(value).some(k=>!['kind','depth','indentStep','markerWidth','gap',...(value.kind==='ordered'?['number']:[])].includes(k))||
+    !Number.isSafeInteger(value.depth)||value.depth<0||value.depth>7||
+    !positive(value.indentStep)||value.indentStep>30000||!positive(value.markerWidth)||value.markerWidth>30000||
+    !Number.isSafeInteger(value.gap)||value.gap<0||value.gap>10000||
+    (value.kind==='ordered'&&(!Number.isSafeInteger(value.number)||value.number<1||value.number>999999999))||
+    width-listInset(value)<=0)throw RangeError('Invalid list item geometry or marker');
+  return {...value};
+}
+function listInset(item:PreviewListItem){return item.depth*item.indentStep+item.markerWidth+item.gap;}
+function listMarker(item:PreviewListItem){return item.kind==='ordered'?item.number+'.':['•','◦','▪'][item.depth%3];}
 export interface PreviewTextBlock {
+  listItem?:PreviewListItem;
   namedSlots?:readonly PreviewNamedSlot[];
   component?:PreviewComponent; // strict tree or splittable single-slot column frame
   origin:Origin; request:PlainTextMeasureRequest; splitPolicy:SplitPolicy;
@@ -379,7 +396,9 @@ export async function createPlainTextPagePreview(document:Document,options:{
     if(isBreak(b))return {...b,origin};
     const component=b.component?snapshotComponent(b.component):undefined;
     const namedSlots=snapshotNamedSlots(b,component);
-    return {...b,origin,request:snapshotRequest(b.request),component,namedSlots};
+    const listItem=b.listItem===undefined?undefined:snapshotListItem(b.listItem,b.request.width);
+    if(listItem&&component)throw RangeError('List items do not support component frames yet');
+    return {...b,origin,request:snapshotRequest(b.request),component,namedSlots,listItem};
   })}));
   if(sections.flatMap(s=>s.blocks).reduce((n,b)=>n+(isBreak(b)?0:b.request.text.length+(b.namedSlots??[]).reduce((sum,s)=>sum+s.request.text.length,0)),0)>50000)throw RangeError('Preview source text limit exceeded');
   if(sections.flatMap(s=>s.blocks).reduce((n,b)=>n+(isBreak(b)?0:(b.request.text.match(/\n/g)?.length??0)+(b.namedSlots??[]).reduce((sum,s)=>sum+(s.request.text.match(/\n/g)?.length??0),0)),0)>1024)throw RangeError('Preview hard-line limit exceeded');
@@ -406,7 +425,7 @@ export async function createPlainTextPagePreview(document:Document,options:{
     images.set(id,bitmap);
   }
   let renderedImagePixels=0;
-  const byKey=new Map<string,{block:PreviewTextBlock;measurement:MeasuredTextLines;labels:Map<string,MeasuredTextLines>;slots:Map<string,MeasuredTextLines>;placement?:ComponentPlacement}>();
+  const byKey=new Map<string,{block:PreviewTextBlock;measurement:MeasuredTextLines;labels:Map<string,MeasuredTextLines>;slots:Map<string,MeasuredTextLines>;placement?:ComponentPlacement;marker?:MeasuredTextLines}>();
   const key=(o:Origin)=>JSON.stringify([o.documentId,o.blockKey]);
   const measuredSections:MeasuredSection[]=[];
   let totalLabelText=0;
@@ -421,8 +440,17 @@ export async function createPlainTextPagePreview(document:Document,options:{
     const fragmentable=!!b.component&&b.splitPolicy!=='strict';
     if(fragmentable&&(b.component!.direction!=='column'||b.component!.gap!==0||b.component!.children.length!==1||b.component!.children[0].type!=='content'))throw Error('Splittable components require a single content slot in a column frame');
     const geometry=b.component?resolveComponentWidths(b.component,b.request.width):undefined;
-    const textWidth=geometry?.contentWidth??b.request.width;
-    const measurement=await measurePlainTextLines(document,{...b.request,width:textWidth});
+    const textWidth=geometry?.contentWidth??(b.request.width-(b.listItem?listInset(b.listItem):0));
+    let measurement=await measurePlainTextLines(document,{...b.request,width:textWidth});
+    let marker:MeasuredTextLines|undefined;
+    if(b.listItem){
+      const {inlineStyles:_,multiline:__,paragraphGap:___,...base}=b.request;
+      marker=await measurePlainTextLines(document,{...base,text:listMarker(b.listItem),width:b.listItem.markerWidth});
+      if(marker.lines.length!==1)throw RangeError('List marker does not fit reserved width');
+      // Marker and the first text row are top-aligned. Reserve both measured boxes.
+      const [first,...rest]=measurement.lines;
+      measurement={...measurement,lines:[{...first,height:Math.max(first.height,marker.lines[0].height)},...rest]};
+    }
     const labels=new Map<string,MeasuredTextLines>(),slots=new Map<string,MeasuredTextLines>();
     const sources=new Map((b.namedSlots??[]).map(s=>[s.name,s.request]));
     async function measureLabels(children:readonly PreviewComponentChild[]){for(const child of children){
@@ -436,7 +464,7 @@ export async function createPlainTextPagePreview(document:Document,options:{
     }}
     if(b.component)await measureLabels(b.component.children);
     const placement=b.component&&!fragmentable?placeComponent(b.component,b.request.width,measurement,labels,slots,geometry!.widths,height):undefined;
-    byKey.set(k,{block:b,measurement,labels,slots,placement});
+    byKey.set(k,{block:b,measurement,labels,slots,placement,marker});
     const heights=placement?[placement.rect.height]:measurement.lines.map(l=>l.height);
     blocks.push({kind:'block' as const,origin:b.origin,width:b.request.width,unitHeights:heights,splitPolicy:b.splitPolicy,...(fragmentable?{fragmentPadding:{top:b.component!.padding,bottom:b.component!.padding}}:{}),startPosition:b.startPosition,startPositionSource:b.startPositionSource});
   }
@@ -458,7 +486,7 @@ export async function createPlainTextPagePreview(document:Document,options:{
     if(paper){const guide=document.createElement('div');guide.dataset.contentGuide='true';guide.style.cssText='position:absolute;box-sizing:border-box;outline:1px dashed #ccc;pointer-events:none;';Object.assign(guide.style,{left:px(left)+'px',top:px(top)+'px',width:px(width)+'px',height:px(height)+'px'});page.append(guide);}
     for(const f of p.fragments){
       const entry=byKey.get(key(f.origin));if(!entry)throw Error('Missing preview block');
-      const {block,measurement,labels,slots,placement}=entry, lineUnits=placement?measurement.lines:measurement.lines.slice(f.unitStart,f.unitEnd);
+      const {block,measurement,labels,slots,placement,marker}=entry, lineUnits=placement?measurement.lines:measurement.lines.slice(f.unitStart,f.unitEnd);
       if(!lineUnits.length)throw Error('Missing preview lines');
       const textStart=lineUnits[0].start,textEnd=lineUnits.at(-1)!.end;
       // Origin may refer to markup; only a caller-verified contiguous mapping enables raw source ranges.
@@ -469,6 +497,20 @@ export async function createPlainTextPagePreview(document:Document,options:{
       fragment.style.cssText='all:initial;display:block;position:absolute;box-sizing:border-box;';
       Object.assign(fragment.style,{left:px(left+f.rect.x)+'px',top:px(top+f.rect.y)+'px',width:px(f.rect.width)+'px',height:px(f.rect.height)+'px'});
       let textParent=fragment;
+      if(block.listItem&&marker){
+        const item=block.listItem,inset=listInset(item);
+        fragment.dataset.listItem=item.kind;fragment.dataset.listDepth=String(item.depth);
+        if(f.unitStart===0){
+          const mark=document.createElement('div');styleText(mark,marker.request,false);
+          Object.assign(mark.style,{position:'absolute',left:px(item.depth*item.indentStep)+'px',top:'0px',height:px(marker.lines[0].height)+'px',textAlign:'right'});
+          mark.dataset.listMarker='true';mark.setAttribute('aria-hidden','true');mark.textContent=marker.request.text;
+          fragment.append(mark);
+        }
+        const body=document.createElement('div');body.dataset.listBody='true';
+        body.style.cssText='all:initial;display:block;position:absolute;box-sizing:border-box;';
+        Object.assign(body.style,{left:px(inset)+'px',top:'0px',width:px(measurement.request.width)+'px',height:px(f.rect.height)+'px'});
+        fragment.append(body);textParent=body;
+      }
       if(placement&&block.component){
         const c=block.component;fragment.dataset.component='true';fragment.style.background=c.background;
         function renderChildren(children:readonly PreviewComponentChild[],placed:ComponentPlacement,parent:HTMLElement){
