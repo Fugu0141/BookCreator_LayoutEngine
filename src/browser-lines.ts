@@ -1,4 +1,4 @@
-import {measureDisplayMath,parsePreviewMath,parseDisplayMath,createPreviewMath,readyPreviewMathFont,isPreviewMathFontFamily,type MeasuredDisplayMath} from './math-preview.js';
+import {measureDisplayMath,validateCompiledMath,createPreviewMath,readyPreviewMathFont,isPreviewMathFontFamily,type MeasuredDisplayMath,type MathCompilationCache} from './math-preview.js';
 import {validateImageCrop,type ImageCrop} from './image-crop.js';
 import {renderMeasuredPreview} from './browser-page-render.js';
 import {measurePreviewSections} from './browser-page-measure.js';
@@ -36,7 +36,7 @@ function validate(request:PlainTextMeasureRequest,display=false){
     throw new RangeError('Unsupported plain line measurement request');
 }
 // Validate a bounded, ordered interval list before any asynchronous measurement.
-function snapshotRequest(r:PlainTextMeasureRequest,display=false):Readonly<PlainTextMeasureRequest>{
+function snapshotRequest(r:PlainTextMeasureRequest,display=false,mathCache?:MathCompilationCache):Readonly<PlainTextMeasureRequest>{
   validate(r,display);
   const positions=[...r.text.matchAll(/\uFFFC/g)].map(m=>m.index!);
   let atoms:readonly InlineMathAtom[]|undefined;
@@ -51,7 +51,7 @@ function snapshotRequest(r:PlainTextMeasureRequest,display=false):Readonly<Plain
         const before=atom.start===0||r.text[atom.start-1]==='\n',after=atom.start+1===r.text.length||r.text[atom.start+1]==='\n'||r.text.slice(atom.start+1,atom.start+3)==='\r\n';
         if(!before||!after)throw RangeError('Display math atom must occupy an entire hard line');
       }
-      (atom.display===true?parseDisplayMath:parsePreviewMath)(atom.formula);
+      validateCompiledMath(atom.formula,atom.display===true?'block':'inline',mathCache);
       return Object.freeze({start:atom.start,formula:atom.formula,...(atom.display===true?{display:true as const}:{}),...(atom.equationNumber!==undefined?{equationNumber:atom.equationNumber}:{})});
     }));
   }
@@ -80,7 +80,7 @@ function slicedMath(r:PlainTextMeasureRequest,start:number,end:number):InlineMat
   return atoms?.length?atoms:undefined;
 }
 /** Use identical typed spans for wrapping, frozen-line validation and final page rendering. */
-function appendStyled(el:HTMLElement,r:PlainTextMeasureRequest,start:number,end:number){
+function appendStyled(el:HTMLElement,r:PlainTextMeasureRequest,start:number,end:number,mathCache?:MathCompilationCache){
   const segments:{start:number;end:number;node:Text|HTMLElement;math?:true}[]=[];
   const append=(a:number,b:number,run?:InlineStyleRun)=>{
     if(a===b)return;
@@ -112,7 +112,7 @@ function appendStyled(el:HTMLElement,r:PlainTextMeasureRequest,start:number,end:
       const span=el.ownerDocument.createElement('span');
       span.dataset.inlineMath='true';span.dataset.mathStart=String(a);span.dataset.mathEnd=String(b);
       span.style.cssText='display:inline-block;vertical-align:baseline;white-space:nowrap;line-height:normal;font-family:math,serif;font-style:normal;font-weight:400;font-synthesis:none;';
-      span.append(createPreviewMath(el.ownerDocument,entry.atom.formula,'inline',r.mathFontFamily));el.append(span);
+      span.append(createPreviewMath(el.ownerDocument,entry.atom.formula,'inline',r.mathFontFamily,mathCache));el.append(span);
       segments.push({start:a,end:b,node:span,math:true});
     }else append(a,b,entry.run);
     cursor=b;
@@ -151,7 +151,7 @@ function glyphBoxes(document:Document,r:PlainTextMeasureRequest,segments:StyledS
   }
   return boxes;
 }
-function measureVariableLines(document:Document,root:ShadowRoot,el:HTMLElement,r:PlainTextMeasureRequest,segments:StyledSegment[]):MeasuredTextLine[]{
+function measureVariableLines(document:Document,root:ShadowRoot,el:HTMLElement,r:PlainTextMeasureRequest,segments:StyledSegment[],mathCache?:MathCompilationCache):MeasuredTextLine[]{
   const rect=el.getBoundingClientRect(),glyphs=glyphBoxes(document,r,segments,0,r.text.length,rect);
   if(!glyphs.length||rect.height<=0||el.scrollWidth>el.clientWidth+1)throw Error('Invalid variable line geometry');
   const groups:GlyphBox[][]=[];
@@ -170,7 +170,7 @@ function measureVariableLines(document:Document,root:ShadowRoot,el:HTMLElement,r
   const frozen=groups.map(group=>{
     const start=group[0].start,end=group.at(-1)!.end;
     const line=document.createElement('div');styleText(line,r,false);
-    const rowSegments=appendStyled(line,r,start,end);batch.append(line);
+    const rowSegments=appendStyled(line,r,start,end,mathCache);batch.append(line);
     return {group,start,end,line,rowSegments};
   });
   root.append(batch);
@@ -190,8 +190,8 @@ function live(document:Document){
   if(!document.body||!document.defaultView||!document.fonts)throw Error('A live browser document is required');
 }
 // Grapheme ranges, real browser wrapping, bounded input. Reject ambiguous geometry instead of guessing.
-export async function measurePlainTextLines(document:Document,request:PlainTextMeasureRequest):Promise<MeasuredTextLines>{
-  live(document);const r=snapshotRequest(request);
+export async function measurePlainTextLines(document:Document,request:PlainTextMeasureRequest,mathCache?:MathCompilationCache):Promise<MeasuredTextLines>{
+  live(document);const r=snapshotRequest(request,false,mathCache);
   if(r.multiline&&r.text.includes('\n')){
     const lines:MeasuredTextLine[]=[];let start=0;
     // Measure hard lines independently, then attach each original separator to its preceding row.
@@ -199,7 +199,7 @@ export async function measurePlainTextLines(document:Document,request:PlainTextM
       const raw=match[0];if(!raw)continue;
       const body=raw.replace(/(?:\r\n|\n)$/,'');
       if(body.length){
-        const measured=await measurePlainTextLines(document,{...r,text:body,multiline:false,paragraphGap:undefined,inlineStyles:slicedRuns(r,start,start+body.length),inlineMath:slicedMath(r,start,start+body.length)});
+        const measured=await measurePlainTextLines(document,{...r,text:body,multiline:false,paragraphGap:undefined,inlineStyles:slicedRuns(r,start,start+body.length),inlineMath:slicedMath(r,start,start+body.length)},mathCache);
         for(const [i,line] of measured.lines.entries())lines.push({start:start+line.start,end:start+(i===measured.lines.length-1?raw.length:line.end),height:line.height,...(line.displayMath?{displayMath:line.displayMath}:{})});
       }else lines.push({start,end:start+raw.length,height:Math.ceil(r.fontSize*r.lineHeight)+(r.paragraphGap??0)});
       start+=raw.length;
@@ -209,19 +209,19 @@ export async function measurePlainTextLines(document:Document,request:PlainTextM
   }
   if(r.inlineMath?.[0]?.display===true){
     if(r.text!=='\uFFFC'||r.inlineMath.length!==1)throw RangeError('Expected isolated display math row');
-    const displayMath=await measureDisplayMath(document,r.inlineMath[0].formula,r.width,r.fontSize,r.inlineMath[0].equationNumber,r.mathFontFamily);
+    const displayMath=await measureDisplayMath(document,r.inlineMath[0].formula,r.width,r.fontSize,r.inlineMath[0].equationNumber,r.mathFontFamily,mathCache);
     return {request:r,lines:[{start:0,end:1,height:displayMath.height,displayMath}],measurement:'browser-dom-lines',publicationReady:false};
   }
   const host=document.createElement('div');
   host.style.cssText='all:initial;position:fixed;top:0;left:0;visibility:hidden;pointer-events:none;contain:layout style paint;display:block;';
   const root=host.attachShadow({mode:'closed'}), el=document.createElement('div');
-  styleText(el,r,true);const segments=appendStyled(el,r,0,r.text.length);root.append(el);document.body.append(host);
+  styleText(el,r,true);const segments=appendStyled(el,r,0,r.text.length,mathCache);root.append(el);document.body.append(host);
   try{
     el.getBoundingClientRect();await readyPreviewFont(document,r.fontFamily,r.fontWeight,r.text);
     for(const run of r.inlineStyles??[])await readyPreviewFont(document,run.fontFamily??r.fontFamily,run.fontWeight??r.fontWeight,r.text.slice(run.start,run.end));
     if(r.inlineMath?.length)await readyPreviewMathFont(document,root,r.mathFontFamily);
     if(r.inlineMath?.length||r.inlineStyles?.some(s=>s.fontSize!==undefined||(s.baseline&&s.baseline!=='normal')||(s.fontFamily!==undefined&&s.fontFamily!==r.fontFamily))){
-      const lines=measureVariableLines(document,root,el,r,segments);
+      const lines=measureVariableLines(document,root,el,r,segments,mathCache);
       return {request:r,lines,measurement:'browser-dom-lines',publicationReady:false};
     }
     const height=el.getBoundingClientRect().height;
@@ -250,7 +250,7 @@ export async function measurePlainTextLines(document:Document,request:PlainTextM
     // geometry without intervening DOM mutations. Reject overflow as before.
     const batch=document.createDocumentFragment();
     const frozen=groups.map(group=>{
-      const line=document.createElement('div');styleText(line,r,false);appendStyled(line,r,group.start,group.end);batch.append(line);
+      const line=document.createElement('div');styleText(line,r,false);appendStyled(line,r,group.start,group.end,mathCache);batch.append(line);
       return {group,line};
     });
     root.append(batch);
@@ -265,13 +265,13 @@ export async function measurePlainTextLines(document:Document,request:PlainTextM
 }
 
 // Preserve separator code units in DOM textContent without letting them create extra visual rows.
-function frozenText(el:HTMLElement,r:PlainTextMeasureRequest,line:MeasuredTextLine){
+function frozenText(el:HTMLElement,r:PlainTextMeasureRequest,line:MeasuredTextLine,mathCache?:MathCompilationCache){
   const raw=r.text.slice(line.start,line.end),body=raw.replace(/(?:\r\n|\n)$/,'');
   if(line.displayMath){
     const node=line.displayMath.element;
     node.dataset.slotDisplayMath='true';node.dataset.mathStart=String(line.start);node.dataset.mathEnd=String(line.start+1);
     node.style.color='inherit';el.append(node);
-  }else appendStyled(el,r,line.start,line.start+body.length);
+  }else appendStyled(el,r,line.start,line.start+body.length,mathCache);
   if(body.length!==raw.length){const ending=el.ownerDocument.createElement('span');ending.hidden=true;ending.style.display='none';ending.textContent=raw.slice(body.length);el.append(ending);}
 }
 
@@ -414,7 +414,7 @@ export interface PreviewTextSlice {
   /** Named slots are separate logical texts; never concatenate their source ranges. */
   namedSlots?:readonly PreviewNamedSlotSlice[];
 }
-function snapshotNamedSlots(b:PreviewTextBlock,component:PreviewComponent|undefined):PreviewNamedSlot[]{
+function snapshotNamedSlots(b:PreviewTextBlock,component:PreviewComponent|undefined,mathCache?:MathCompilationCache):PreviewNamedSlot[]{
   const names=new Set<string>();
   function visit(nodes:readonly PreviewComponentChild[]){for(const n of nodes){if(n.type==='slot')names.add(n.name);else if(n.type==='group')visit(n.children);}}
   if(component)visit(component.children);
@@ -430,7 +430,7 @@ function snapshotNamedSlots(b:PreviewTextBlock,component:PreviewComponent|undefi
   const copy=slots.map(s=>{
     if(!s||!validSlotName(s.name)||!names.delete(s.name)||!s.request)throw RangeError('Missing, duplicate or unknown named source slot');
     if(s.request.inlineMath!==undefined&&s.sourceTextStart!==undefined)throw RangeError('Inline math in named slots requires a host-owned source map');
-    const {width:_,...request}=snapshotRequest({...s.request,width:100000});
+    const {width:_,...request}=snapshotRequest({...s.request,width:100000},false,mathCache);
     checkRange(s.sourceTextStart,request.text);
     return {name:s.name,request,sourceTextStart:s.sourceTextStart};
   });
@@ -466,9 +466,12 @@ export async function createPlainTextPagePreview(document:Document,options:{
   /** Opt-in cache owned by the host for this live document. */
   measurementCache?:TextMeasurementCache;
   collectTimings?:boolean;
+  /** Optional book-session-owned, font-independent syntax compilation cache. */
+  mathCache?:MathCompilationCache;
 }):Promise<TextPagePreview>{
   live(document);
   // Snapshot the opt-in before any asynchronous work. The clock is never read otherwise.
+  const mathCache=options.mathCache;
   const timed=options.collectTimings===true;
   const now=()=>timed?document.defaultView!.performance.now():0;
   const started=now();
@@ -487,7 +490,7 @@ export async function createPlainTextPagePreview(document:Document,options:{
     const origin={...b.origin,range:b.origin.range?{...b.origin.range}:undefined};
     if(isBreak(b))return {...b,origin};
     const component=b.component?snapshotComponent(b.component):undefined;
-    const namedSlots=snapshotNamedSlots(b,component);
+    const namedSlots=snapshotNamedSlots(b,component,mathCache);
     const listItem=b.listItem===undefined?undefined:snapshotListItem(b.listItem,b.request.width);
     if(listItem&&component)throw RangeError('List items do not support component frames yet');
     if(b.request.inlineMath!==undefined&&(listItem||b.sourceTextStart!==undefined||b.displayMath!==undefined))throw RangeError('Inline math requires a host-owned source map and cannot be combined with list items or display math');
@@ -495,9 +498,9 @@ export async function createPlainTextPagePreview(document:Document,options:{
     if(b.equationNumber!==undefined&&(b.displayMath!==true||typeof b.equationNumber!=='string'||!/^([1-9][0-9]{0,5})\.([1-9][0-9]{0,5})$/.test(b.equationNumber)))throw RangeError('Equation number requires a valid strict display math block');
     if(b.displayMath!==undefined){
       if(b.displayMath!==true||b.splitPolicy!=='strict'||component||listItem||namedSlots.length||b.request.inlineStyles!==undefined||b.request.multiline||b.request.paragraphGap!==undefined)throw RangeError('Display math requires an independent strict block');
-      parseDisplayMath(b.request.text);
+      validateCompiledMath(b.request.text,'block',mathCache);
     }
-    return {...b,origin,request:snapshotRequest(b.request,b.displayMath===true),component,namedSlots,listItem};
+    return {...b,origin,request:snapshotRequest(b.request,b.displayMath===true,mathCache),component,namedSlots,listItem};
   })}));
   if(sections.flatMap(s=>s.blocks).reduce((n,b)=>n+(isBreak(b)?0:b.request.text.length+(b.namedSlots??[]).reduce((sum,s)=>sum+s.request.text.length,0)),0)>50000)throw RangeError('Preview source text limit exceeded');
   if(sections.flatMap(s=>s.blocks).reduce((n,b)=>n+(isBreak(b)?0:(b.request.text.match(/\n/g)?.length??0)+(b.namedSlots??[]).reduce((sum,s)=>sum+(s.request.text.match(/\n/g)?.length??0),0)),0)>1024)throw RangeError('Preview hard-line limit exceeded');
@@ -527,13 +530,14 @@ export async function createPlainTextPagePreview(document:Document,options:{
     images.set(id,bitmap);
   }
   const imagesReady=now();
-  const {byKey,measuredSections}=await measurePreviewSections(document,sections,width,height,{measurePlainTextLines:measurementCache?(doc,r)=>measureWithTextCache(doc,r.inlineMath!==undefined||r.inlineStyles!==undefined?r:snapshotRequest(r),measurementCache,measurePlainTextLines):measurePlainTextLines,resolveComponentWidths,placeComponent,listInset,listMarker});
+  const measure=(doc:Document,r:PlainTextMeasureRequest)=>measurePlainTextLines(doc,r,mathCache);
+  const {byKey,measuredSections}=await measurePreviewSections(document,sections,width,height,{measurePlainTextLines:measurementCache?(doc,r)=>measureWithTextCache(doc,r.inlineMath!==undefined||r.inlineStyles!==undefined?r:snapshotRequest(r),measurementCache,measure):measure,measureDisplayMath:(doc,source,w,size,number,family)=>measureDisplayMath(doc,source,w,size,number,family,mathCache),resolveComponentWidths,placeComponent,listInset,listMarker});
   const measured=now();
   const plan=paginateMeasured({schemaVersion:1,revision,fingerprint,content:{width,height},sections:measuredSections});
   if(!plan.pages.length)throw Error('No drawable content');
   if(plan.completeness!=='full')throw Error('Cannot render partial preview: '+plan.diagnostics.map(d=>d.code).join(', '));
   const paginated=now();
-  const result=renderMeasuredPreview(document,plan,{width,height,paper,byKey,images},{styleText,frozenText,listInset});
+  const result=renderMeasuredPreview(document,plan,{width,height,paper,byKey,images},{styleText,frozenText:(el,r,line)=>frozenText(el,r,line,mathCache),listInset});
   if(!timed)return result;
   const rendered=now();
   return {...result,timings:Object.freeze({validationMs:validated-started,imagesMs:imagesReady-validated,
