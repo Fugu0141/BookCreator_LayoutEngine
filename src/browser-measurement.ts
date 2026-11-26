@@ -13,7 +13,7 @@ export interface InlineStyleRun {
   baseline?:'normal'|'super'|'sub';
 }
 /** One indivisible formula replaces a U+FFFC logical atom; host owns raw-source mapping. */
-export interface InlineMathAtom {start:number;formula:string;/** Isolated hard-line display in a semantic component text slot. */display?:true}
+export interface InlineMathAtom {start:number;formula:string;/** Isolated hard-line display in a semantic component text slot. */display?:true;/** Host-resolved chapter equation number, only for display atoms. */equationNumber?:string}
 export interface PlainTextMeasureRequest {
   text:string;
   width:number; // integer micrometres
