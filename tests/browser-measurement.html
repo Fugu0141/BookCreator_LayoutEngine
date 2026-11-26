@@ -1235,6 +1235,28 @@ try{
       let rejected=false;try{await createRetainedTextPagePreview(doc,opts,previous);}catch{rejected=true;}
       assert(rejected,'invalid retained lease or incompatible page cache rejected');
     }
+    // Cooperative callbacks can yield a real task or cancel at safe boundaries.
+    const stages=[];
+    let taskRan=false;
+    const cooperative=await createRetainedTextPagePreview(document,options,initial.pageDelta.snapshot,stage=>{
+      stages.push(stage);
+      if(stage==='validated')return new Promise(resolve=>setTimeout(()=>{taskRan=true;resolve();},0));
+      assert(taskRan,'real task ran before further preview work');
+    });
+    assert(stages[0]==='validated'&&stages.at(-1)==='complete','checkpoint endpoints');
+    assert(stages.filter(s=>s==='measure-block').length===8&&stages.filter(s=>s==='render-page').length===8&&stages.filter(s=>s==='paginate').length===1,'checkpoint per block/page');
+    assert(JSON.stringify(cooperative.plan)===JSON.stringify(oracle.plan)&&JSON.stringify(cooperative.slices)===JSON.stringify(oracle.slices),'cooperative plan and slices parity');
+    assert(cooperative.changedElement.shadowRoot.firstElementChild.isEqualNode(changed.get(2)),'cooperative changed DOM parity');
+    for(const stop of ['validated','measure-block','paginate','render-page','complete']){
+      const reason=new Error('cancel '+stop);
+      let caught;
+      try{await createRetainedTextPagePreview(document,options,initial.pageDelta.snapshot,stage=>{if(stage===stop)throw reason;});}catch(e){caught=e;}
+      assert(caught===reason,'cancel propagates at '+stop);
+      assert(document.body.children.length===beforeRetained,'cancel removes measurement hosts at '+stop);
+    }
+    const resumed=await createRetainedTextPagePreview(document,options,initial.pageDelta.snapshot);
+    assert(resumed.measurementWork.reusedBlocks===7&&resumed.paginationWork.reusedBlocks===7&&resumed.pageDelta.reusedPageIndices.length===7,'cancel leaves prior snapshot usable');
+    assert(baseNodes.every((n,i)=>n===initial.changedElement.shadowRoot.children[i]),'cancel does not change previous DOM');
     assert(document.body.children.length===beforeRetained,'retained measurement hosts removed');
   }
   await phase("retained component and inline math measurements");
