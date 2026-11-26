@@ -2,7 +2,7 @@
 <html lang="en"><meta charset="utf-8"><title>Browser measurement smoke test</title>
 <body><pre id="result">RUNNING</pre>
 <script type="module">
-import {measurePlainText,paginateMeasured,measurePlainTextLines,createPlainTextPagePreview,measureDisplayMath,createPreviewMath,createTextMeasurementCache,parsePreviewMath,parseDisplayMath,readyPreviewMathFont,createMathCompilationCache} from '/dist/index.js';
+import {measurePlainText,paginateMeasured,measurePlainTextLines,createPlainTextPagePreview,measureDisplayMath,createPreviewMath,createTextMeasurementCache,parsePreviewMath,parseDisplayMath,readyPreviewMathFont,createMathCompilationCache,createDisplayMathGeometryCache} from '/dist/index.js';
 const result=document.querySelector('#result');
 const assert=(condition,message)=>{if(!condition)throw Error(message);};
 const phase=async name=>{await fetch('/test-progress',{method:'POST',body:name});};
@@ -737,6 +737,45 @@ try{
     cache.clear();
     assert(cache.stats().entries===0&&cache.stats().misses===0,'explicit compilation cache release');
     assert(document.body.children.length===before,'compiler measurement host cleanup');
+  }
+  await phase("display math geometry candidates");
+  {
+    await document.fonts.ready;
+    const syntax=createMathCompilationCache(),geometry=createDisplayMathGeometryCache(document);
+    const formula='\\frac{x^2+1}{2}',size=5000;
+    const compare=async (source,width,number,fontSize=size)=>{
+      const a=await measureDisplayMath(document,source,width,fontSize,number);
+      const b=await measureDisplayMath(document,source,width,fontSize,number,'auto',syntax,geometry);
+      assert(a.width===b.width&&a.height===b.height&&a.element.outerHTML===b.element.outerHTML,'cached display geometry preserves natural size and paper DOM');
+      assert(a.element!==b.element&&!b.element.isConnected,'independent detached equation');
+    };
+    await compare(formula,100000,'1.1');
+    assert(geometry.stats().entries===1&&geometry.stats().misses===1,'first formula records natural geometry');
+    await compare(formula,100000,'1.1');
+    await compare(formula,90000,'2.123');
+    await compare(formula,110000,undefined);
+    assert(geometry.stats().hits===3&&geometry.stats().misses===1,'reuse across width and number changes');
+    await compare(formula,100000,'1.1',6000);
+    await compare('\\frac{x^2+2}{2}',100000,'1.1');
+    assert(geometry.stats().entries===3&&geometry.stats().misses===3,'font size and formula changes require new geometry');
+    let rejected=false;
+    try{await measureDisplayMath(document,formula,1000,size,'1.1','auto',syntax,geometry);}catch{rejected=true;}
+    assert(rejected&&geometry.stats().fallbacks>=1,'cached geometry cannot bypass overflow checks');
+    await compare(formula,100000,'1.1');
+    const options={revision:'1',fingerprint:'geometry-preview',width:100000,height:100000,blocks:[
+      {origin:{documentId:'geometry',revision:'1',blockKey:'display'},request:{...request,width:100000,fontSize:size,text:formula},displayMath:true,equationNumber:'3.1',splitPolicy:'strict'}
+    ]};
+    const a=await createPlainTextPagePreview(document,options);
+    const b=await createPlainTextPagePreview(document,{...options,mathCache:syntax,displayMathCache:geometry});
+    assert(JSON.stringify(a.plan)===JSON.stringify(b.plan)&&JSON.stringify(a.slices)===JSON.stringify(b.slices)&&a.element.shadowRoot.innerHTML===b.element.shadowRoot.innerHTML,'cache preserves full preview geometry');
+    const foreign=document.implementation.createHTMLDocument('foreign');
+    const foreignCache=createDisplayMathGeometryCache(foreign);
+    rejected=false;
+    try{await measureDisplayMath(document,formula,100000,size,undefined,'auto',syntax,foreignCache);}catch{rejected=true;}
+    assert(rejected,'foreign document geometry cache refused');
+    geometry.clear();
+    assert(JSON.stringify(geometry.stats())===JSON.stringify({entries:0,characters:0,hits:0,misses:0,fallbacks:0}),'display geometry cache release');
+    assert(document.body.children.length===before,'all geometry measurement hosts removed');
   }
   await phase("math workload baseline");
   const mathBenchmark=[];
