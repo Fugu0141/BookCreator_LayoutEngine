@@ -1,3 +1,4 @@
+import {readyPreviewFont} from './preview-font.js';
 // Bounded LaTeX-compatible subset. No HTML, macros, file access or arbitrary attributes.
 export type MathTableKind='matrix'|'pmatrix'|'bmatrix'|'Bmatrix'|'vmatrix'|'Vmatrix'|'cases'|'aligned';
 export type MathNode={kind:'row';children:MathNode[]}|{kind:'mi'|'mn'|'mo';text:string}|{kind:'frac';numerator:MathNode;denominator:MathNode}|{kind:'sqrt';body:MathNode}|{kind:'script';base:MathNode;sub?:MathNode;sup?:MathNode}|{kind:'function';text:string;limits?:true}|{kind:'accent';body:MathNode;mark:string}|{kind:'fenced';left:string;right:string;body:MathNode}|{kind:'root';body:MathNode;index:MathNode}|{kind:'table';environment:MathTableKind;rows:MathNode[][]};
@@ -108,8 +109,18 @@ export function parsePreviewMath(source:string):MathNode{
 const NS='http://www.w3.org/1998/Math/MathML';
 // Known OpenType MATH families first; never fetch a resource from the formula.
 export const mathPreviewFontFamily='"STIX Two Math", "Cambria Math", "Latin Modern Math", "TeX Gyre Termes Math", "DejaVu Math TeX Gyre", math, serif';
+/** Auto keeps the legacy system stack; explicit names refer only to a host-registered regular face. */
+export type PreviewMathFontFamily='auto'|`BCFont_${string}`;
+export function isPreviewMathFontFamily(value:unknown):value is PreviewMathFontFamily{
+  return value==='auto'||typeof value==='string'&&/^BCFont_[A-Za-z0-9_]{1,64}$/.test(value);
+}
+function mathFontCss(family:PreviewMathFontFamily){
+  if(!isPreviewMathFontFamily(family))throw RangeError('Invalid math font family');
+  return family==='auto'?mathPreviewFontFamily:'"'+family+'"';
+}
 /** Only engine-produced MathML elements, with textContent for every token. */
-export function createPreviewMath(document:Document,source:string,display:'block'|'inline'='block'):Element{
+export function createPreviewMath(document:Document,source:string,display:'block'|'inline'='block',family:PreviewMathFontFamily='auto'):Element{
+  const css=mathFontCss(family);
   const ast=parsePreviewMath(source);
   function fence(text:string,form:'prefix'|'postfix'){
     const token=document.createElementNS(NS,'mo');token.setAttribute('fence','true');token.setAttribute('stretchy','true');token.setAttribute('form',form);token.textContent=text;return token;
@@ -150,18 +161,38 @@ export function createPreviewMath(document:Document,source:string,display:'block
     else el.textContent=n.text;
     return el;
   }
-  const math=document.createElementNS(NS,'math');math.setAttribute('display',display);math.setAttribute('style','font-family:'+mathPreviewFontFamily+';');math.append(render(ast));return math;
+  const math=document.createElementNS(NS,'math');math.setAttribute('display',display);math.setAttribute('style','font-family:'+css+';font-weight:400;font-style:normal;font-synthesis:none;');math.append(render(ast));return math;
 }
 /** Check native fraction support in the actual measurement document. */
-export function assertNativeMathLayout(document:Document,root:ShadowRoot){
+export function assertNativeMathLayout(document:Document,root:ShadowRoot,family:PreviewMathFontFamily='auto'){
   const probe=document.createElementNS(NS,'math'),frac=document.createElementNS(NS,'mfrac'),a=document.createElementNS(NS,'mn'),b=document.createElementNS(NS,'mn');
+  probe.setAttribute('style','font-family:'+mathFontCss(family)+';font-size:20px;font-weight:400;font-synthesis:none;');
   a.textContent='1';b.textContent='2';frac.append(a,b);probe.append(frac);root.append(probe);
   const supported=b.getBoundingClientRect().top>a.getBoundingClientRect().bottom-1;probe.remove();
   if(!supported)throw Error('Native MathML layout unavailable');
 }
+/** Load the exact registered face before layout and verify representative native math geometry.
+ * Font file MATH/cmap verification remains the host's responsibility. */
+export async function readyPreviewMathFont(document:Document,root:ShadowRoot,family:PreviewMathFontFamily='auto'){
+  mathFontCss(family);
+  if(family!=='auto')await readyPreviewFont(document,family,400,'0123456789abcxyzαβ∑∫√()[]{}');
+  await document.fonts.ready;
+  assertNativeMathLayout(document,root,family);
+  if(family==='auto')return;
+  const short=createPreviewMath(document,'\\left(x\\right)','block',family);
+  const tall=createPreviewMath(document,'\\left(\\frac{a}{\\frac{b}{c}}\\right)','block',family);
+  for(const probe of [short,tall]){
+    (probe as HTMLElement).style.fontSize='20px';root.append(probe);
+  }
+  try{
+    const a=short.querySelector('mo[fence=true]')!.getBoundingClientRect().height,b=tall.querySelector('mo[fence=true]')!.getBoundingClientRect().height;
+    if(!Number.isFinite(a)||!Number.isFinite(b)||a<=0||b<=a+1)throw Error('Registered math font does not support scalable delimiters: '+family);
+  }finally{short.remove();tall.remove();}
+}
 export interface MeasuredDisplayMath {element:HTMLElement;width:number;height:number;publicationReady:false}
 /** Measure the exact native MathML node used for final drawing, not a text estimate. */
-export async function measureDisplayMath(document:Document,source:string,width:number,fontSize:number,equationNumber?:string):Promise<MeasuredDisplayMath>{
+export async function measureDisplayMath(document:Document,source:string,width:number,fontSize:number,equationNumber?:string,family:PreviewMathFontFamily='auto'):Promise<MeasuredDisplayMath>{
+  mathFontCss(family);
   if(equationNumber!==undefined&&(typeof equationNumber!=='string'||!/^([1-9][0-9]{0,5})\.([1-9][0-9]{0,5})$/.test(equationNumber)))throw RangeError('Invalid equation number');
   if(!document.body||!document.defaultView||!Number.isSafeInteger(width)||width<1||width>2000000||!Number.isSafeInteger(fontSize)||fontSize<1000||fontSize>30000)throw RangeError('Invalid display math geometry');
   const px=(v:number)=>v*96/25400,um=(v:number)=>Math.ceil(v*25400/96);
@@ -169,7 +200,7 @@ export async function measureDisplayMath(document:Document,source:string,width:n
   const root=host.attachShadow({mode:'open'}),element=document.createElement('div');
   element.style.cssText='all:initial;display:flex;justify-content:center;align-items:center;box-sizing:border-box;direction:ltr;writing-mode:horizontal-tb;color:black;font-family:math,serif;';
   element.style.width=px(width)+'px';element.style.fontSize=px(fontSize)+'px';
-  const math=createPreviewMath(document,source);math.setAttribute('style','font-family:'+mathPreviewFontFamily+';flex:none;');element.append(math);
+  const math=createPreviewMath(document,source,'block',family);(math as HTMLElement).style.flex='none';element.append(math);
   let label:HTMLElement|undefined;
   if(equationNumber!==undefined){
     // Equal clearance on both sides preserves the equation's page-center position.
@@ -180,9 +211,7 @@ export async function measureDisplayMath(document:Document,source:string,width:n
   }
   root.append(element);document.body.append(host);
   try{
-    await document.fonts.ready;
-    // Detect actual fraction layout, rather than silently accepting unsupported MathML.
-    assertNativeMathLayout(document,root);
+    await readyPreviewMathFont(document,root,family);
     if(label){
       const labelBox=label.getBoundingClientRect(),mathBox=math.getBoundingClientRect(),gap=px(2000);
       if(!Number.isFinite(labelBox.width)||labelBox.width<=0||labelBox.height<=0||mathBox.width+2*(labelBox.width+gap)>px(width)+.01)throw RangeError('Numbered equation exceeds available centered width');

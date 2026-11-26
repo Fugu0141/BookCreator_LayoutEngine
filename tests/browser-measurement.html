@@ -615,6 +615,40 @@ try{
     assert(rejected,'matrix wider than slot rejected');
     assert(document.body.children.length===before,'native math table measurement cleanup');
   }
+  await phase("independent registered math font role");
+  {
+    const response=await fetch('/fixtures/math-font.otf');
+    const face=new FontFace('BCFont_TestMath',response.ok?await response.arrayBuffer():'local("TeX Gyre Termes Math")',{weight:'400',style:'normal'});
+    await face.load();document.fonts.add(face);
+    try{
+      const alias='BCFont_TestMath',formula='\\left(\\frac{1}{\\frac{2}{3}}\\right)';
+      const direct=await measureDisplayMath(document,formula,100000,4200,'2.1',alias);
+      const assertFace=node=>assert(node&&node.style.fontFamily.replace(/["']/g,'')===alias,'exact math role on MathML node');
+      assertFace(direct.element.querySelector('math'));
+      assert(direct.element.querySelector('[data-equation-number]').style.fontFamily==='serif','number remains separate');
+      const primary='前。\n\uFFFC\n後 \uFFFC。',hint='ヒント \uFFFC。';
+      const mainReq={...request,text:primary,multiline:true,mathFontFamily:alias,inlineMath:[{start:primary.indexOf('\uFFFC'),formula,display:true},{start:primary.lastIndexOf('\uFFFC'),formula:'x^2'}]};
+      const slot={...slotRequest,text:hint,mathFontFamily:alias,inlineMath:[{start:hint.indexOf('\uFFFC'),formula:'\\sqrt{x}'}]};
+      const block={...multiBlock,sourceTextStart:undefined,request:mainReq,namedSlots:[{name:'hint',request:slot},multiBlock.namedSlots[1]]};
+      const standalone={origin:{documentId:'font',revision:'1',blockKey:'font'},request:{...request,text:formula,width:100000,mathFontFamily:alias},splitPolicy:'strict',displayMath:true};
+      const p=await createPlainTextPagePreview(document,{...multiOptions,width:100000,height:190000,blocks:[block,standalone]});
+      document.body.append(p.element);
+      try{
+        const root=p.element.shadowRoot;
+        for(const selector of ['[data-content-slot] [data-slot-display-math] math','[data-content-slot] [data-inline-math] math','[data-named-slot=hint] math','[data-display-math] math'])assertFace(root.querySelector(selector));
+        const row=root.querySelector('[data-content-slot] [data-inline-math]').parentElement;
+        assert(row.style.fontFamily===request.fontFamily,'body font independent of math font');
+      }finally{p.element.remove();}
+      for(const family of ['BCFont_MissingMath','serif','BCFont_X; color:red','auto, serif',null]){
+        let rejected=false;try{await measureDisplayMath(document,'x',100000,4200,undefined,family);}catch{rejected=true;}
+        assert(rejected,'invalid/unavailable selected math face rejected: '+family);
+      }
+      let rejected=false;try{await measurePlainTextLines(document,{...mainReq,mathFontFamily:'BCFont_MissingMath'});}catch{rejected=true;}
+      assert(rejected,'missing font in inline and component rows rejected');
+      assert(!createPreviewMath(document,'x').style.fontFamily.includes(alias),'auto keeps legacy stack');
+    }finally{document.fonts.delete(face);}
+    assert(document.body.children.length===before,'font probe cleanup');
+  }
   result.textContent='PASS '+JSON.stringify({lineCount:lines.lines.length,previewPages:preview.plan.pages.length,lineRanges:preview.slices.map(s=>[s.textStart,s.textEnd])})+' '+JSON.stringify({wide,narrow,pages:plan.pages.length});
 }catch(error){result.textContent='FAIL '+String(error);}
 await fetch('/test-result',{method:'POST',body:result.textContent});
