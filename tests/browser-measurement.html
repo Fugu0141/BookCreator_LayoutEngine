@@ -47,8 +47,15 @@ try{
   const cache=createTextMeasurementCache(document);
   const cacheOptions={revision:'1',fingerprint:'cache-check',width:65000,height:lines.lines[0].height*3,blocks:[{origin:{documentId:'demo',revision:'1',blockKey:'cache-block'},request,splitPolicy:'allow'}]};
   const cold=await createPlainTextPagePreview(document,{...cacheOptions,measurementCache:cache});
-  const warm=await createPlainTextPagePreview(document,{...cacheOptions,measurementCache:cache});
+  const warm=await createPlainTextPagePreview(document,{...cacheOptions,measurementCache:cache,collectTimings:true});
   assert(cache.stats().misses===1&&cache.stats().hits===1,'same validated text reuses line geometry');
+  assert(!Object.hasOwn(cold,'timings'),'timings absent by default');
+  const timingKeys=['validationMs','imagesMs','measurementMs','paginationMs','renderingMs'];
+  assert(Object.isFrozen(warm.timings)&&Object.keys(warm.timings).length===timingKeys.length&&timingKeys.every(k=>Number.isFinite(warm.timings[k])&&warm.timings[k]>=0),'numeric nonnegative frozen phase timings only');
+  const untimed=await createPlainTextPagePreview(document,{...cacheOptions,collectTimings:false});
+  assert(!Object.hasOwn(untimed,'timings')&&JSON.stringify(untimed.plan)===JSON.stringify(warm.plan)&&untimed.element.shadowRoot.innerHTML===warm.element.shadowRoot.innerHTML,'explicit opt-out and timed paper equivalence');
+  let invalidTimed=false;try{await createPlainTextPagePreview(document,{...cacheOptions,width:0,collectTimings:true});}catch{invalidTimed=true;}
+  assert(invalidTimed,'timing opt-in cannot bypass validation');
   assert(JSON.stringify(cold.plan)===JSON.stringify(warm.plan)&&JSON.stringify(cold.slices)===JSON.stringify(warm.slices),'cold and warm placement and source ranges identical');
   assert(cold.element!==warm.element&&cold.element.shadowRoot.innerHTML===warm.element.shadowRoot.innerHTML,'cache produces independent identical paper DOM');
   const narrower={...cacheOptions,width:50000,blocks:[{...cacheOptions.blocks[0],request:{...request,width:50000}}]};
