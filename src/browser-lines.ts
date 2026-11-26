@@ -1,4 +1,4 @@
-import {measureDisplayMath,parsePreviewMath,createPreviewMath,readyPreviewMathFont,isPreviewMathFontFamily,type MeasuredDisplayMath} from './math-preview.js';
+import {measureDisplayMath,parsePreviewMath,parseDisplayMath,createPreviewMath,readyPreviewMathFont,isPreviewMathFontFamily,type MeasuredDisplayMath} from './math-preview.js';
 import {validateImageCrop,imageSourceRect,type ImageCrop} from './image-crop.js';
 import {layoutTree} from './tree.js';
 import {applyPreviewFont,readyPreviewFont,isPreviewFontFamily,isPreviewFontWeight} from './preview-font.js';
@@ -46,7 +46,7 @@ function snapshotRequest(r:PlainTextMeasureRequest):Readonly<PlainTextMeasureReq
         const before=atom.start===0||r.text[atom.start-1]==='\n',after=atom.start+1===r.text.length||r.text[atom.start+1]==='\n'||r.text.slice(atom.start+1,atom.start+3)==='\r\n';
         if(!before||!after)throw RangeError('Display math atom must occupy an entire hard line');
       }
-      parsePreviewMath(atom.formula);
+      (atom.display===true?parseDisplayMath:parsePreviewMath)(atom.formula);
       return Object.freeze({start:atom.start,formula:atom.formula,...(atom.display===true?{display:true as const}:{})});
     }));
   }
@@ -460,7 +460,7 @@ export async function createPlainTextPagePreview(document:Document,options:{
     if(b.equationNumber!==undefined&&(b.displayMath!==true||typeof b.equationNumber!=='string'||!/^([1-9][0-9]{0,5})\.([1-9][0-9]{0,5})$/.test(b.equationNumber)))throw RangeError('Equation number requires a valid strict display math block');
     if(b.displayMath!==undefined){
       if(b.displayMath!==true||b.splitPolicy!=='strict'||component||listItem||namedSlots.length||b.request.inlineStyles!==undefined||b.request.multiline||b.request.paragraphGap!==undefined)throw RangeError('Display math requires an independent strict block');
-      parsePreviewMath(b.request.text);
+      parseDisplayMath(b.request.text);
     }
     return {...b,origin,request:snapshotRequest(b.request),component,namedSlots,listItem};
   })}));
