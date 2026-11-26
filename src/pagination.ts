@@ -69,29 +69,30 @@ export interface IncrementalPaginationResult {
   snapshot?:PaginationCheckpointSnapshot;
   // Counts of placement work, not validation, cloning, or elapsed time.
   reusedBlocks:number;
+  reusedSuffixBlocks:number;
   placedBlocks:number;
 }
 type Checkpoint={used:number;reason:Fragment['breakReason'];pageCount:number;lastFragmentCount:number;diagnosticCount:number};
 type SavedPagination={width:number;height:number;keys:string[];checkpoints:Checkpoint[];plan:MeasuredPagePlan};
-type IncrementalState={previous?:SavedPagination;next?:SavedPagination;reusedBlocks:number;placedBlocks:number};
+type IncrementalState={previous?:SavedPagination;next?:SavedPagination;reusedBlocks:number;reusedSuffixBlocks:number;placedBlocks:number};
 const snapshots=new WeakMap<PaginationCheckpointSnapshot,SavedPagination>();
 const MAX_CHECKPOINT_EVENTS=10000,MAX_CHECKPOINT_UNITS=100000,MAX_CHECKPOINT_FRAGMENTS=50000;
 const originKey=(o:Origin)=>JSON.stringify([o.documentId,o.blockKey]);
 export function paginateMeasured(input:PaginationInput):MeasuredPagePlan {
   return runPagination(input);
 }
-/** Reuse the verified unchanged placement prefix, then run the same placement
- * rules as the full API. Validation and current-origin rebinding still scan
- * the input. No suffix convergence or browser measurement reuse is implied. */
+/** Reuse the verified unchanged placement prefix and, after the same flow
+ * state is reached, an identical suffix. Validation, copying and current-origin
+ * rebinding still scan the input. No browser measurement reuse is implied. */
 export function paginateMeasuredIncremental(input:PaginationInput,previous?:PaginationCheckpointSnapshot):IncrementalPaginationResult {
-  const state:IncrementalState={previous:previous?snapshots.get(previous):undefined,reusedBlocks:0,placedBlocks:0};
+  const state:IncrementalState={previous:previous?snapshots.get(previous):undefined,reusedBlocks:0,reusedSuffixBlocks:0,placedBlocks:0};
   const plan=runPagination(input,state);
   let snapshot:PaginationCheckpointSnapshot|undefined;
   if(state.next){
     snapshot=Object.freeze({kind:'pagination-checkpoint-snapshot' as const});
     snapshots.set(snapshot,state.next);
   }
-  return {plan,snapshot,reusedBlocks:state.reusedBlocks,placedBlocks:state.placedBlocks};
+  return {plan,snapshot,reusedBlocks:state.reusedBlocks,reusedSuffixBlocks:state.reusedSuffixBlocks,placedBlocks:state.placedBlocks};
 }
 function runPagination(input:PaginationInput,incremental?:IncrementalState):MeasuredPagePlan {
   const result:MeasuredPagePlan={schemaVersion:1,revision:input.revision,fingerprint:input.fingerprint,completeness:'partial',measurement:'premeasured',publicationReady:false,pages:[],diagnostics:[]};
@@ -129,17 +130,23 @@ function runPagination(input:PaginationInput,incremental?:IncrementalState):Meas
   // Section transitions are events too (including empty sections). Every
   // checkpoint is before an event, never in the middle of a split block.
   const retain=!!incremental&&blockCount+input.sections.length<=MAX_CHECKPOINT_EVENTS&&unitCount<=MAX_CHECKPOINT_UNITS;
-  const eventKeys:string[]=[],checkpoints:Checkpoint[]=[];
+  const eventKeys:string[]=[],blockEvents:boolean[]=[],checkpoints:Checkpoint[]=[];
   const currentOrigins=new Map<string,Origin>();
-  let prefix=0,eventIndex=0;
+  let prefix=0,eventIndex=0,suffix=0;
+  let compatible:SavedPagination|undefined;
   if(retain){
     for(const section of input.sections){
-      eventKeys.push(JSON.stringify(['section',section.id,section.startOn]));
+      eventKeys.push(JSON.stringify(['section',section.id,section.startOn]));blockEvents.push(false);
+      let first=true;
       for(const block of section.blocks){
         const k=originKey(block.origin);
         currentOrigins.set(k,block.origin);
+        // A suffix can begin inside a section: include the first-block
+        // context that controls suppression of component page-top placement.
+        const suppress=first&&section.startOn==='continuous'&&block.kind==='block'&&block.startPositionSource==='component';
+        first=false;blockEvents.push(block.kind==='block');
         eventKeys.push(JSON.stringify(block.kind==='pagebreak'?['break',k]:[
-          'block',k,block.width,block.unitHeights,block.splitPolicy,
+          'block',k,suppress,block.width,block.unitHeights,block.splitPolicy,
           block.fragmentPadding?.top??0,block.fragmentPadding?.bottom??0,
           block.startPosition??'flow',block.startPositionSource??null
         ]));
@@ -148,6 +155,8 @@ function runPagination(input:PaginationInput,incremental?:IncrementalState):Meas
     const prev=incremental?.previous;
     if(prev&&prev.width===width&&prev.height===height){
       while(prefix<eventKeys.length&&prefix<prev.keys.length&&eventKeys[prefix]===prev.keys[prefix])prefix++;
+      compatible=prev;
+      while(suffix<eventKeys.length-prefix&&suffix<prev.keys.length-prefix&&eventKeys[eventKeys.length-1-suffix]===prev.keys[prev.keys.length-1-suffix])suffix++;
       if(prefix){
         const cp=prev.checkpoints[prefix];
         used=cp.used;reason=cp.reason;
@@ -166,18 +175,53 @@ function runPagination(input:PaginationInput,incremental?:IncrementalState):Meas
     }
   }
   const capture=():Checkpoint=>({used,reason,pageCount:result.pages.length,lastFragmentCount:result.pages.at(-1)?.fragments.length??0,diagnosticCount:result.diagnostics.length});
-  const visit=()=>{
-    if(!retain)return false;
+  // The remaining event sequence is identical. Require the same page count,
+  // occupied height and break reason, so page indices, limits and subsequent
+  // placement decisions cannot change. Earlier fragments and warnings may
+  // differ: splice only the actual tail and adjust its checkpoint counters.
+  const reuseTail=(index:number):boolean=>{
+    const prev=compatible;
+    if(!prev||!incremental||!suffix||index<eventKeys.length-suffix)return false;
+    const oldIndex=prev.keys.length-(eventKeys.length-index);
+    const before=prev.checkpoints[oldIndex],now=capture();
+    if(before.used!==now.used||before.reason!==now.reason||before.pageCount!==now.pageCount)return false;
+    const copyFragment=(f:Fragment):Fragment=>({...f,rect:{...f.rect},origin:currentOrigins.get(originKey(f.origin))!});
+    const fragmentDelta=now.lastFragmentCount-before.lastFragmentCount;
+    const diagnosticDelta=now.diagnosticCount-before.diagnosticCount;
+    if(before.pageCount){
+      for(const f of prev.plan.pages[before.pageCount-1].fragments.slice(before.lastFragmentCount))
+        result.pages[before.pageCount-1].fragments.push(copyFragment(f));
+    }
+    for(const p of prev.plan.pages.slice(before.pageCount))
+      result.pages.push({index:p.index,fragments:p.fragments.map(copyFragment)});
+    for(const d of prev.plan.diagnostics.slice(before.diagnosticCount))
+      result.diagnostics.push({...d,origin:d.origin?currentOrigins.get(originKey(d.origin)):undefined});
+    for(const cp of prev.checkpoints.slice(oldIndex,-1))
+      checkpoints.push({...cp,lastFragmentCount:cp.lastFragmentCount+(cp.pageCount===before.pageCount?fragmentDelta:0),diagnosticCount:cp.diagnosticCount+diagnosticDelta});
+    const end=prev.checkpoints.at(-1)!;
+    used=end.used;reason=end.reason;
+    for(let i=index;i<blockEvents.length;i++)if(blockEvents[i]){
+      incremental.reusedBlocks++;incremental.reusedSuffixBlocks++;
+    }
+    return true;
+  };
+  const visit=(): 'skip'|'place'|'tail'=>{
+    if(!retain)return 'place';
     const index=eventIndex++;
-    if(index<prefix)return true;
-    checkpoints.push(capture());return false;
+    if(index<prefix)return 'skip';
+    if(reuseTail(index))return 'tail';
+    checkpoints.push(capture());return 'place';
   };
   const newPage=(why:Fragment['breakReason'])=>{used=0;reason=why;};
-  for(const section of input.sections){
-    if(!visit()&&section.startOn==='page'&&used>0)newPage('section');
+  placement: for(const section of input.sections){
+    const entry=visit();
+    if(entry==='tail')break placement;
+    if(entry==='place'&&section.startOn==='page'&&used>0)newPage('section');
     let first=true;
     for(const block of section.blocks){
-      const skipped=visit();
+      const action=visit();
+      if(action==='tail')break placement;
+      const skipped=action==='skip';
       if(block.kind==='pagebreak'){if(!skipped&&used>0)newPage('explicit');first=false;continue;}
       const suppress=first&&section.startOn==='continuous'&&block.startPositionSource==='component';
       first=false;
