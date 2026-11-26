@@ -396,7 +396,7 @@ function snapshotNamedSlots(b:PreviewTextBlock,component:PreviewComponent|undefi
   checkRange(b.sourceTextStart,b.request.text);
   const copy=slots.map(s=>{
     if(!s||!validSlotName(s.name)||!names.delete(s.name)||!s.request)throw RangeError('Missing, duplicate or unknown named source slot');
-    if(s.request.inlineMath!==undefined)throw RangeError('Inline math in named slots is not supported yet');
+    if(s.request.inlineMath!==undefined&&s.sourceTextStart!==undefined)throw RangeError('Inline math in named slots requires a host-owned source map');
     const {width:_,...request}=snapshotRequest({...s.request,width:100000});
     checkRange(s.sourceTextStart,request.text);
     return {name:s.name,request,sourceTextStart:s.sourceTextStart};
@@ -439,7 +439,7 @@ export async function createPlainTextPagePreview(document:Document,options:{
     const namedSlots=snapshotNamedSlots(b,component);
     const listItem=b.listItem===undefined?undefined:snapshotListItem(b.listItem,b.request.width);
     if(listItem&&component)throw RangeError('List items do not support component frames yet');
-    if(b.request.inlineMath!==undefined&&(component||listItem||namedSlots.length||b.sourceTextStart!==undefined||b.displayMath!==undefined))throw RangeError('Inline math requires an independent logical text block and host-owned source map');
+    if(b.request.inlineMath!==undefined&&(listItem||b.sourceTextStart!==undefined||b.displayMath!==undefined))throw RangeError('Inline math requires a host-owned source map and cannot be combined with list items or display math');
     if(b.equationNumber!==undefined&&(b.displayMath!==true||typeof b.equationNumber!=='string'||!/^([1-9][0-9]{0,5})\.([1-9][0-9]{0,5})$/.test(b.equationNumber)))throw RangeError('Equation number requires a valid strict display math block');
     if(b.displayMath!==undefined){
       if(b.displayMath!==true||b.splitPolicy!=='strict'||component||listItem||namedSlots.length||b.request.inlineStyles!==undefined||b.request.multiline||b.request.paragraphGap!==undefined)throw RangeError('Display math requires an independent strict block');
@@ -450,7 +450,7 @@ export async function createPlainTextPagePreview(document:Document,options:{
   if(sections.flatMap(s=>s.blocks).reduce((n,b)=>n+(isBreak(b)?0:b.request.text.length+(b.namedSlots??[]).reduce((sum,s)=>sum+s.request.text.length,0)),0)>50000)throw RangeError('Preview source text limit exceeded');
   if(sections.flatMap(s=>s.blocks).reduce((n,b)=>n+(isBreak(b)?0:(b.request.text.match(/\n/g)?.length??0)+(b.namedSlots??[]).reduce((sum,s)=>sum+(s.request.text.match(/\n/g)?.length??0),0)),0)>1024)throw RangeError('Preview hard-line limit exceeded');
   if(sections.flatMap(s=>s.blocks).reduce((n,b)=>n+(isBreak(b)?0:(b.request.inlineStyles?.length??0)+(b.namedSlots??[]).reduce((sum,s)=>sum+(s.request.inlineStyles?.length??0),0)),0)>1024)throw RangeError('Preview inline style limit exceeded');
-  const mathAtoms=sections.flatMap(s=>s.blocks).flatMap(b=>isBreak(b)?[]:b.request.inlineMath??[]);
+  const mathAtoms=sections.flatMap(s=>s.blocks).flatMap(b=>isBreak(b)?[]:[...(b.request.inlineMath??[]),...(b.namedSlots??[]).flatMap(s=>s.request.inlineMath??[])]);
   if(mathAtoms.length>512||mathAtoms.reduce((n,a)=>n+a.formula.length,0)>50000)throw RangeError('Preview inline math limit exceeded');
   const {revision,fingerprint,width,height,resolveImage}=options;
   // Decode each unique resource before building the plan. Use a canvas snapshot so no object URL survives rendering.
