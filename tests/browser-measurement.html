@@ -584,6 +584,37 @@ try{
     assert(node.querySelector('msub')&&!node.querySelector('munder'),'inline limit uses compact script');
     assert(document.body.children.length===before,'extended math measurement cleanup');
   }
+  await phase("native matrices, cases and aligned derivations");
+  {
+    const source='\\begin{pmatrix}a&\\frac{1}{2}\\\\c&d\\end{pmatrix}';
+    const measured=await measureDisplayMath(document,source,100000,4200);
+    document.body.append(measured.element);
+    try{
+      const table=measured.element.querySelector('mtable'),rows=[...table.children];
+      assert(rows.length===2&&rows.every(r=>r.children.length===2),'matrix structure');
+      assert(rows[0].getBoundingClientRect().bottom<=rows[1].getBoundingClientRect().top+.1,'matrix rows stacked without overlap');
+      assert(table.querySelector('mfrac')&&measured.element.querySelectorAll('mo[fence=true]').length===2,'matrix fraction and fences');
+      assert(table.getBoundingClientRect().height<=measured.element.getBoundingClientRect().height+.1,'matrix fits measured row');
+    }finally{measured.element.remove();}
+    const derivation='\\begin{aligned}(x+1)^2&=(x+1)(x+1)\\\\&=x^2+2x+1\\end{aligned}';
+    const aligned=await measureDisplayMath(document,derivation,150000,4200);
+    document.body.append(aligned.element);
+    try{
+      const rows=[...aligned.element.querySelector('mtable').children],equal=rows.map(r=>r.children[1].querySelector('mo').getBoundingClientRect().left);
+      assert(Math.abs(equal[0]-equal[1])<.5,'aligned equals signs share horizontal position: '+equal);
+      assert(rows[0].children[0].getAttribute('columnalign')==='right'&&rows[1].children[1].getAttribute('columnalign')==='left','typed alignment');
+    }finally{aligned.element.remove();}
+    const cases=await measureDisplayMath(document,'f(x)=\\begin{cases}x&x\\geq0\\\\-x&x<0\\end{cases}',100000,4200);
+    assert(cases.element.querySelectorAll('mtable mtr').length===2&&cases.element.querySelectorAll('mo[fence=true]').length===1,'cases left brace only');
+    const options={revision:'1',fingerprint:'matrix',width:100000,height:measured.height+1000,blocks:[{origin:{documentId:'matrix',revision:'1',blockKey:'matrix',range:{start:10,end:10+source.length}},request:{...request,text:source,width:100000},sourceTextStart:10,displayMath:true,splitPolicy:'strict'}]};
+    const p=await createPlainTextPagePreview(document,options);
+    assert(p.slices.length===1&&p.slices[0].sourceSlice.start===10&&p.slices[0].sourceSlice.end===10+source.length,'matrix retains exact raw source as one display block');
+    let rejected=false;try{await createPlainTextPagePreview(document,{...options,height:1000});}catch{rejected=true;}
+    assert(rejected,'matrix taller than page rejected');
+    rejected=false;try{await measureDisplayMath(document,source,1000,4200);}catch{rejected=true;}
+    assert(rejected,'matrix wider than slot rejected');
+    assert(document.body.children.length===before,'native math table measurement cleanup');
+  }
   result.textContent='PASS '+JSON.stringify({lineCount:lines.lines.length,previewPages:preview.plan.pages.length,lineRanges:preview.slices.map(s=>[s.textStart,s.textEnd])})+' '+JSON.stringify({wide,narrow,pages:plan.pages.length});
 }catch(error){result.textContent='FAIL '+String(error);}
 await fetch('/test-result',{method:'POST',body:result.textContent});
