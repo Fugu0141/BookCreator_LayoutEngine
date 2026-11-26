@@ -712,7 +712,7 @@ try{
     const family='auto';
     const makeBlocks=(kind,change='none')=>formulas.map((original,i)=>{
       const formula=change==='formula'&&i===0?'x_1^3+1':original;
-      const body=change==='body'&&i===0?'確認 \uFFFC を求める。':'前の文章 \uFFFC 後の文章。';
+      const body=change==='body'&&i===1?'確認 \uFFFC を求める。':'前の文章 \uFFFC 後の文章。';
       const display=kind==='display'||kind==='mixed'&&i%2===0;
       const inline=kind==='inline'||kind==='mixed'&&!display;
       const req={...base,width:change==='width'?90000:width,
