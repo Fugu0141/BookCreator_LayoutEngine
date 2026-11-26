@@ -3,7 +3,7 @@
 import {displayMathArtifact,restoreDisplayMathArtifact,type DisplayMathArtifact,type MathCompilationCache,type measureDisplayMath as MeasureDisplayMath} from './math-preview.js';
 import type {MeasuredSection,PageBreak} from './pagination.js';
 import type {PlainTextMeasureRequest} from './browser-measurement.js';
-import type {MeasuredTextLines,PreviewTextBlock,PreviewComponent,PreviewComponentChild,PreviewListItem} from './browser-lines.js';
+import type {MeasuredTextLines,PreviewTextBlock,PreviewComponent,PreviewComponentChild,PreviewListItem,PreviewCheckpoint} from './browser-lines.js';
 import {previewBlockKey,type MeasuredPreviewBlock} from './browser-page-render.js';
 type ComponentPlacement=import('./tree.js').PlacedNode;
 interface MeasureServices{
@@ -67,7 +67,7 @@ function restoreValue(document:Document,v:ValueMeasurement,cache?:MathCompilatio
     placement:v.placement?structuredClone(v.placement):undefined,math:v.math?restoreDisplayMathArtifact(document,v.math,cache):undefined};
 }
 function countLines(v:LiveMeasurement){return v.measurement.lines.length+[...v.labels.values(),...v.slots.values()].reduce((n,m)=>n+m.lines.length,0)+(v.marker?.lines.length??0);}
-export async function measurePreviewSections(document:Document,sections:readonly {id:string;startOn:'page'|'continuous';blocks:readonly (PreviewTextBlock|PageBreak)[]}[],width:number,height:number,{measurePlainTextLines,measureDisplayMath,resolveComponentWidths,placeComponent,listInset,listMarker}:MeasureServices,retained?:{previous?:BlockMeasurementSnapshot;mathCache?:MathCompilationCache}){
+export async function measurePreviewSections(document:Document,sections:readonly {id:string;startOn:'page'|'continuous';blocks:readonly (PreviewTextBlock|PageBreak)[]}[],width:number,height:number,{measurePlainTextLines,measureDisplayMath,resolveComponentWidths,placeComponent,listInset,listMarker}:MeasureServices,retained?:{previous?:BlockMeasurementSnapshot;mathCache?:MathCompilationCache},checkpoint?:PreviewCheckpoint){
   const isBreak=(b:PreviewTextBlock|PageBreak):b is PageBreak=>'kind' in b&&b.kind==='pagebreak';
   const byKey=new Map<string,MeasuredPreviewBlock>();
   const measuredSections:MeasuredSection[]=[];
@@ -76,6 +76,7 @@ export async function measurePreviewSections(document:Document,sections:readonly
   for(const section of sections){
     const blocks: (MeasuredSection['blocks'][number])[]=[];
     for(const b of section.blocks){
+    if(checkpoint)await checkpoint('measure-block');
     if(isBreak(b)){blocks.push(b);continue;}
     const k=previewBlockKey(b.origin);if(byKey.has(k)||b.request.width>width)throw Error('Invalid or duplicate preview block');
     if(b.sourceTextStart!==undefined&&(!b.origin.range||!Number.isSafeInteger(b.sourceTextStart)||
