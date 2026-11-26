@@ -471,6 +471,51 @@ try{
     assert(overflow,'number cannot overlap equation or be clipped');
     assert(document.body.children.length===before,'numbered equation measurement cleanup');
   }
+  await phase("inline math inside component content and named slots");
+  {
+    const text='係数 \uFFFC を求める。',formula='\\frac{a}{\\frac{b}{c}}';
+    const req={...request,text,inlineMath:[{start:3,formula}],inlineStyles:[{start:0,end:2,fontWeight:700}]};
+    const hintText='ヒント \uFFFC です。',answerText='解答 \uFFFC です。';
+    const block={...multiBlock,request:req,sourceTextStart:undefined,namedSlots:[
+      {name:'hint',request:{...slotRequest,text:hintText,inlineMath:[{start:4,formula:'\\sqrt{x^2+1}'}]}},
+      {name:'answer',request:{...slotRequest,text:answerText,inlineMath:[{start:3,formula:'x_1^2'}]}}
+    ]};
+    const options={...multiOptions,height:190000,blocks:[block]};
+    const p=await createPlainTextPagePreview(document,options);
+    assert(p.slices.length===1&&p.slices[0].sourceSlice===undefined&&p.slices[0].namedSlots.every(s=>s.sourceSlice===undefined),'transformed slot source mapping remains host-owned');
+    assert(p.slices[0].textEnd===text.length&&p.slices[0].namedSlots[0].textEnd===hintText.length&&p.slices[0].namedSlots[1].textEnd===answerText.length,'logical lengths remain independent');
+    document.body.append(p.element);
+    try{
+      const root=p.element.shadowRoot,primary=root.querySelector('[data-content-slot]'),hint=root.querySelector('[data-named-slot=hint]'),answer=root.querySelector('[data-named-slot=answer]');
+      assert(primary.querySelector('math mfrac')&&hint.querySelector('math msqrt')&&answer.querySelector('math msubsup'),'MathML in all three semantic slots');
+      assert(primary.querySelector('[data-inline-style]').textContent==='係数','neighboring style preserved');
+      for(const slot of [primary,hint,answer]){
+        const math=slot.querySelector('[data-inline-math]'),row=math.closest('[data-start]'),m=math.getBoundingClientRect(),r=row.getBoundingClientRect(),s=slot.getBoundingClientRect();
+        assert(m.top>=r.top-1&&m.bottom<=r.bottom+1&&m.left>=r.left-1&&m.right<=r.right+1,'math fits frozen row');
+        assert(r.bottom<=s.bottom+.1&&r.right<=s.right+.1,'row fits measured component slot');
+      }
+    }finally{p.element.remove();}
+    const long=(text+' ').repeat(12),atoms=[...long.matchAll(/\uFFFC/g)].map(m=>({start:m.index,formula}));
+    const framedBlock={...block,origin:{documentId:'math',revision:'1',blockKey:'frame'},request:{...req,text:long,inlineMath:atoms},component:frame,namedSlots:undefined,splitPolicy:'allow'};
+    const paged=await createPlainTextPagePreview(document,{...options,height:40000,blocks:[framedBlock]});
+    assert(paged.plan.pages.length>1&&paged.slices.map(s=>long.slice(s.textStart,s.textEnd)).join('')===long,'fragmentable frame retains all logical atoms');
+    const nodes=[...paged.element.shadowRoot.querySelectorAll('[data-inline-math]')];
+    assert(nodes.length===atoms.length&&nodes.every((n,i)=>Number(n.dataset.mathStart)===atoms[i].start),'frame pagination retains atom offsets');
+    for(const bad of [
+      {...block,sourceTextStart:0},
+      {...block,namedSlots:[{...block.namedSlots[0],sourceTextStart:30},block.namedSlots[1]]},
+      {...block,namedSlots:[{...block.namedSlots[0],request:{...block.namedSlots[0].request,inlineMath:[{start:4,formula:'x'.repeat(100)}]}},block.namedSlots[1]]},
+      {...block,splitPolicy:'allow'}
+    ]){
+      let rejected=false;try{await createPlainTextPagePreview(document,{...options,blocks:[bad]});}catch{rejected=true;}
+      assert(rejected,'invalid mapping, overflow or unsupported component fragmentation rejected');
+    }
+    const bounded=' \uFFFC'.repeat(128).trim(),many=[...bounded.matchAll(/\uFFFC/g)].map(m=>({start:m.index,formula:'x'}));
+    const capped={...block,request:{...req,text:bounded,inlineStyles:undefined,inlineMath:many},namedSlots:block.namedSlots.map(s=>({...s,request:{...s.request,text:bounded,inlineMath:many}}))};
+    let capRejected=false;try{await createPlainTextPagePreview(document,{...options,blocks:[capped,{...capped,origin:{...capped.origin,blockKey:'second'}}]});}catch(e){capRejected=String(e).includes('Preview inline math limit exceeded');}
+    assert(capRejected,'global math atom budget includes named slots');
+    assert(document.body.children.length===before,'component inline math cleanup');
+  }
   result.textContent='PASS '+JSON.stringify({lineCount:lines.lines.length,previewPages:preview.plan.pages.length,lineRanges:preview.slices.map(s=>[s.textStart,s.textEnd])})+' '+JSON.stringify({wide,narrow,pages:plan.pages.length});
 }catch(error){result.textContent='FAIL '+String(error);}
 await fetch('/test-result',{method:'POST',body:result.textContent});
