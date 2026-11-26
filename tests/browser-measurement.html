@@ -72,6 +72,7 @@ try{
   await phase("incremental paragraph geometry");
   {
     await document.fonts.ready;
+    const existingBodyChildren=[...document.body.children];
     const cache=createParagraphMeasurementCache(document),syntax=createMathCompilationCache();
     const width=80000,height=40000;
     const plain='本文の組版を確認します。 '.repeat(5),styled='装飾付き本文を確認します。 '.repeat(5);
@@ -119,7 +120,7 @@ try{
     assert(rejected,'paragraph cache never bypasses validation');
     cache.clear();
     assert(JSON.stringify(cache.stats())===JSON.stringify({entries:0,characters:0,lines:0,hits:0,misses:0}),'paragraph session releases all retained plans');
-    assert(document.body.children.length===before,'incremental paragraph hosts removed');
+    assert(document.body.children.length===existingBodyChildren.length&&existingBodyChildren.every((node,i)=>document.body.children[i]===node),'incremental paragraph hosts removed without disturbing existing preview');
   }
   await phase("batched frozen row validation");
   {
