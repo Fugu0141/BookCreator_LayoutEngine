@@ -2,7 +2,7 @@
 <html lang="en"><meta charset="utf-8"><title>Browser measurement smoke test</title>
 <body><pre id="result">RUNNING</pre>
 <script type="module">
-import {measurePlainText,paginateMeasured,measurePlainTextLines,createPlainTextPagePreview,measureDisplayMath,createPreviewMath,createTextMeasurementCache,createParagraphMeasurementCache,createPageRenderCache,parsePreviewMath,parseDisplayMath,readyPreviewMathFont,createMathCompilationCache,createDisplayMathGeometryCache,createInlineMathGeometryCache,measureInlineMathGeometry,createInlineMathAtom} from '/dist/index.js';
+import {measurePlainText,paginateMeasured,measurePlainTextLines,createPlainTextPagePreview,createIncrementalTextPagePreview,measureDisplayMath,createPreviewMath,createTextMeasurementCache,createParagraphMeasurementCache,createPageRenderCache,parsePreviewMath,parseDisplayMath,readyPreviewMathFont,createMathCompilationCache,createDisplayMathGeometryCache,createInlineMathGeometryCache,measureInlineMathGeometry,createInlineMathAtom} from '/dist/index.js';
 const result=document.querySelector('#result');
 const assert=(condition,message)=>{if(!condition)throw Error(message);};
 const phase=async name=>{await fetch('/test-progress',{method:'POST',body:name});};
@@ -1145,6 +1145,50 @@ try{
     cache.clear();await pending;
     assert(Object.values(cache.stats()).every(v=>v===0),'invalidated preview cannot repopulate page cache');
     assert(document.body.children.length===before,'page template measurement hosts removed');
+  }
+  await phase("sparse page rendering");
+  {
+    const width=80000,height=100000,paper={width:100000,height:120000,top:10000,bottom:10000,inner:12000,outer:8000,firstSide:'right'};
+    const make=(change='none')=>{
+      const revision=change==='none'?'1':'2',shift=change==='none'?0:100;
+      const texts=['第1ページの本文。','第2ページの装飾。','第3ページの式 \uFFFC を求める。','第4ページの本文。'];
+      const sections=texts.map((text,i)=>{
+        const req={...request,text:change==='text'&&i===0?text+' 変更':text,width,fontSize:5000,lineHeight:1.8,
+          ...(i===1?{inlineStyles:[{start:0,end:2,fontWeight:700}]}:{}),
+          ...(i===2?{inlineMath:[{start:text.indexOf('\uFFFC'),formula:'x^2'}]}:{})};
+        const exact=i!==2;
+        return {id:'sparse-'+i,startOn:'page',blocks:[{origin:{documentId:'sparse',revision,blockKey:'p-'+i,...(exact?{range:{start:shift,end:shift+req.text.length}}:{})},request:req,splitPolicy:'strict',...(exact?{sourceTextStart:shift}:{})}]};
+      });
+      return {revision,fingerprint:'sparse-'+change,width,height,paper:change==='side'?{...paper,firstSide:'left'}:paper,sections:change==='shorter'?sections.slice(0,2):sections};
+    };
+    const first=await createIncrementalTextPagePreview(document,make());
+    assert(!('element' in first)&&first.pageDelta.reusedPageIndices.length===0&&first.changedElement.shadowRoot.children.length===4,'no base renders all pages with explicit sparse result type');
+    const retained=Array.from(first.changedElement.shadowRoot.children);
+    const base=first.pageDelta.snapshot;
+    for(const [change,expected] of [['none',[0,1,3]],['origin',[0,1,3]],['text',[1,3]],['side',[]],['shorter',[0,1]]]){
+      const options=make(change),full=await createPlainTextPagePreview(document,options);
+      const sparse=await createIncrementalTextPagePreview(document,options,base);
+      assert(JSON.stringify(sparse.pageDelta.reusedPageIndices)===JSON.stringify(expected),'expected omitted pages: '+change);
+      assert(JSON.stringify(full.plan)===JSON.stringify(sparse.plan)&&JSON.stringify(full.slices)===JSON.stringify(sparse.slices),'complete current plan and slices: '+change);
+      const changed=new Map(Array.from(sparse.changedElement.shadowRoot.children,n=>[Number(n.dataset.page),n]));
+      assert(changed.size+expected.length===full.plan.pages.length,'only changed pages allocated: '+change);
+      assert(expected.every(i=>!changed.has(i)),'no DOM for omitted pages');
+      assert(Array.from(full.element.shadowRoot.children).every((n,i)=>n.isEqualNode(expected.includes(i)?retained[i]:changed.get(i))),'reconstructed paper matches full result: '+change);
+      assert(retained.every((n,i)=>first.changedElement.shadowRoot.children[i]===n),'base DOM never moved or mutated');
+      if(change==='origin')assert(sparse.slices[0].sourceSlice.start===100,'source offset rebuilt for skipped page');
+      if(change==='text'){
+        const subsequent=await createIncrementalTextPagePreview(document,options,sparse.pageDelta.snapshot);
+        assert(JSON.stringify(subsequent.pageDelta.reusedPageIndices)===JSON.stringify([0,1,3]),'next snapshot reflects new text');
+      }
+    }
+    for(const invalid of [{kind:'page-reuse-snapshot'},base]){
+      let rejected=false;
+      try{await createIncrementalTextPagePreview(document,make(),invalid===base?undefined:invalid);if(invalid===base)await createIncrementalTextPagePreview(document.implementation.createHTMLDocument('foreign'),make(),base);}catch{rejected=true;}
+      assert(rejected,'foreign or forged snapshot rejected');
+    }
+    let rejected=false;try{await createIncrementalTextPagePreview(document,{...make(),pageCache:createPageRenderCache(document)},base);}catch{rejected=true;}
+    assert(rejected,'sparse API cannot combine with template cache');
+    assert(document.body.children.length===before,'sparse page measurement hosts removed');
   }
   await phase("multiline display source and exact offsets");
   {
