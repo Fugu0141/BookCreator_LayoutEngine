@@ -240,9 +240,44 @@ export async function readyPreviewMathFont(document:Document,root:ShadowRoot,fam
     if(!Number.isFinite(a)||!Number.isFinite(b)||a<=0||b<=a+1)throw Error('Registered math font does not support scalable delimiters: '+family);
   }finally{short.remove();tall.remove();}
 }
+/** Natural display-formula geometry, independent of equation label and paper width.
+ * Browser layout remains the authority: cached candidates must pass real geometry checks. */
+export interface DisplayMathGeometryCache {
+  clear():void;
+  stats():{entries:number;characters:number;hits:number;misses:number;fallbacks:number};
+}
+type NaturalGeometry={widthPx:number;heightPx:number;characters:number};
+type MathFontEnvironment={faces:FontFace[];descriptors:string[];scale:number;status:string};
+type GeometryState={document:Document;entries:Map<string,NaturalGeometry>;characters:number;hits:number;misses:number;fallbacks:number;epoch:number;environment?:MathFontEnvironment};
+const geometries=new WeakMap<DisplayMathGeometryCache,GeometryState>();
+const maxGeometryEntries=512,maxGeometryCharacters=100000;
+function emptyGeometry(s:GeometryState){s.entries.clear();s.characters=0;s.epoch++;}
+export function createDisplayMathGeometryCache(document:Document):DisplayMathGeometryCache{
+  const s:GeometryState={document,entries:new Map(),characters:0,hits:0,misses:0,fallbacks:0,epoch:0};
+  const cache:DisplayMathGeometryCache={
+    clear(){emptyGeometry(s);s.environment=undefined;s.hits=0;s.misses=0;s.fallbacks=0;},
+    stats(){return {entries:s.entries.size,characters:s.characters,hits:s.hits,misses:s.misses,fallbacks:s.fallbacks};}
+  };
+  geometries.set(cache,s);return Object.freeze(cache);
+}
+function syncMathEnvironment(s:GeometryState){
+  const faces:FontFace[]=[],descriptors:string[]=[];
+  s.document.fonts.forEach(face=>{faces.push(face);descriptors.push(JSON.stringify([face.family,face.style,face.weight,face.stretch,face.unicodeRange,face.status,face.ascentOverride,face.descentOverride,face.lineGapOverride,face.featureSettings,(face as FontFace & {variationSettings?:string}).variationSettings]));});
+  const next:MathFontEnvironment={faces,descriptors,scale:s.document.defaultView!.devicePixelRatio,status:s.document.fonts.status};
+  const previous=s.environment;
+  if(!previous||previous.scale!==next.scale||previous.status!==next.status||previous.faces.length!==faces.length||
+    faces.some((f,i)=>f!==previous.faces[i]||descriptors[i]!==previous.descriptors[i])){
+    emptyGeometry(s);s.environment=next;
+  }
+}
+function dropGeometry(s:GeometryState,key:string){const old=s.entries.get(key);if(old){s.entries.delete(key);s.characters-=old.characters;}}
+function putGeometry(s:GeometryState,key:string,entry:NaturalGeometry){
+  dropGeometry(s,key);s.entries.set(key,Object.freeze(entry));s.characters+=entry.characters;
+  while(s.entries.size>maxGeometryEntries||s.characters>maxGeometryCharacters)dropGeometry(s,s.entries.keys().next().value!);
+}
 export interface MeasuredDisplayMath {element:HTMLElement;width:number;height:number;publicationReady:false}
 /** Measure the exact native MathML node used for final drawing, not a text estimate. */
-export async function measureDisplayMath(document:Document,source:string,width:number,fontSize:number,equationNumber?:string,family:PreviewMathFontFamily='auto',cache?:MathCompilationCache):Promise<MeasuredDisplayMath>{
+export async function measureDisplayMath(document:Document,source:string,width:number,fontSize:number,equationNumber?:string,family:PreviewMathFontFamily='auto',cache?:MathCompilationCache,geometryCache?:DisplayMathGeometryCache):Promise<MeasuredDisplayMath>{
   mathFontCss(family);
   if(equationNumber!==undefined&&(typeof equationNumber!=='string'||!/^([1-9][0-9]{0,5})\.([1-9][0-9]{0,5})$/.test(equationNumber)))throw RangeError('Invalid equation number');
   if(!document.body||!document.defaultView||!Number.isSafeInteger(width)||width<1||width>2000000||!Number.isSafeInteger(fontSize)||fontSize<1000||fontSize>30000)throw RangeError('Invalid display math geometry');
@@ -260,19 +295,55 @@ export async function measureDisplayMath(document:Document,source:string,width:n
     label.style.cssText='position:absolute;right:0;top:50%;transform:translateY(-50%);white-space:nowrap;font-family:serif;font-style:normal;font-weight:400;line-height:normal;font-variant-numeric:tabular-nums;';
     label.textContent='('+equationNumber+')';element.append(label);
   }
-  root.append(element);document.body.append(host);
-  try{
-    await readyPreviewMathFont(document,root,family);
+  const state=geometryCache?geometries.get(geometryCache):undefined;
+  if(geometryCache&&(!state||state.document!==document))throw Error('Display math geometry cache belongs to another document');
+  const key=JSON.stringify([source,fontSize,family]);
+  if(state)syncMathEnvironment(state);
+  const epoch=state?.epoch;
+  // No mutation of the cache occurs while a geometry is being read.
+  function measureGeometry(candidate?:NaturalGeometry){
+    element.style.minHeight='';
     if(label){
-      const labelBox=label.getBoundingClientRect(),mathBox=math.getBoundingClientRect(),gap=px(2000);
-      if(!Number.isFinite(labelBox.width)||labelBox.width<=0||labelBox.height<=0||mathBox.width+2*(labelBox.width+gap)>px(width)+.01)throw RangeError('Numbered equation exceeds available centered width');
-      element.style.minHeight=Math.max(labelBox.height,mathBox.height)+'px';
+      const labelBox=label.getBoundingClientRect(),natural=candidate??math.getBoundingClientRect(),gap=px(2000);
+      const naturalWidth='widthPx' in natural?natural.widthPx:natural.width;
+      const naturalHeight='heightPx' in natural?natural.heightPx:natural.height;
+      if(!Number.isFinite(labelBox.width)||labelBox.width<=0||labelBox.height<=0||naturalWidth+2*(labelBox.width+gap)>px(width)+.01)throw RangeError('Numbered equation exceeds available centered width');
+      element.style.minHeight=Math.max(labelBox.height,naturalHeight)+'px';
     }
     const box=element.getBoundingClientRect(),ink=math.getBoundingClientRect();
     if(!Number.isFinite(ink.width)||!Number.isFinite(box.height)||ink.width<=0||box.height<=0||ink.left<box.left-.1||ink.right>box.right+.1||ink.top<box.top-.1||ink.bottom>box.bottom+.1||um(ink.width)>width)throw RangeError('Display math exceeds available width or has invalid geometry');
     if(label){const q=label.getBoundingClientRect();if(q.left<ink.right+px(2000)-.1||q.right>box.right+.1||q.top<box.top-.1||q.bottom>box.bottom+.1)throw RangeError('Invalid equation number geometry');}
-    const height=um(box.height);
-    element.style.height=px(height)+'px';
-    return {element,width:um(ink.width),height,publicationReady:false};
+    // Width/height of the actual MathML element must exactly match the candidate.
+    // Re-run the full cold validation on disagreement, including font probes.
+    if(candidate&&(candidate.widthPx!==ink.width||candidate.heightPx!==ink.height))throw Error('Cached math geometry changed');
+    return {width:um(ink.width),height:um(box.height),natural:{widthPx:ink.width,heightPx:ink.height,characters:source.length}};
+  }
+  root.append(element);document.body.append(host);
+  try{
+    let measured:ReturnType<typeof measureGeometry>|undefined;
+    if(state){
+      await document.fonts.ready;syncMathEnvironment(state);
+      const candidate=state.epoch===epoch&&document.fonts.status==='loaded'?state.entries.get(key):undefined;
+      if(candidate){
+        try{
+          measured=measureGeometry(candidate);
+          state.hits++;state.entries.delete(key);state.entries.set(key,candidate);
+        }catch{
+          state.fallbacks++;dropGeometry(state,key);
+        }
+      }
+      if(!measured)state.misses++;
+    }
+    if(!measured){
+      element.style.minHeight='';
+      await readyPreviewMathFont(document,root,family);
+      measured=measureGeometry();
+      if(state){
+        syncMathEnvironment(state);
+        if(state.epoch===epoch&&document.fonts.status==='loaded')putGeometry(state,key,measured.natural);
+      }
+    }
+    element.style.height=px(measured.height)+'px';
+    return {element,width:measured.width,height:measured.height,publicationReady:false};
   }finally{host.remove();element.remove();}
 }
