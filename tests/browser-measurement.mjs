@@ -17,6 +17,10 @@ const result=new Promise(resolve=>{complete=resolve;});
 const server=createServer(async(req,res)=>{
   if(req.method==='POST'&&req.url==='/test-result'){let body='';for await(const chunk of req){body+=chunk;if(body.length>65536){res.writeHead(413).end();return;}}res.writeHead(200).end();complete(body);return;}
   if(req.method==='POST'&&req.url==='/test-progress'){let body='';for await(const chunk of req){body+=chunk;if(body.length>256){res.writeHead(413).end();return;}}lastPhase=body;console.log('Browser phase: '+body);res.writeHead(204).end();return;}
+  if(req.url==='/fixtures/math-font.otf'&&process.env.BC_TEST_MATH_FONT){
+    try{const bytes=await readFile(process.env.BC_TEST_MATH_FONT);if(!bytes.length||bytes.length>16*1024*1024)throw Error('Invalid fixture size');res.writeHead(200,{'Content-Type':'font/otf'}).end(bytes);}
+    catch{res.writeHead(500).end();}return;
+  }
   const path=req.url;
   if(!allowed.has(path)){res.writeHead(404).end();return;}
   try{const bytes=await readFile(new URL('..'+path,import.meta.url));res.writeHead(200,{'Content-Type':path.endsWith('.html')?'text/html; charset=utf-8':'text/javascript; charset=utf-8'}).end(bytes);}
