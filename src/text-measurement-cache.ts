@@ -87,8 +87,10 @@ export async function measureWithParagraphCache(document:Document,r:Readonly<Pla
   // A successful previous miss verified the actual registered faces and
   // wrapping geometry. No per-hit fonts.load or DOM creation is necessary
   // while the same FontFaceSet identity, descriptors and load state hold.
+  synchronize(state);const initialEpoch=state.epoch;
   await document.fonts.ready;
   const fonts=synchronize(state),epoch=state.epoch;
+  if(initialEpoch!==epoch)return measure(document,r);
   const styles=r.inlineStyles?.map(s=>[s.start,s.end,s.fontFamily,s.fontWeight,s.italic,s.underline,s.color,s.fontSize,s.baseline]);
   const math=r.inlineMath?.map(a=>[a.start,a.formula]);
   const key=JSON.stringify(['paragraph-v1',r.text,r.width,r.fontSize,r.fontFamily,r.fontWeight??400,r.lineHeight,r.multiline??false,r.paragraphGap??0,r.mathFontFamily??'auto',styles,math,fixedInline]);
