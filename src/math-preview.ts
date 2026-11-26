@@ -279,7 +279,7 @@ export interface MeasuredDisplayMath {element:HTMLElement;width:number;height:nu
 /** Private native display artifact: the source and exact measured geometry,
  * never the live node. Only successful measurements can create a handle. */
 export interface DisplayMathArtifact {readonly kind:'display-math-artifact'}
-type DisplayMathArtifactData={document:Document;source:string;availableWidth:number;fontSize:number;equationNumber?:string;family:PreviewMathFontFamily;width:number;height:number;minHeight:string};
+type DisplayMathArtifactData={document:Document;source:string;availableWidth:number;fontSize:number;equationNumber?:string;family:PreviewMathFontFamily;width:number;height:number;styleText:string};
 const artifactData=new WeakMap<DisplayMathArtifact,DisplayMathArtifactData>();
 const measuredArtifacts=new WeakMap<MeasuredDisplayMath,DisplayMathArtifact>();
 export function displayMathArtifact(measured:MeasuredDisplayMath):DisplayMathArtifact|undefined{return measuredArtifacts.get(measured);}
@@ -305,8 +305,9 @@ export function restoreDisplayMathArtifact(document:Document,artifact:DisplayMat
   const data=artifactData.get(artifact);
   if(!data||data.document!==document)throw Error('Display math artifact belongs to another document or is invalid');
   const {element}=createDisplayMathElement(document,data.source,data.availableWidth,data.fontSize,data.equationNumber,data.family,cache);
-  element.style.minHeight=data.minHeight;
-  element.style.height=data.height*96/25400+'px';
+  // Preserve the exact measured CSS serialization, including shorthand and
+  // declaration order. Replaying CSSOM assignments can normalize it differently.
+  element.setAttribute('style',data.styleText);
   const result:MeasuredDisplayMath={element,width:data.width,height:data.height,publicationReady:false};
   measuredArtifacts.set(result,artifact);
   return result;
@@ -371,7 +372,7 @@ export async function measureDisplayMath(document:Document,source:string,width:n
     element.style.height=px(measured.height)+'px';
     const result:MeasuredDisplayMath={element,width:measured.width,height:measured.height,publicationReady:false};
     const artifact:DisplayMathArtifact=Object.freeze({kind:'display-math-artifact'});
-    artifactData.set(artifact,{document,source,availableWidth:width,fontSize,equationNumber,family,width:measured.width,height:measured.height,minHeight:element.style.minHeight});
+    artifactData.set(artifact,{document,source,availableWidth:width,fontSize,equationNumber,family,width:measured.width,height:measured.height,styleText:element.getAttribute('style')!});
     measuredArtifacts.set(result,artifact);
     return result;
   }finally{host.remove();element.remove();}
