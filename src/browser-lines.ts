@@ -20,11 +20,11 @@ export interface MeasuredTextLines {
 const px=(um:number)=>um*96/25400;
 const um=(css:number)=>Math.ceil(css*25400/96);
 const positive=(n:number)=>Number.isSafeInteger(n)&&n>0;
-function validate(request:PlainTextMeasureRequest){
+function validate(request:PlainTextMeasureRequest,display=false){
   if(typeof request.text!=='string'||!request.text.length||request.text.length>10000||
     (request.multiline!==undefined&&typeof request.multiline!=='boolean')||
     (request.paragraphGap!==undefined&&(!request.multiline||!Number.isSafeInteger(request.paragraphGap)||request.paragraphGap<0||request.paragraphGap>30000))||
-    /[\p{Cc}\p{Cs}\p{Cf}\p{Zl}\p{Zp}]/u.test(request.multiline?request.text.replace(/\r\n|\n/g,''):request.text)||
+    /[\p{Cc}\p{Cs}\p{Cf}\p{Zl}\p{Zp}]/u.test(display?request.text.replace(/\r\n|\n|\t/g,''):request.multiline?request.text.replace(/\r\n|\n/g,''):request.text)||
     (request.multiline&&(!request.text.replace(/\r\n|\n/g,'').trim()||(request.text.match(/\n/g)?.length??0)>255))||
     !positive(request.width)||request.width>2000000||!positive(request.fontSize)||request.fontSize>100000||
     (request.mathFontFamily!==undefined&&!isPreviewMathFontFamily(request.mathFontFamily))||
@@ -32,8 +32,8 @@ function validate(request:PlainTextMeasureRequest){
     throw new RangeError('Unsupported plain line measurement request');
 }
 // Validate a bounded, ordered interval list before any asynchronous measurement.
-function snapshotRequest(r:PlainTextMeasureRequest):Readonly<PlainTextMeasureRequest>{
-  validate(r);
+function snapshotRequest(r:PlainTextMeasureRequest,display=false):Readonly<PlainTextMeasureRequest>{
+  validate(r,display);
   const positions=[...r.text.matchAll(/\uFFFC/g)].map(m=>m.index!);
   let atoms:readonly InlineMathAtom[]|undefined;
   if(r.inlineMath!==undefined||positions.length){
@@ -462,7 +462,7 @@ export async function createPlainTextPagePreview(document:Document,options:{
       if(b.displayMath!==true||b.splitPolicy!=='strict'||component||listItem||namedSlots.length||b.request.inlineStyles!==undefined||b.request.multiline||b.request.paragraphGap!==undefined)throw RangeError('Display math requires an independent strict block');
       parseDisplayMath(b.request.text);
     }
-    return {...b,origin,request:snapshotRequest(b.request),component,namedSlots,listItem};
+    return {...b,origin,request:snapshotRequest(b.request,b.displayMath===true),component,namedSlots,listItem};
   })}));
   if(sections.flatMap(s=>s.blocks).reduce((n,b)=>n+(isBreak(b)?0:b.request.text.length+(b.namedSlots??[]).reduce((sum,s)=>sum+s.request.text.length,0)),0)>50000)throw RangeError('Preview source text limit exceeded');
   if(sections.flatMap(s=>s.blocks).reduce((n,b)=>n+(isBreak(b)?0:(b.request.text.match(/\n/g)?.length??0)+(b.namedSlots??[]).reduce((sum,s)=>sum+(s.request.text.match(/\n/g)?.length??0),0)),0)>1024)throw RangeError('Preview hard-line limit exceeded');
