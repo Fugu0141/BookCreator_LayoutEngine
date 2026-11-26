@@ -101,3 +101,8 @@ Line-based measurement accepts typed inlineMath descriptors {start, formula}; ea
 ## M04 — numbered display math geometry (experimental)
 
 A strict displayMath block may accept a host-derived equationNumber `chapter.index` (positive integer components, at most six digits each). The number is rendered as a separate right-aligned `(chapter.index)` label, vertically centered alongside the equation. Real DOM measurement reserves equal horizontal clearance on both sides, 2 mm minimum formula/label gap, and the maximum of both heights. The formula remains centered on the full content width; overflow fails closed rather than shifting, overlapping or clipping. The number does not enter logical text, pagination units, or sourceSlice. Engine neither assigns numbers nor resolves IDs; those are host concerns. Unnumbered formulas retain their previous geometry. CI pending; not publication ready.
+
+
+## M04 — component inline math (experimental)
+
+The existing inlineMath atom request may now be used in strict component primary content, independent named text slots, and fragmentable single-content paragraph frames. Slot-specific width, physical font size and measured variable line height determine placement; formulas remain atomic and are measured/rendered using the same native MathML path as regular text. Each transformed slot must use its own host-owned source map rather than sourceTextStart; atom offsets are local to that slot. The global formula count and character budget includes all named slots. Strict component geometry and fragmentable-frame constraints remain unchanged. List items, standalone display equations inside components, formula font customization and host BCM/GUI integration remain separate work. CI pending; not publication ready.
