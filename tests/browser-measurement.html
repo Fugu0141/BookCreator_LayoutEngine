@@ -1260,7 +1260,24 @@ try{
     const full=await createPlainTextPagePreview(document,options);
     assert(next.measurementWork.measuredBlocks===0&&next.measurementWork.reusedBlocks===3,'component color and both formula types reuse measurements');
     assert(JSON.stringify(next.plan)===JSON.stringify(full.plan)&&JSON.stringify(next.slices)===JSON.stringify(full.slices),'mixed retained plan and slices parity');
-    assert(next.pageDelta.reusedPageIndices.length===0&&Array.from(full.element.shadowRoot.children).every((n,i)=>n.isEqualNode(next.changedElement.shadowRoot.children[i])),'mixed retained DOM parity');
+    assert(next.pageDelta.reusedPageIndices.length===0,'all mixed pages generated');
+    function firstDifference(a,b,path){
+      if(!a||!b)return path+': missing node';
+      if(a.nodeName!==b.nodeName||a.nodeValue!==b.nodeValue)return path+': node differs '+a.nodeName+' / '+b.nodeName;
+      if(a.nodeType===1){
+        const keys=new Set([...a.getAttributeNames(),...b.getAttributeNames()]);
+        for(const key of keys)if(a.getAttribute(key)!==b.getAttribute(key))return path+' @'+key+': '+a.getAttribute(key)+' / '+b.getAttribute(key);
+      }
+      if(a.childNodes.length!==b.childNodes.length)return path+': child count '+a.childNodes.length+' / '+b.childNodes.length;
+      for(let i=0;i<a.childNodes.length;i++){
+        const d=firstDifference(a.childNodes[i],b.childNodes[i],path+'/'+i);if(d)return d;
+      }
+      return '';
+    }
+    for(const [i,n] of Array.from(full.element.shadowRoot.children).entries()){
+      const actual=next.changedElement.shadowRoot.children[i];
+      assert(n.isEqualNode(actual),'mixed retained DOM parity, page '+i+': '+firstDifference(n,actual,'page'));
+    }
     const changed=await createRetainedTextPagePreview(document,make('3','#eeeeee','変更した例題'),next.pageDelta.snapshot);
     assert(changed.measurementWork.measuredBlocks===1&&changed.measurementWork.reusedBlocks===2,'component label invalidates only its measurement');
   }
