@@ -1,4 +1,4 @@
-import {measureDisplayMath,validateCompiledMath,createPreviewMath,readyPreviewMathFont,isPreviewMathFontFamily,type MeasuredDisplayMath,type MathCompilationCache} from './math-preview.js';
+import {measureDisplayMath,validateCompiledMath,createPreviewMath,readyPreviewMathFont,isPreviewMathFontFamily,type MeasuredDisplayMath,type MathCompilationCache,type DisplayMathGeometryCache} from './math-preview.js';
 import {validateImageCrop,type ImageCrop} from './image-crop.js';
 import {renderMeasuredPreview} from './browser-page-render.js';
 import {measurePreviewSections} from './browser-page-measure.js';
@@ -190,7 +190,7 @@ function live(document:Document){
   if(!document.body||!document.defaultView||!document.fonts)throw Error('A live browser document is required');
 }
 // Grapheme ranges, real browser wrapping, bounded input. Reject ambiguous geometry instead of guessing.
-export async function measurePlainTextLines(document:Document,request:PlainTextMeasureRequest,mathCache?:MathCompilationCache):Promise<MeasuredTextLines>{
+export async function measurePlainTextLines(document:Document,request:PlainTextMeasureRequest,mathCache?:MathCompilationCache,displayMathCache?:DisplayMathGeometryCache):Promise<MeasuredTextLines>{
   live(document);const r=snapshotRequest(request,false,mathCache);
   if(r.multiline&&r.text.includes('\n')){
     const lines:MeasuredTextLine[]=[];let start=0;
@@ -199,7 +199,7 @@ export async function measurePlainTextLines(document:Document,request:PlainTextM
       const raw=match[0];if(!raw)continue;
       const body=raw.replace(/(?:\r\n|\n)$/,'');
       if(body.length){
-        const measured=await measurePlainTextLines(document,{...r,text:body,multiline:false,paragraphGap:undefined,inlineStyles:slicedRuns(r,start,start+body.length),inlineMath:slicedMath(r,start,start+body.length)},mathCache);
+        const measured=await measurePlainTextLines(document,{...r,text:body,multiline:false,paragraphGap:undefined,inlineStyles:slicedRuns(r,start,start+body.length),inlineMath:slicedMath(r,start,start+body.length)},mathCache,displayMathCache);
         for(const [i,line] of measured.lines.entries())lines.push({start:start+line.start,end:start+(i===measured.lines.length-1?raw.length:line.end),height:line.height,...(line.displayMath?{displayMath:line.displayMath}:{})});
       }else lines.push({start,end:start+raw.length,height:Math.ceil(r.fontSize*r.lineHeight)+(r.paragraphGap??0)});
       start+=raw.length;
@@ -209,7 +209,7 @@ export async function measurePlainTextLines(document:Document,request:PlainTextM
   }
   if(r.inlineMath?.[0]?.display===true){
     if(r.text!=='\uFFFC'||r.inlineMath.length!==1)throw RangeError('Expected isolated display math row');
-    const displayMath=await measureDisplayMath(document,r.inlineMath[0].formula,r.width,r.fontSize,r.inlineMath[0].equationNumber,r.mathFontFamily,mathCache);
+    const displayMath=await measureDisplayMath(document,r.inlineMath[0].formula,r.width,r.fontSize,r.inlineMath[0].equationNumber,r.mathFontFamily,mathCache,displayMathCache);
     return {request:r,lines:[{start:0,end:1,height:displayMath.height,displayMath}],measurement:'browser-dom-lines',publicationReady:false};
   }
   const host=document.createElement('div');
@@ -468,10 +468,12 @@ export async function createPlainTextPagePreview(document:Document,options:{
   collectTimings?:boolean;
   /** Optional book-session-owned, font-independent syntax compilation cache. */
   mathCache?:MathCompilationCache;
+  /** Optional document-owned natural geometry cache for independent display equations. */
+  displayMathCache?:DisplayMathGeometryCache;
 }):Promise<TextPagePreview>{
   live(document);
   // Snapshot the opt-in before any asynchronous work. The clock is never read otherwise.
-  const mathCache=options.mathCache;
+  const mathCache=options.mathCache,displayMathCache=options.displayMathCache;
   const timed=options.collectTimings===true;
   const now=()=>timed?document.defaultView!.performance.now():0;
   const started=now();
@@ -530,8 +532,8 @@ export async function createPlainTextPagePreview(document:Document,options:{
     images.set(id,bitmap);
   }
   const imagesReady=now();
-  const measure=(doc:Document,r:PlainTextMeasureRequest)=>measurePlainTextLines(doc,r,mathCache);
-  const {byKey,measuredSections}=await measurePreviewSections(document,sections,width,height,{measurePlainTextLines:measurementCache?(doc,r)=>measureWithTextCache(doc,r.inlineMath!==undefined||r.inlineStyles!==undefined?r:snapshotRequest(r),measurementCache,measure):measure,measureDisplayMath:(doc,source,w,size,number,family)=>measureDisplayMath(doc,source,w,size,number,family,mathCache),resolveComponentWidths,placeComponent,listInset,listMarker});
+  const measure=(doc:Document,r:PlainTextMeasureRequest)=>measurePlainTextLines(doc,r,mathCache,displayMathCache);
+  const {byKey,measuredSections}=await measurePreviewSections(document,sections,width,height,{measurePlainTextLines:measurementCache?(doc,r)=>measureWithTextCache(doc,r.inlineMath!==undefined||r.inlineStyles!==undefined?r:snapshotRequest(r),measurementCache,measure):measure,measureDisplayMath:(doc,source,w,size,number,family)=>measureDisplayMath(doc,source,w,size,number,family,mathCache,displayMathCache),resolveComponentWidths,placeComponent,listInset,listMarker});
   const measured=now();
   const plan=paginateMeasured({schemaVersion:1,revision,fingerprint,content:{width,height},sections:measuredSections});
   if(!plan.pages.length)throw Error('No drawable content');
