@@ -2,7 +2,7 @@
 <html lang="en"><meta charset="utf-8"><title>Browser measurement smoke test</title>
 <body><pre id="result">RUNNING</pre>
 <script type="module">
-import {measurePlainText,paginateMeasured,measurePlainTextLines,createPlainTextPagePreview,measureDisplayMath,createPreviewMath,createTextMeasurementCache} from '/dist/index.js';
+import {measurePlainText,paginateMeasured,measurePlainTextLines,createPlainTextPagePreview,measureDisplayMath,createPreviewMath,createTextMeasurementCache,parsePreviewMath,parseDisplayMath,readyPreviewMathFont} from '/dist/index.js';
 const result=document.querySelector('#result');
 const assert=(condition,message)=>{if(!condition)throw Error(message);};
 const phase=async name=>{await fetch('/test-progress',{method:'POST',body:name});};
@@ -702,6 +702,67 @@ try{
     }finally{document.fonts.delete(face);}
     assert(document.body.children.length===before,'font probe cleanup');
   }
+  await phase("math workload baseline");
+  const mathBenchmark=[];
+  {
+    const formulas=Array.from({length:12},(_,i)=>i%3===0?'x_'+(i+1)+'^2+1':i%3===1?'\\frac{'+(i+1)+'}{x+1}':'\\sqrt{x^2+'+(i+1)+'}');
+    const width=100000,height=160000,base={...request,width,fontSize:5000,lineHeight:1.8};
+    const host=document.createElement('div');host.style.cssText='all:initial;position:fixed;left:-100000px;visibility:hidden;';
+    const root=host.attachShadow({mode:'closed'});document.body.append(host);
+    const family='auto';
+    const makeBlocks=(kind,change='none')=>formulas.map((original,i)=>{
+      const formula=change==='formula'&&i===0?'x_1^3+1':original;
+      const body=change==='body'&&i===1?'確認 \uFFFC を求める。':'前の文章 \uFFFC 後の文章。';
+      const display=kind==='display'||kind==='mixed'&&i%2===0;
+      const inline=kind==='inline'||kind==='mixed'&&!display;
+      const req={...base,width:change==='width'?90000:width,
+        text:display?formula:inline?body:body.replace('\uFFFC','値'),
+        ...(inline?{inlineMath:[{start:body.indexOf('\uFFFC'),formula}]}:{})};
+      return {origin:{documentId:'bench',revision:'1',blockKey:String(i)},request:req,splitPolicy:display?'strict':'allow',
+        ...(display?{displayMath:true,equationNumber:(change==='number'?'2.':'1.')+(i+1)}:{})};
+    });
+    async function probe(label,calls,work){
+      const start=performance.now();
+      await work();
+      const elapsedMs=performance.now()-start;
+      assert(Number.isFinite(elapsedMs)&&elapsedMs>=0,'finite math workload timing');
+      mathBenchmark.push({label,calls,elapsedMs});
+    }
+    async function full(kind,change,record=true){
+      const options={revision:'1',fingerprint:'math-benchmark',width:change==='width'?90000:width,height,blocks:makeBlocks(kind,change),collectTimings:true};
+      const start=performance.now();
+      const p=await createPlainTextPagePreview(document,options);
+      const elapsedMs=performance.now()-start;
+      const expected=kind==='plain'?0:formulas.length;
+      assert(p.element.shadowRoot.querySelectorAll('math').length===expected,'all benchmark formula nodes present');
+      assert(p.plan.pages.length>0&&p.plan.completeness==='full'&&p.publicationReady===false,'complete experimental math preview');
+      assert(p.timings&&Object.values(p.timings).every(v=>Number.isFinite(v)&&v>=0),'math workload phase timings');
+      if(record)mathBenchmark.push({label:kind+'-'+change,blocks:formulas.length,formulaCount:expected,pages:p.plan.pages.length,elapsedMs,timings:p.timings});
+      return p.element.shadowRoot.innerHTML;
+    }
+    try{
+      await readyPreviewMathFont(document,root,family);
+      // Warm each path once. These independent probes overlap by design:
+      // MathML creation includes parsing, display measurement includes both.
+      await full('plain','none',false);await full('inline','none',false);
+      await full('display','none',false);await full('mixed','none',false);
+      for(let round=0;round<3;round++){
+        await probe('parse-inline',formulas.length,()=>{for(const s of formulas)parsePreviewMath(s);});
+        await probe('parse-display',formulas.length,()=>{for(const s of formulas)parseDisplayMath(s);});
+        await probe('create-mathml-inline-including-parse',formulas.length,()=>{for(const s of formulas)assert(createPreviewMath(document,s,'inline',family).localName==='math','inline MathML');});
+        await probe('create-mathml-display-including-parse',formulas.length,()=>{for(const s of formulas)assert(createPreviewMath(document,s,'block',family).localName==='math','display MathML');});
+        await probe('font-ready-probe',formulas.length,async()=>{for(const _ of formulas)await readyPreviewMathFont(document,root,family);});
+        await probe('display-measurement-inclusive',formulas.length,async()=>{for(const [i,s] of formulas.entries()){const m=await measureDisplayMath(document,s,width,base.fontSize,'1.'+(i+1),family);assert(m.width>0&&m.height>0&&!m.element.isConnected,'measured standalone formula');}});
+        const order=round%2===0?['plain','inline','display','mixed']:['mixed','display','inline','plain'];
+        for(const kind of order)await full(kind,'none');
+        const reference=await full('mixed','none');
+        assert(reference===await full('mixed','none'),'unchanged math preview DOM stable');
+        for(const change of ['body','formula','width','number'])assert(reference!==await full('mixed',change),'changed math workload updates paper: '+change);
+      }
+      assert(root.childNodes.length===0,'font readiness probe cleanup');
+    }finally{host.remove();}
+    assert(document.body.children.length===before,'math benchmark temporary hosts cleaned up');
+  }
   await phase("multiline display source and exact offsets");
   {
     const formula=['\\begin{aligned}','  x&=1 \\\\','  &=2-1','\\end{aligned}'].join('\r\n');
@@ -721,7 +782,7 @@ try{
     }
     assert(document.body.children.length===before,'multiline display cleanup');
   }
-  result.textContent='PASS '+JSON.stringify({lineCount:lines.lines.length,previewPages:preview.plan.pages.length,lineRanges:preview.slices.map(s=>[s.textStart,s.textEnd])})+' '+JSON.stringify({wide,narrow,pages:plan.pages.length});
+  result.textContent='PASS '+JSON.stringify({lineCount:lines.lines.length,previewPages:preview.plan.pages.length,lineRanges:preview.slices.map(s=>[s.textStart,s.textEnd])})+' '+JSON.stringify({wide,narrow,pages:plan.pages.length})+' MATH_BENCH '+JSON.stringify({version:1,mathBenchmark});
 }catch(error){result.textContent='FAIL '+String(error);}
 await fetch('/test-result',{method:'POST',body:result.textContent});
 </script></body></html>
