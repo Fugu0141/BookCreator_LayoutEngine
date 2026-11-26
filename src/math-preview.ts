@@ -7,12 +7,15 @@ const functions=new Set(['sin','cos','tan','cot','sec','csc','arcsin','arccos','
 const tables=new Set<MathTableKind>(['matrix','pmatrix','bmatrix','Bmatrix','vmatrix','Vmatrix','cases','aligned']);
 const limits=new Set(['lim','limsup','liminf','min','max','sup','inf']);
 const accents:Readonly<Record<string,string>>=Object.freeze({vec:'→',hat:'^',bar:'¯',overline:'¯',tilde:'~',dot:'˙',ddot:'¨'});
-export function parsePreviewMath(source:string):MathNode{
-  if(typeof source!=='string'||source.length>2048||!source.trim()||!/^[A-Za-z0-9 .,+*/=()[\]|!<>&\-^_{}\\]+$/.test(source))throw RangeError('Unsupported math source');
+export function parsePreviewMath(source:string):MathNode{return parseMath(source,false);}
+/** Independent equations may contain literal LF/CRLF and indentation, but not arbitrary TeX. */
+export function parseDisplayMath(source:string):MathNode{return parseMath(source,true);}
+function parseMath(source:string,multiline:boolean):MathNode{
+  if(typeof source!=='string'||source.length>2048||!source.trim()||/\r(?!\n)/.test(source)||(!multiline&&/[\r\n\t]/.test(source))||!/^[A-Za-z0-9 \r\n\t.,+*/=()[\]|!<>&\-^_{}\\]+$/.test(source))throw RangeError('Unsupported math source');
   let at=0,count=0,cellCount=0;
   const fail=():never=>{throw RangeError('Unsupported or malformed math at offset '+at);};
   const node=<T extends MathNode>(n:T):T=>{if(++count>512)throw RangeError('Math node limit exceeded');return n;};
-  const space=()=>{while(source[at]===' ')at++;};
+  const space=()=>{while(at<source.length&&/[ \t\r\n]/.test(source[at]))at++;};
   function group(depth:number):MathNode{
     space();if(source[at++]!=='{')return fail();
     const body=row(depth+1,true);if(source[at++]!=='}')return fail();return body;
@@ -121,7 +124,7 @@ function mathFontCss(family:PreviewMathFontFamily){
 /** Only engine-produced MathML elements, with textContent for every token. */
 export function createPreviewMath(document:Document,source:string,display:'block'|'inline'='block',family:PreviewMathFontFamily='auto'):Element{
   const css=mathFontCss(family);
-  const ast=parsePreviewMath(source);
+  const ast=display==='block'?parseDisplayMath(source):parsePreviewMath(source);
   function fence(text:string,form:'prefix'|'postfix'){
     const token=document.createElementNS(NS,'mo');token.setAttribute('fence','true');token.setAttribute('stretchy','true');token.setAttribute('form',form);token.textContent=text;return token;
   }
