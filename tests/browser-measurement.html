@@ -2,7 +2,7 @@
 <html lang="en"><meta charset="utf-8"><title>Browser measurement smoke test</title>
 <body><pre id="result">RUNNING</pre>
 <script type="module">
-import {measurePlainText,paginateMeasured,measurePlainTextLines,createPlainTextPagePreview,measureDisplayMath,createPreviewMath} from '/dist/index.js';
+import {measurePlainText,paginateMeasured,measurePlainTextLines,createPlainTextPagePreview,measureDisplayMath,createPreviewMath,createTextMeasurementCache} from '/dist/index.js';
 const result=document.querySelector('#result');
 const assert=(condition,message)=>{if(!condition)throw Error(message);};
 const phase=async name=>{await fetch('/test-progress',{method:'POST',body:name});};
@@ -42,6 +42,27 @@ try{
     for(const line of fragment.children)assert(line.scrollWidth<=line.clientWidth+1,'frozen line fits');
   }
   assert(preview.publicationReady===false&&!preview.plan.publicationReady,'preview cannot authorize publication');
+  await phase("text measurement cache");
+  {
+  const cache=createTextMeasurementCache(document);
+  const cacheOptions={revision:'1',fingerprint:'cache-check',width:65000,height:lines.lines[0].height*3,blocks:[{origin:{documentId:'demo',revision:'1',blockKey:'cache-block'},request,splitPolicy:'allow'}]};
+  const cold=await createPlainTextPagePreview(document,{...cacheOptions,measurementCache:cache});
+  const warm=await createPlainTextPagePreview(document,{...cacheOptions,measurementCache:cache});
+  assert(cache.stats().misses===1&&cache.stats().hits===1,'same validated text reuses line geometry');
+  assert(JSON.stringify(cold.plan)===JSON.stringify(warm.plan)&&JSON.stringify(cold.slices)===JSON.stringify(warm.slices),'cold and warm placement and source ranges identical');
+  assert(cold.element!==warm.element&&cold.element.shadowRoot.innerHTML===warm.element.shadowRoot.innerHTML,'cache produces independent identical paper DOM');
+  const narrower={...cacheOptions,width:50000,blocks:[{...cacheOptions.blocks[0],request:{...request,width:50000}}]};
+  await createPlainTextPagePreview(document,{...narrower,measurementCache:cache});
+  assert(cache.stats().misses===2,'different width remeasured');
+  const changed={...cacheOptions,blocks:[{...cacheOptions.blocks[0],request:{...request,text:original+' 変更'}}]};
+  await createPlainTextPagePreview(document,{...changed,measurementCache:cache});
+  assert(cache.stats().misses===3,'different text remeasured');
+  cache.clear();assert(cache.stats().entries===0&&cache.stats().hits===0,'explicit invalidation discards values');
+  const styled={...cacheOptions,blocks:[{...cacheOptions.blocks[0],request:{...request,inlineStyles:[{start:0,end:1,color:'#123456'}]}}]};
+  await createPlainTextPagePreview(document,{...styled,measurementCache:cache});
+  assert(cache.stats().entries===0,'styled request bypasses conservative cache');
+  }
+  await phase("remaining browser measurement checks");
   let rejected=false;try{await measurePlainTextLines(document,{...request,text:'a\nb'});}catch{rejected=true;}
   assert(rejected,'unsupported line contexts refused');
   preview.element.remove();

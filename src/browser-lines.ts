@@ -2,6 +2,8 @@ import {measureDisplayMath,parsePreviewMath,parseDisplayMath,createPreviewMath,r
 import {validateImageCrop,type ImageCrop} from './image-crop.js';
 import {renderMeasuredPreview} from './browser-page-render.js';
 import {measurePreviewSections} from './browser-page-measure.js';
+import {measureWithTextCache,type TextMeasurementCache} from './text-measurement-cache.js';
+export {createTextMeasurementCache,type TextMeasurementCache} from './text-measurement-cache.js';
 import {layoutTree} from './tree.js';
 import {applyPreviewFont,readyPreviewFont,isPreviewFontFamily,isPreviewFontWeight} from './preview-font.js';
 import {paginateMeasured,type Origin,type MeasuredPagePlan,type SplitPolicy,type PageBreak} from './pagination.js';
@@ -438,6 +440,8 @@ export async function createPlainTextPagePreview(document:Document,options:{
   sections?:readonly {id:string;startOn:'page'|'continuous';blocks:readonly (PreviewTextBlock|PageBreak)[]}[];
   paper?:{width:number;height:number;top:number;bottom:number;inner:number;outer:number;firstSide:'right'|'left'};
   resolveImage?:PreviewImageResolver;
+  /** Opt-in cache owned by the host for this live document. */
+  measurementCache?:TextMeasurementCache;
 }):Promise<TextPagePreview>{
   live(document);
   if((options.blocks===undefined)===(options.sections===undefined))throw RangeError('Specify exactly one block list or section list');
@@ -472,7 +476,7 @@ export async function createPlainTextPagePreview(document:Document,options:{
   if(sections.flatMap(s=>s.blocks).reduce((n,b)=>n+(isBreak(b)?0:(b.request.inlineStyles?.length??0)+(b.namedSlots??[]).reduce((sum,s)=>sum+(s.request.inlineStyles?.length??0),0)),0)>1024)throw RangeError('Preview inline style limit exceeded');
   const mathAtoms=sections.flatMap(s=>s.blocks).flatMap(b=>isBreak(b)?[]:[...(b.request.inlineMath??[]),...(b.namedSlots??[]).flatMap(s=>s.request.inlineMath??[])]);
   if(mathAtoms.length>512||mathAtoms.reduce((n,a)=>n+a.formula.length,0)>50000)throw RangeError('Preview inline math limit exceeded');
-  const {revision,fingerprint,width,height,resolveImage}=options;
+  const {revision,fingerprint,width,height,resolveImage,measurementCache}=options;
   // Decode each unique resource before building the plan. Use a canvas snapshot so no object URL survives rendering.
   const imageIds=new Set<string>();
   function collectImages(children:readonly PreviewComponentChild[]){for(const n of children){if(n.type==='image')imageIds.add(n.assetId);else if(n.type==='group')collectImages(n.children);}}
@@ -493,7 +497,7 @@ export async function createPlainTextPagePreview(document:Document,options:{
     if(!positive(bitmap.width)||!positive(bitmap.height)||bitmap.width>8192||bitmap.height>8192||bitmap.width*bitmap.height>16000000||(imagePixels+=bitmap.width*bitmap.height)>32000000){bitmap.close();throw RangeError('Image resource pixel limit exceeded');}
     images.set(id,bitmap);
   }
-  const {byKey,measuredSections}=await measurePreviewSections(document,sections,width,height,{measurePlainTextLines,resolveComponentWidths,placeComponent,listInset,listMarker});
+  const {byKey,measuredSections}=await measurePreviewSections(document,sections,width,height,{measurePlainTextLines:measurementCache?(doc,r)=>measureWithTextCache(doc,snapshotRequest(r),measurementCache,measurePlainTextLines):measurePlainTextLines,resolveComponentWidths,placeComponent,listInset,listMarker});
   const plan=paginateMeasured({schemaVersion:1,revision,fingerprint,content:{width,height},sections:measuredSections});
   if(!plan.pages.length)throw Error('No drawable content');
   if(plan.completeness!=='full')throw Error('Cannot render partial preview: '+plan.diagnostics.map(d=>d.code).join(', '));
