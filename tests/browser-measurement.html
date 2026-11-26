@@ -2,7 +2,7 @@
 <html lang="en"><meta charset="utf-8"><title>Browser measurement smoke test</title>
 <body><pre id="result">RUNNING</pre>
 <script type="module">
-import {measurePlainText,paginateMeasured,measurePlainTextLines,createPlainTextPagePreview,measureDisplayMath,createPreviewMath,createTextMeasurementCache,parsePreviewMath,parseDisplayMath,readyPreviewMathFont} from '/dist/index.js';
+import {measurePlainText,paginateMeasured,measurePlainTextLines,createPlainTextPagePreview,measureDisplayMath,createPreviewMath,createTextMeasurementCache,parsePreviewMath,parseDisplayMath,readyPreviewMathFont,createMathCompilationCache} from '/dist/index.js';
 const result=document.querySelector('#result');
 const assert=(condition,message)=>{if(!condition)throw Error(message);};
 const phase=async name=>{await fetch('/test-progress',{method:'POST',body:name});};
@@ -701,6 +701,42 @@ try{
       assert(!createPreviewMath(document,'x').style.fontFamily.includes(alias),'auto keeps legacy stack');
     }finally{document.fonts.delete(face);}
     assert(document.body.children.length===before,'font probe cleanup');
+  }
+  await phase("math compilation reuse");
+  {
+    const cache=createMathCompilationCache();
+    const formula='\\frac{x}{2}',other='\\sqrt{x^2+1}',body='前の文章 \uFFFC 後の文章。';
+    const width=100000,height=100000;
+    const makeOptions=(change='none')=>{
+      const text=change==='body'?'変更した文章 \uFFFC 後の文章。':body;
+      const w=change==='width'?90000:width;
+      return {revision:'1',fingerprint:'compiler-reuse',width:w,height,blocks:[
+        {origin:{documentId:'compiler',revision:'1',blockKey:'inline'},request:{...request,width:w,text,inlineMath:[{start:text.indexOf('\uFFFC'),formula:change==='formula'?'\\frac{x}{3}':formula}]},splitPolicy:'allow'},
+        {origin:{documentId:'compiler',revision:'1',blockKey:'display'},request:{...request,width:w,text:other},splitPolicy:'strict',displayMath:true,equationNumber:change==='number'?'2.1':'1.1'}
+      ]};
+    };
+    const run=async change=>{
+      const options=makeOptions(change);
+      const a=await createPlainTextPagePreview(document,options);
+      const b=await createPlainTextPagePreview(document,{...options,mathCache:cache});
+      assert(JSON.stringify(a.plan)===JSON.stringify(b.plan)&&JSON.stringify(a.slices)===JSON.stringify(b.slices),'compiler cache preserves plan and slices');
+      assert(a.element.shadowRoot.innerHTML===b.element.shadowRoot.innerHTML,'compiler cache preserves paper DOM');
+      assert(a.element.shadowRoot.querySelector('math')!==b.element.shadowRoot.querySelector('math'),'independent math nodes');
+      return b;
+    };
+    await run('none');
+    assert(cache.stats().misses===2&&cache.stats().entries===2,'one syntax compilation per distinct formula/mode');
+    const hits=cache.stats().hits;
+    for(const change of ['none','body','width','number'])await run(change);
+    assert(cache.stats().misses===2&&cache.stats().hits>hits,'unchanged formula syntax survives body, width and number changes');
+    await run('formula');
+    assert(cache.stats().misses===3&&cache.stats().entries===3,'one changed formula adds one compilation');
+    const node=createPreviewMath(document,formula,'inline','auto',cache);
+    node.replaceChildren();
+    assert(createPreviewMath(document,formula,'inline','auto',cache).querySelector('mfrac'),'rendered DOM cannot mutate cached syntax');
+    cache.clear();
+    assert(cache.stats().entries===0&&cache.stats().misses===0,'explicit compilation cache release');
+    assert(document.body.children.length===before,'compiler measurement host cleanup');
   }
   await phase("math workload baseline");
   const mathBenchmark=[];
