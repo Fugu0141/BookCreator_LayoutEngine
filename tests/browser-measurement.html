@@ -876,7 +876,7 @@ try{
     assert(document.body.children.length===before,'fixed and fallback hosts removed');
   }
   await phase("math workload baseline");
-  const mathBenchmark=[];
+  const mathBenchmark=[],mathCacheComparisons=[];
   {
     const formulas=Array.from({length:12},(_,i)=>i%3===0?'x_'+(i+1)+'^2+1':i%3===1?'\\frac{'+(i+1)+'}{x+1}':'\\sqrt{x^2+'+(i+1)+'}');
     const width=100000,height=160000,base={...request,width,fontSize:5000,lineHeight:1.8};
@@ -884,7 +884,7 @@ try{
     const root=host.attachShadow({mode:'closed'});document.body.append(host);
     const family='auto';
     const makeBlocks=(kind,change='none')=>formulas.map((original,i)=>{
-      const formula=change==='formula'&&i===0?'x_1^3+1':original;
+      const formula=change==='formula'&&i===0?'x_1^3+1':change==='inline-formula'&&i===1?'x_2^3+1':original;
       const body=change==='body'&&i===1?'確認 \uFFFC を求める。':'前の文章 \uFFFC 後の文章。';
       const display=kind==='display'||kind==='mixed'&&i%2===0;
       const inline=kind==='inline'||kind==='mixed'&&!display;
@@ -932,6 +932,60 @@ try{
         assert(reference===await full('mixed','none'),'unchanged math preview DOM stable');
         for(const change of ['body','formula','width','number'])assert(reference!==await full('mixed',change),'changed math workload updates paper: '+change);
       }
+      await phase("paired math cache comparison");
+      // Use the same bounded fixture, three copies with distinct block IDs.
+      // Warmup is excluded. Each pair starts with independent session caches,
+      // then measures the SAME requested edit in both arms.
+      const scenarios=[
+        ['inline','none'],['display','none'],['mixed','body'],
+        ['mixed','formula'],['mixed','inline-formula'],['mixed','width'],['mixed','number']
+      ];
+      const optionsFor=(kind,change)=>{
+        const w=change==='width'?90000:width;
+        const blocks=Array.from({length:3},(_,copy)=>makeBlocks(kind,copy===0?change:change==='width'?'width':'none').map(b=>({
+          ...b,origin:{...b.origin,blockKey:copy+'-'+b.origin.blockKey},
+          ...(b.equationNumber?{equationNumber:(change==='number'&&copy===0?'2.':'1.')+(copy*12+Number(b.origin.blockKey)+1)}:{})
+        }))).flat();
+        return {revision:'1',fingerprint:'math-cache-pair',width:w,height,blocks,collectTimings:true};
+      };
+      const newCaches=()=>({mathCache:createMathCompilationCache(),displayMathCache:createDisplayMathGeometryCache(document),inlineMathCache:createInlineMathGeometryCache(document)});
+      const stats=caches=>({syntax:caches.mathCache.stats(),display:caches.displayMathCache.stats(),inline:caches.inlineMathCache.stats()});
+      const difference=(before,after)=>Object.fromEntries(Object.keys(before).map(k=>[k,after[k]-before[k]]));
+      const runPairArm=async(kind,change,arm)=>{
+        const caches=arm==='cached'?newCaches():undefined;
+        await createPlainTextPagePreview(document,{...optionsFor(kind,'none'),...caches});
+        const before=caches?stats(caches):undefined;
+        const options={...optionsFor(kind,change),...caches};
+        const start=performance.now();
+        const p=await createPlainTextPagePreview(document,options);
+        const elapsedMs=performance.now()-start;
+        assert(Number.isFinite(elapsedMs)&&elapsedMs>=0&&p.timings&&Object.values(p.timings).every(x=>Number.isFinite(x)&&x>=0),'finite paired timings');
+        assert(p.plan.completeness==='full'&&p.publicationReady===false,'complete paired preview');
+        assert(p.element.shadowRoot.querySelectorAll('math').length===36,'all 36 equations present');
+        const after=caches?stats(caches):undefined;
+        const delta=before&&after?{syntax:difference(before.syntax,after.syntax),display:difference(before.display,after.display),inline:difference(before.inline,after.inline)}:undefined;
+        if(delta){
+          assert(delta.syntax.misses===(['formula','inline-formula'].includes(change)?1:0),'syntax miss count for edit');
+          assert(delta.display.misses===(change==='formula'?1:0)+delta.display.fallbacks,'display geometry misses explained by edit or measured fallback');
+          assert(delta.inline.misses===(change==='inline-formula'?1:0),'inline geometry miss count for edit');
+          if(kind!=='display')assert(delta.inline.placements+delta.inline.placementFallbacks===(kind==='inline'?36:18),'all inline paragraphs accounted for');
+          caches.mathCache.clear();caches.displayMathCache.clear();caches.inlineMathCache.clear();
+          assert(Object.values(stats(caches)).every(s=>s.entries===0),'session caches released');
+        }
+        return {elapsedMs,timings:p.timings,pages:p.plan.pages.length,delta,signature:JSON.stringify([p.plan,p.slices,p.element.shadowRoot.innerHTML])};
+      };
+      for(const [kind,change] of scenarios){
+        for(let pair=0;pair<4;pair++){
+          const order=pair%2===0?['native','cached']:['cached','native'];
+          const arms={};
+          for(const arm of order)arms[arm]=await runPairArm(kind,change,arm);
+          const {signature:nativeSignature,...native}=arms.native;
+          const {signature:cachedSignature,...cached}=arms.cached;
+          assert(nativeSignature===cachedSignature,'paired cache modes preserve exact plan, slices and paper DOM: '+kind+'-'+change);
+          mathCacheComparisons.push({scenario:kind+'-'+change,pair:pair+1,order,native,cached,deltaMs:cached.elapsedMs-native.elapsedMs});
+        }
+      }
+      assert(mathCacheComparisons.length===28,'balanced math cache comparison complete');
       assert(root.childNodes.length===0,'font readiness probe cleanup');
     }finally{host.remove();}
     assert(document.body.children.length===before,'math benchmark temporary hosts cleaned up');
@@ -955,7 +1009,17 @@ try{
     }
     assert(document.body.children.length===before,'multiline display cleanup');
   }
-  result.textContent='PASS '+JSON.stringify({lineCount:lines.lines.length,previewPages:preview.plan.pages.length,lineRanges:preview.slices.map(s=>[s.textStart,s.textEnd])})+' '+JSON.stringify({wide,narrow,pages:plan.pages.length})+' MATH_BENCH '+JSON.stringify({version:1,mathBenchmark});
+  const median=values=>{const sorted=[...values].sort((a,b)=>a-b),middle=Math.floor(sorted.length/2);return sorted.length%2?sorted[middle]:(sorted[middle-1]+sorted[middle])/2;};
+  const mathCacheSummary=[...new Set(mathCacheComparisons.map(p=>p.scenario))].map(scenario=>{
+    const pairs=mathCacheComparisons.filter(p=>p.scenario===scenario);
+    return {scenario,pairs:pairs.length,nativeMedianMs:median(pairs.map(p=>p.native.elapsedMs)),cachedMedianMs:median(pairs.map(p=>p.cached.elapsedMs)),
+      pairedDeltaMedianMs:median(pairs.map(p=>p.deltaMs)),nativeMeasurementMedianMs:median(pairs.map(p=>p.native.timings.measurementMs)),
+      cachedMeasurementMedianMs:median(pairs.map(p=>p.cached.timings.measurementMs)),
+      cachedWins:pairs.filter(p=>p.deltaMs<0).length,inlinePlacements:pairs.reduce((n,p)=>n+p.cached.delta.inline.placements,0),
+      inlineFallbacks:pairs.reduce((n,p)=>n+p.cached.delta.inline.placementFallbacks,0),
+      displayFallbacks:pairs.reduce((n,p)=>n+p.cached.delta.display.fallbacks,0)};
+  });
+  result.textContent='PASS '+JSON.stringify({lineCount:lines.lines.length,previewPages:preview.plan.pages.length,lineRanges:preview.slices.map(s=>[s.textStart,s.textEnd])})+' '+JSON.stringify({wide,narrow,pages:plan.pages.length})+' MATH_BENCH '+JSON.stringify({version:2,mathBenchmark,mathCacheComparisons,mathCacheSummary});
 }catch(error){result.textContent='FAIL '+String(error);}
 await fetch('/test-result',{method:'POST',body:result.textContent});
 </script></body></html>
