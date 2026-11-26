@@ -1,19 +1,20 @@
 // Measurement boundary: receives validated snapshot sections, produces a value
 // pagination input plus transient render data. Does not paginate or render pages.
-import {measureDisplayMath} from './math-preview.js';
+import type {measureDisplayMath as MeasureDisplayMath} from './math-preview.js';
 import type {MeasuredSection,PageBreak} from './pagination.js';
 import type {PlainTextMeasureRequest} from './browser-measurement.js';
 import type {MeasuredTextLines,PreviewTextBlock,PreviewComponent,PreviewComponentChild,PreviewListItem} from './browser-lines.js';
 import {previewBlockKey,type MeasuredPreviewBlock} from './browser-page-render.js';
 type ComponentPlacement=import('./tree.js').PlacedNode;
 interface MeasureServices{
+  measureDisplayMath:typeof MeasureDisplayMath;
   measurePlainTextLines(document:Document,request:PlainTextMeasureRequest):Promise<MeasuredTextLines>;
   resolveComponentWidths(c:PreviewComponent,width:number):{widths:Map<string,number>;contentWidth:number};
   placeComponent(c:PreviewComponent,outerWidth:number,measurement:MeasuredTextLines,labels:Map<string,MeasuredTextLines>,slots:Map<string,MeasuredTextLines>,widths:Map<string,number>,capHeight:number):ComponentPlacement;
   listInset(item:PreviewListItem):number;
   listMarker(item:PreviewListItem):string;
 }
-export async function measurePreviewSections(document:Document,sections:readonly {id:string;startOn:'page'|'continuous';blocks:readonly (PreviewTextBlock|PageBreak)[]}[],width:number,height:number,{measurePlainTextLines,resolveComponentWidths,placeComponent,listInset,listMarker}:MeasureServices){
+export async function measurePreviewSections(document:Document,sections:readonly {id:string;startOn:'page'|'continuous';blocks:readonly (PreviewTextBlock|PageBreak)[]}[],width:number,height:number,{measurePlainTextLines,measureDisplayMath,resolveComponentWidths,placeComponent,listInset,listMarker}:MeasureServices){
   const isBreak=(b:PreviewTextBlock|PageBreak):b is PageBreak=>'kind' in b&&b.kind==='pagebreak';
   const byKey=new Map<string,MeasuredPreviewBlock>();
   const measuredSections:MeasuredSection[]=[];
