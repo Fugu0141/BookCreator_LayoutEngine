@@ -773,6 +773,16 @@ try{
     rejected=false;
     try{await measureDisplayMath(document,formula,100000,size,undefined,'auto',syntax,foreignCache);}catch{rejected=true;}
     assert(rejected,'foreign document geometry cache refused');
+    // Adding/removing even an unused registered face changes the font environment.
+    const face=new FontFace('BCFont_GeometryInvalidation','local("serif")');
+    const misses=geometry.stats().misses;
+    document.fonts.add(face);
+    try{
+      await compare(formula,100000,'1.1');
+      assert(geometry.stats().misses===misses+1&&geometry.stats().entries===1,'font environment invalidates all previous dimensions');
+    }finally{document.fonts.delete(face);}
+    await compare(formula,100000,'1.1');
+    assert(geometry.stats().misses===misses+2,'removal also invalidates geometry');
     geometry.clear();
     assert(JSON.stringify(geometry.stats())===JSON.stringify({entries:0,characters:0,hits:0,misses:0,fallbacks:0}),'display geometry cache release');
     assert(document.body.children.length===before,'all geometry measurement hosts removed');
