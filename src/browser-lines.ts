@@ -2,8 +2,8 @@ import {measureDisplayMath,validateCompiledMath,createInlineMathAtom,measureInli
 import {validateImageCrop,type ImageCrop} from './image-crop.js';
 import {renderMeasuredPreview} from './browser-page-render.js';
 import {measurePreviewSections} from './browser-page-measure.js';
-import {measureWithTextCache,type TextMeasurementCache} from './text-measurement-cache.js';
-export {createTextMeasurementCache,type TextMeasurementCache} from './text-measurement-cache.js';
+import {measureWithTextCache,measureWithParagraphCache,type TextMeasurementCache,type ParagraphMeasurementCache} from './text-measurement-cache.js';
+export {createTextMeasurementCache,createParagraphMeasurementCache,type TextMeasurementCache,type ParagraphMeasurementCache} from './text-measurement-cache.js';
 import {layoutTree} from './tree.js';
 import {applyPreviewFont,readyPreviewFont,isPreviewFontFamily,isPreviewFontWeight} from './preview-font.js';
 import {paginateMeasured,type Origin,type MeasuredPagePlan,type SplitPolicy,type PageBreak} from './pagination.js';
@@ -209,7 +209,9 @@ function live(document:Document){
 }
 // Grapheme ranges, real browser wrapping, bounded input. Reject ambiguous geometry instead of guessing.
 export async function measurePlainTextLines(document:Document,request:PlainTextMeasureRequest,mathCache?:MathCompilationCache,displayMathCache?:DisplayMathGeometryCache,inlineMathCache?:InlineMathGeometryCache):Promise<MeasuredTextLines>{
-  live(document);const r=snapshotRequest(request,false,mathCache);
+  live(document);return measureValidatedTextLines(document,snapshotRequest(request,false,mathCache),mathCache,displayMathCache,inlineMathCache);
+}
+async function measureValidatedTextLines(document:Document,r:Readonly<PlainTextMeasureRequest>,mathCache?:MathCompilationCache,displayMathCache?:DisplayMathGeometryCache,inlineMathCache?:InlineMathGeometryCache):Promise<MeasuredTextLines>{
   if(r.multiline&&r.text.includes('\n')){
     const lines:MeasuredTextLine[]=[];let start=0;
     // Measure hard lines independently, then attach each original separator to its preceding row.
@@ -500,6 +502,8 @@ export async function createPlainTextPagePreview(document:Document,options:{
   resolveImage?:PreviewImageResolver;
   /** Opt-in cache owned by the host for this live document. */
   measurementCache?:TextMeasurementCache;
+  /** Experimental incremental line plans, including styled and inline-math paragraphs. Mutually exclusive with measurementCache. */
+  paragraphCache?:ParagraphMeasurementCache;
   collectTimings?:boolean;
   /** Optional book-session-owned, font-independent syntax compilation cache. */
   mathCache?:MathCompilationCache;
@@ -546,7 +550,8 @@ export async function createPlainTextPagePreview(document:Document,options:{
   if(sections.flatMap(s=>s.blocks).reduce((n,b)=>n+(isBreak(b)?0:(b.request.inlineStyles?.length??0)+(b.namedSlots??[]).reduce((sum,s)=>sum+(s.request.inlineStyles?.length??0),0)),0)>1024)throw RangeError('Preview inline style limit exceeded');
   const mathAtoms=sections.flatMap(s=>s.blocks).flatMap(b=>isBreak(b)?[]:[...(b.request.inlineMath??[]),...(b.namedSlots??[]).flatMap(s=>s.request.inlineMath??[])]);
   if(mathAtoms.length>512||mathAtoms.reduce((n,a)=>n+a.formula.length,0)>50000)throw RangeError('Preview inline math limit exceeded');
-  const {revision,fingerprint,width,height,resolveImage,measurementCache}=options;
+  const {revision,fingerprint,width,height,resolveImage,measurementCache,paragraphCache}=options;
+  if(measurementCache&&paragraphCache)throw RangeError('Specify only one text or paragraph measurement cache');
   // Decode each unique resource before building the plan. Use a canvas snapshot so no object URL survives rendering.
   const imageIds=new Set<string>();
   function collectImages(children:readonly PreviewComponentChild[]){for(const n of children){if(n.type==='image')imageIds.add(n.assetId);else if(n.type==='group')collectImages(n.children);}}
@@ -570,7 +575,7 @@ export async function createPlainTextPagePreview(document:Document,options:{
   }
   const imagesReady=now();
   const measure=(doc:Document,r:PlainTextMeasureRequest)=>measurePlainTextLines(doc,r,mathCache,displayMathCache,inlineMathCache);
-  const {byKey,measuredSections}=await measurePreviewSections(document,sections,width,height,{measurePlainTextLines:measurementCache?(doc,r)=>measureWithTextCache(doc,r.inlineMath!==undefined||r.inlineStyles!==undefined?r:snapshotRequest(r),measurementCache,measure):measure,measureDisplayMath:(doc,source,w,size,number,family)=>measureDisplayMath(doc,source,w,size,number,family,mathCache,displayMathCache),resolveComponentWidths,placeComponent,listInset,listMarker});
+  const {byKey,measuredSections}=await measurePreviewSections(document,sections,width,height,{measurePlainTextLines:paragraphCache?(doc,r)=>measureWithParagraphCache(doc,snapshotRequest(r,false,mathCache),paragraphCache,!!inlineMathCache,(d,validated)=>measureValidatedTextLines(d,validated,mathCache,displayMathCache,inlineMathCache)):measurementCache?(doc,r)=>measureWithTextCache(doc,r.inlineMath!==undefined||r.inlineStyles!==undefined?r:snapshotRequest(r),measurementCache,measure):measure,measureDisplayMath:(doc,source,w,size,number,family)=>measureDisplayMath(doc,source,w,size,number,family,mathCache,displayMathCache),resolveComponentWidths,placeComponent,listInset,listMarker});
   const measured=now();
   const plan=paginateMeasured({schemaVersion:1,revision,fingerprint,content:{width,height},sections:measuredSections});
   if(!plan.pages.length)throw Error('No drawable content');

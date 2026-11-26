@@ -2,7 +2,7 @@
 <html lang="en"><meta charset="utf-8"><title>Browser measurement smoke test</title>
 <body><pre id="result">RUNNING</pre>
 <script type="module">
-import {measurePlainText,paginateMeasured,measurePlainTextLines,createPlainTextPagePreview,measureDisplayMath,createPreviewMath,createTextMeasurementCache,parsePreviewMath,parseDisplayMath,readyPreviewMathFont,createMathCompilationCache,createDisplayMathGeometryCache,createInlineMathGeometryCache,measureInlineMathGeometry,createInlineMathAtom} from '/dist/index.js';
+import {measurePlainText,paginateMeasured,measurePlainTextLines,createPlainTextPagePreview,measureDisplayMath,createPreviewMath,createTextMeasurementCache,createParagraphMeasurementCache,parsePreviewMath,parseDisplayMath,readyPreviewMathFont,createMathCompilationCache,createDisplayMathGeometryCache,createInlineMathGeometryCache,measureInlineMathGeometry,createInlineMathAtom} from '/dist/index.js';
 const result=document.querySelector('#result');
 const assert=(condition,message)=>{if(!condition)throw Error(message);};
 const phase=async name=>{await fetch('/test-progress',{method:'POST',body:name});};
@@ -68,6 +68,59 @@ try{
   const styled={...cacheOptions,blocks:[{...cacheOptions.blocks[0],request:{...request,inlineStyles:[{start:0,end:1,color:'#123456'}]}}]};
   await createPlainTextPagePreview(document,{...styled,measurementCache:cache});
   assert(cache.stats().entries===0,'styled request bypasses conservative cache');
+  }
+  await phase("incremental paragraph geometry");
+  {
+    await document.fonts.ready;
+    const existingBodyChildren=[...document.body.children];
+    const cache=createParagraphMeasurementCache(document),syntax=createMathCompilationCache();
+    const width=80000,height=40000;
+    const plain='本文の組版を確認します。 '.repeat(5),styled='装飾付き本文を確認します。 '.repeat(5);
+    const mathText='式 \uFFFC を求める。';
+    const make=(change='none')=>{
+      const revision=change==='none'?'1':'2',shift=change==='none'?0:100;
+      const block=(key,request,exact=false)=>({origin:{documentId:'incremental',revision,blockKey:key,...(exact?{range:{start:shift,end:shift+request.text.length}}:{})},request,splitPolicy:'allow',...(exact?{sourceTextStart:shift}:{})});
+      const base={...request,width,fontSize:5000,lineHeight:1.8};
+      return {revision,fingerprint:'incremental-'+change,width,height,blocks:[
+        block('plain',{...base,text:change==='text'?plain+' 変更':plain},true),
+        block('styled',{...base,text:styled,inlineStyles:[{start:0,end:1,fontSize:change==='style'?6500:6000,color:'#123456'}]}),
+        block('math',{...base,text:mathText,inlineMath:[{start:2,formula:change==='formula'?'\\frac{x}{3}':'\\frac{x}{2}'}]})
+      ]};
+    };
+    const compare=async (change,extra={})=>{
+      const options=make(change);
+      const a=await createPlainTextPagePreview(document,options);
+      const b=await createPlainTextPagePreview(document,{...options,paragraphCache:cache,mathCache:syntax,...extra});
+      assert(JSON.stringify(a.plan)===JSON.stringify(b.plan)&&JSON.stringify(a.slices)===JSON.stringify(b.slices),'incremental plans and fresh source offsets match native');
+      assert(a.element.shadowRoot.innerHTML===b.element.shadowRoot.innerHTML,'incremental paper DOM matches native');
+      assert(b.element.shadowRoot.querySelectorAll('math').length===1,'math is rendered in reused paragraph');
+      return b;
+    };
+    await compare('none');
+    assert(cache.stats().entries===3&&cache.stats().misses===3,'all three paragraph kinds retained');
+    await compare('none');
+    assert(cache.stats().hits===3&&cache.stats().misses===3,'unchanged paragraphs skip real measurement');
+    await compare('origin');
+    assert(cache.stats().hits===6&&cache.stats().misses===3,'source revision and offset do not invalidate geometry');
+    for(const change of ['text','style','formula']){
+      const before=cache.stats();
+      await compare(change);
+      assert(cache.stats().misses===before.misses+1&&cache.stats().hits===before.hits+2,'only changed paragraph remeasured: '+change);
+    }
+    const face=new FontFace('BCFont_ParagraphInvalidation','local("serif")');
+    const misses=cache.stats().misses;
+    document.fonts.add(face);
+    try{await compare('none');assert(cache.stats().misses===misses+3&&cache.stats().entries===3,'font set changes invalidate all paragraphs');}
+    finally{document.fonts.delete(face);}
+    let rejected=false;
+    try{await createPlainTextPagePreview(document,{...make(),paragraphCache:cache,measurementCache:createTextMeasurementCache(document)});}catch{rejected=true;}
+    assert(rejected,'legacy and incremental cache cannot be supplied together');
+    const invalid=make();invalid.blocks[2].request.inlineMath[0].formula='\\input{secret}';
+    rejected=false;try{await createPlainTextPagePreview(document,{...invalid,paragraphCache:cache});}catch{rejected=true;}
+    assert(rejected,'paragraph cache never bypasses validation');
+    cache.clear();
+    assert(JSON.stringify(cache.stats())===JSON.stringify({entries:0,characters:0,lines:0,hits:0,misses:0}),'paragraph session releases all retained plans');
+    assert(document.body.children.length===existingBodyChildren.length&&existingBodyChildren.every((node,i)=>document.body.children[i]===node),'incremental paragraph hosts removed without disturbing existing preview');
   }
   await phase("batched frozen row validation");
   {
@@ -990,6 +1043,58 @@ try{
     }finally{host.remove();}
     assert(document.body.children.length===before,'math benchmark temporary hosts cleaned up');
   }
+  await phase("paired incremental paragraph workload");
+  const paragraphComparisons=[];
+  {
+    // Unique paragraph keys/content, not three copies of the same geometry.
+    // The single-edit fixture changes exactly one of 36 validated requests.
+    const width=80000,height=160000,count=36;
+    const make=(change='none')=>{
+      const w=change==='width'?90000:width;
+      const blocks=Array.from({length:count},(_,i)=>{
+        const base={...request,width:w,fontSize:5000,lineHeight:1.8};
+        const suffix=' 確認 '+(i+1)+'。';
+        let req;
+        if(i%3===0)req={...base,text:'本文の組版を確認します。 '.repeat(8)+suffix+(change==='text'&&i===0?' 変更':'')};
+        else if(i%3===1)req={...base,text:'装飾付き本文を確認します。 '.repeat(5)+suffix,inlineStyles:[{start:0,end:1,fontSize:change==='style'&&i===1?6500:6000,color:'#123456'}]};
+        else req={...base,text:'式 \uFFFC を求める。'+suffix,inlineMath:[{start:2,formula:change==='formula'&&i===2?'\\frac{x}{3}':'\\frac{x}{2}'}]};
+        return {origin:{documentId:'paragraph-bench',revision:change==='none'?'1':'2',blockKey:String(i)},request:req,splitPolicy:'allow'};
+      });
+      return {revision:change==='none'?'1':'2',fingerprint:'paragraph-bench-'+change,width:w,height,blocks,collectTimings:true};
+    };
+    const run=async(change,arm)=>{
+      const paragraphCache=arm==='incremental'?createParagraphMeasurementCache(document):undefined;
+      await createPlainTextPagePreview(document,{...make(),paragraphCache});
+      const before=paragraphCache?.stats();
+      if(before)assert(before.entries===count&&before.misses===count,'all distinct baseline paragraphs retained');
+      const options={...make(change),paragraphCache};
+      const started=performance.now();
+      const p=await createPlainTextPagePreview(document,options);
+      const elapsedMs=performance.now()-started;
+      assert(Number.isFinite(elapsedMs)&&elapsedMs>=0&&p.timings&&Object.values(p.timings).every(v=>Number.isFinite(v)&&v>=0),'finite incremental timings');
+      assert(p.plan.completeness==='full'&&p.element.shadowRoot.querySelectorAll('math').length===12,'complete paragraph preview');
+      const after=paragraphCache?.stats();
+      const delta=before&&after?{hits:after.hits-before.hits,misses:after.misses-before.misses}:undefined;
+      if(delta){
+        const expected=change==='width'?count:change==='none'?0:1;
+        assert(delta.misses===expected&&delta.hits===count-expected,'exact changed-paragraph measurement count: '+change);
+        paragraphCache.clear();
+        assert(paragraphCache.stats().entries===0,'paragraph comparison releases cache');
+      }
+      return {elapsedMs,timings:p.timings,pages:p.plan.pages.length,delta,signature:JSON.stringify([p.plan,p.slices,p.element.shadowRoot.innerHTML])};
+    };
+    for(const change of ['none','text','style','formula','width']){
+      for(let pair=0;pair<4;pair++){
+        const order=pair%2===0?['native','incremental']:['incremental','native'],arms={};
+        for(const arm of order)arms[arm]=await run(change,arm);
+        const {signature:nativeSignature,...native}=arms.native;
+        const {signature:incrementalSignature,...incremental}=arms.incremental;
+        assert(nativeSignature===incrementalSignature,'incremental comparison paper parity: '+change);
+        paragraphComparisons.push({change,pair:pair+1,order,native,incremental,deltaMs:incremental.elapsedMs-native.elapsedMs});
+      }
+    }
+    assert(paragraphComparisons.length===20&&document.body.children.length===before,'incremental comparison complete and hosts released');
+  }
   await phase("multiline display source and exact offsets");
   {
     const formula=['\\begin{aligned}','  x&=1 \\\\','  &=2-1','\\end{aligned}'].join('\r\n');
@@ -1019,7 +1124,14 @@ try{
       inlineFallbacks:pairs.reduce((n,p)=>n+p.cached.delta.inline.placementFallbacks,0),
       displayFallbacks:pairs.reduce((n,p)=>n+p.cached.delta.display.fallbacks,0)};
   });
-  result.textContent='PASS '+JSON.stringify({lineCount:lines.lines.length,previewPages:preview.plan.pages.length,lineRanges:preview.slices.map(s=>[s.textStart,s.textEnd])})+' '+JSON.stringify({wide,narrow,pages:plan.pages.length})+' MATH_BENCH '+JSON.stringify({version:2,mathBenchmark,mathCacheComparisons,mathCacheSummary});
+  const paragraphSummary=[...new Set(paragraphComparisons.map(p=>p.change))].map(change=>{
+    const pairs=paragraphComparisons.filter(p=>p.change===change);
+    return {change,pairs:pairs.length,nativeMedianMs:median(pairs.map(p=>p.native.elapsedMs)),incrementalMedianMs:median(pairs.map(p=>p.incremental.elapsedMs)),
+      nativeMeasurementMedianMs:median(pairs.map(p=>p.native.timings.measurementMs)),incrementalMeasurementMedianMs:median(pairs.map(p=>p.incremental.timings.measurementMs)),
+      pairedDeltaMedianMs:median(pairs.map(p=>p.deltaMs)),incrementalWins:pairs.filter(p=>p.deltaMs<0).length,
+      hits:pairs.reduce((n,p)=>n+p.incremental.delta.hits,0),misses:pairs.reduce((n,p)=>n+p.incremental.delta.misses,0)};
+  });
+  result.textContent='PASS '+JSON.stringify({lineCount:lines.lines.length,previewPages:preview.plan.pages.length,lineRanges:preview.slices.map(s=>[s.textStart,s.textEnd])})+' '+JSON.stringify({wide,narrow,pages:plan.pages.length})+' MATH_BENCH '+JSON.stringify({version:2,mathBenchmark,mathCacheComparisons,mathCacheSummary})+' PARAGRAPH_BENCH '+JSON.stringify({version:1,paragraphComparisons,paragraphSummary});
 }catch(error){result.textContent='FAIL '+String(error);}
 await fetch('/test-result',{method:'POST',body:result.textContent});
 </script></body></html>
