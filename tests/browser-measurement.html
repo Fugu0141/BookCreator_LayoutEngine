@@ -649,6 +649,25 @@ try{
     }finally{document.fonts.delete(face);}
     assert(document.body.children.length===before,'font probe cleanup');
   }
+  await phase("multiline display source and exact offsets");
+  {
+    const formula=['\\begin{aligned}','  x&=1 \\\\','  &=2-1','\\end{aligned}'].join('\r\n');
+    const req={...request,text:formula,width:100000};
+    const block={origin:{documentId:'multi',revision:'1',blockKey:'multi',range:{start:10,end:10+formula.length}},request:req,sourceTextStart:10,displayMath:true,splitPolicy:'strict'};
+    const options={revision:'1',fingerprint:'multiline-math',width:100000,height:100000,blocks:[block]};
+    const p=await createPlainTextPagePreview(document,options);
+    assert(p.slices.length===1&&p.slices[0].sourceSlice.start===10&&p.slices[0].sourceSlice.end===10+formula.length,'raw CRLF formula range');
+    assert(p.element.shadowRoot.querySelectorAll('mtable mtr').length===2,'multiline display native MathML');
+    const primary='前。\n\uFFFC\n後。',hint='ヒント。\n\uFFFC';
+    const multi={...multiBlock,sourceTextStart:undefined,request:{...request,text:primary,multiline:true,inlineMath:[{start:primary.indexOf('\uFFFC'),formula,display:true}]},namedSlots:[{name:'hint',request:{...slotRequest,text:hint,multiline:true,inlineMath:[{start:hint.indexOf('\uFFFC'),formula,display:true}]}},multiBlock.namedSlots[1]]};
+    const q=await createPlainTextPagePreview(document,{...multiOptions,height:190000,blocks:[multi]});
+    assert(q.element.shadowRoot.querySelectorAll('[data-slot-display-math] mtable').length===2,'primary and named multiline display formulas');
+    for(const bad of [{...block,displayMath:undefined},{...block,request:{...req,text:'\uFFFC',inlineMath:[{start:0,formula}]},displayMath:undefined,sourceTextStart:undefined}]){
+      let rejected=false;try{await createPlainTextPagePreview(document,{...options,blocks:[bad]});}catch{rejected=true;}
+      assert(rejected,'ordinary/inline source cannot contain multiline formula');
+    }
+    assert(document.body.children.length===before,'multiline display cleanup');
+  }
   result.textContent='PASS '+JSON.stringify({lineCount:lines.lines.length,previewPages:preview.plan.pages.length,lineRanges:preview.slices.map(s=>[s.textStart,s.textEnd])})+' '+JSON.stringify({wide,narrow,pages:plan.pages.length});
 }catch(error){result.textContent='FAIL '+String(error);}
 await fetch('/test-result',{method:'POST',body:result.textContent});
