@@ -519,7 +519,8 @@ export interface TextPagePreviewOptions {
  * root contains ONLY newly generated pages. Never use it as a full preview.
  * A base snapshot is valid only while the host still owns the exact prior
  * successful paper and its font environment. Discard on session/font changes. */
-export interface IncrementalTextPagePreview extends TextPagePreview {
+export interface IncrementalTextPagePreview extends Omit<TextPagePreview,'element'> {
+  readonly changedElement:HTMLElement;
   readonly pageDelta:PageRenderDelta;
 }
 export async function createPlainTextPagePreview(document:Document,options:TextPagePreviewOptions):Promise<TextPagePreview>{
@@ -529,7 +530,8 @@ export async function createIncrementalTextPagePreview(document:Document,options
   if(options.pageCache!==undefined)throw RangeError('Sparse page rendering and page template cache are mutually exclusive');
   const result=await createTextPreview(document,options,{previousKeys:previousPageKeys(document,previous)});
   if(!result.pageDelta)throw Error('Missing page delta');
-  return {...result,pageDelta:result.pageDelta};
+  const {element,pageDelta,...rest}=result;
+  return {...rest,changedElement:element,pageDelta};
 }
 async function createTextPreview(document:Document,options:TextPagePreviewOptions,delta?:{previousKeys:ReadonlyMap<number,string>}):Promise<TextPagePreview & {pageDelta?:PageRenderDelta}>{
   live(document);
