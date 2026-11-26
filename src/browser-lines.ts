@@ -540,6 +540,11 @@ export interface RetainedPaginationWork {
   readonly reusedSuffixBlocks:number;
   readonly placedBlocks:number;
 }
+/** Safe boundaries between completed units. The optional host callback may
+ * return a task promise to yield to the event loop, or throw to abandon work.
+ * It must not change fonts, the Document, or other measurement inputs. */
+export type PreviewCheckpointStage='validated'|'image'|'measure-block'|'paginate'|'render-page'|'complete';
+export type PreviewCheckpoint=(stage:PreviewCheckpointStage)=>void|Promise<void>;
 export interface RetainedTextPagePreview extends IncrementalTextPagePreview {
   readonly paginationWork:Readonly<RetainedPaginationWork>;
   readonly measurementWork:Readonly<BlockMeasurementWork>;
@@ -551,16 +556,16 @@ const retainedMeasurementSnapshots=new WeakMap<PageReuseSnapshot,{snapshot:Block
 /** Opt-in combined placement and DOM reuse. Same complete plan/slices and
  * sparse output contract as createIncrementalTextPagePreview. A valid sparse
  * snapshot from the older API simply starts a new placement checkpoint. */
-export async function createRetainedTextPagePreview(document:Document,options:TextPagePreviewOptions,previous?:PageReuseSnapshot):Promise<RetainedTextPagePreview>{
+export async function createRetainedTextPagePreview(document:Document,options:TextPagePreviewOptions,previous?:PageReuseSnapshot,checkpoint?:PreviewCheckpoint):Promise<RetainedTextPagePreview>{
   if(options.pageCache!==undefined)throw RangeError('Retained page rendering and page template cache are mutually exclusive');
   const previousKeys=previousPageKeys(document,previous);
   const saved=previous?retainedMeasurementSnapshots.get(previous):undefined;
-  const result=await createTextPreview(document,options,{previousKeys},{previous:previous?retainedPaginationSnapshots.get(previous):undefined,measurement:saved?.inlineMathGeometry===!!options.inlineMathCache?saved.snapshot:undefined});
+  const result=await createTextPreview(document,options,{previousKeys},{previous:previous?retainedPaginationSnapshots.get(previous):undefined,measurement:saved?.inlineMathGeometry===!!options.inlineMathCache?saved.snapshot:undefined,checkpoint});
   if(!result.pageDelta||!result.paginationWork||!result.measurementWork)throw Error('Missing retained preview data');
   const {element,pageDelta,paginationWork,measurementWork,...rest}=result;
   return {...rest,changedElement:element,pageDelta,paginationWork,measurementWork};
 }
-async function createTextPreview(document:Document,options:TextPagePreviewOptions,delta?:{previousKeys:ReadonlyMap<number,string>},retained?:{previous?:PaginationCheckpointSnapshot;measurement?:BlockMeasurementSnapshot}):Promise<TextPagePreview & {pageDelta?:PageRenderDelta;paginationWork?:Readonly<RetainedPaginationWork>;measurementWork?:Readonly<BlockMeasurementWork>}>{
+async function createTextPreview(document:Document,options:TextPagePreviewOptions,delta?:{previousKeys:ReadonlyMap<number,string>},retained?:{previous?:PaginationCheckpointSnapshot;measurement?:BlockMeasurementSnapshot;checkpoint?:PreviewCheckpoint}):Promise<TextPagePreview & {pageDelta?:PageRenderDelta;paginationWork?:Readonly<RetainedPaginationWork>;measurementWork?:Readonly<BlockMeasurementWork>}>{
   live(document);
   const pageCache=options.pageCache,pageCacheEpoch=pageCache?pageRenderCacheEpoch(document,pageCache):undefined;
   // Snapshot the opt-in before any asynchronous work. The clock is never read otherwise.
@@ -609,8 +614,11 @@ async function createTextPreview(document:Document,options:TextPagePreviewOption
   if(imageIds.size>32)throw RangeError('Too many preview image resources');
   const images=new Map<string,ImageBitmap>();let imagePixels=0;
   const validated=now();
+  const checkpoint=retained?.checkpoint;
   try{
+  if(checkpoint)await checkpoint('validated');
   for(const id of imageIds){
+    if(checkpoint)await checkpoint('image');
     if(!resolveImage)throw Error('Component image resolver required');
     const blob=await resolveImage(id);
     if(!blob||blob.type!=='image/png'||!positive(blob.size)||blob.size>16*1024*1024)throw Error('Invalid PNG image resource');
@@ -625,15 +633,17 @@ async function createTextPreview(document:Document,options:TextPagePreviewOption
   }
   const imagesReady=now();
   const measure=(doc:Document,r:PlainTextMeasureRequest)=>measurePlainTextLines(doc,r,mathCache,displayMathCache,inlineMathCache);
-  const {byKey,measuredSections,measurementSnapshot,measurementWork}=await measurePreviewSections(document,sections,width,height,{measurePlainTextLines:paragraphCache?(doc,r)=>measureWithParagraphCache(doc,snapshotRequest(r,false,mathCache),paragraphCache,!!inlineMathCache,(d,validated)=>measureValidatedTextLines(d,validated,mathCache,displayMathCache,inlineMathCache)):measurementCache?(doc,r)=>measureWithTextCache(doc,r.inlineMath!==undefined||r.inlineStyles!==undefined?r:snapshotRequest(r),measurementCache,measure):measure,measureDisplayMath:(doc,source,w,size,number,family)=>measureDisplayMath(doc,source,w,size,number,family,mathCache,displayMathCache),resolveComponentWidths,placeComponent,listInset,listMarker},retained?{previous:retained.measurement,mathCache}:undefined);
+  const {byKey,measuredSections,measurementSnapshot,measurementWork}=await measurePreviewSections(document,sections,width,height,{measurePlainTextLines:paragraphCache?(doc,r)=>measureWithParagraphCache(doc,snapshotRequest(r,false,mathCache),paragraphCache,!!inlineMathCache,(d,validated)=>measureValidatedTextLines(d,validated,mathCache,displayMathCache,inlineMathCache)):measurementCache?(doc,r)=>measureWithTextCache(doc,r.inlineMath!==undefined||r.inlineStyles!==undefined?r:snapshotRequest(r),measurementCache,measure):measure,measureDisplayMath:(doc,source,w,size,number,family)=>measureDisplayMath(doc,source,w,size,number,family,mathCache,displayMathCache),resolveComponentWidths,placeComponent,listInset,listMarker},retained?{previous:retained.measurement,mathCache}:undefined,checkpoint);
   const measured=now();
+  if(checkpoint)await checkpoint('paginate');
   const paginationInput={schemaVersion:1 as const,revision,fingerprint,content:{width,height},sections:measuredSections};
   const incremental=retained?paginateMeasuredIncremental(paginationInput,retained.previous):undefined;
   const plan=incremental?.plan??paginateMeasured(paginationInput);
   if(!plan.pages.length)throw Error('No drawable content');
   if(plan.completeness!=='full')throw Error('Cannot render partial preview: '+plan.diagnostics.map(d=>d.code).join(', '));
   const paginated=now();
-  const result=renderMeasuredPreview(document,plan,{width,height,paper,byKey,images,pageCache,pageCacheEpoch,delta},{styleText,frozenText:(el,r,line)=>frozenText(el,r,line,mathCache),listInset});
+  const result=await renderMeasuredPreview(document,plan,{width,height,paper,byKey,images,pageCache,pageCacheEpoch,delta},{styleText,frozenText:(el,r,line)=>frozenText(el,r,line,mathCache),listInset},checkpoint);
+  if(checkpoint)await checkpoint('complete');
   // Register only after successful rendering, and use the newly issued
   // page snapshot as the key. An unsuccessful job cannot advance a lease.
   if(incremental?.snapshot&&result.pageDelta)retainedPaginationSnapshots.set(result.pageDelta.snapshot,incremental.snapshot);
