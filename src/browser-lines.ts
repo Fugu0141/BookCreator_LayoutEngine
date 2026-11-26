@@ -428,9 +428,20 @@ function snapshotNamedSlots(b:PreviewTextBlock,component:PreviewComponent|undefi
 }
 // The host resolves a project-scoped resource to a verified PNG Blob. No URL from the component definition is loaded.
 export type PreviewImageResolver=(assetId:string)=>Promise<Blob>;
+/** Exclusive wall-clock intervals in milliseconds for a successful preview.
+ * No source, identifiers, DOM references or publication authority. */
+export interface PreviewPhaseTimings {
+  readonly validationMs:number;
+  readonly imagesMs:number;
+  readonly measurementMs:number;
+  readonly paginationMs:number;
+  readonly renderingMs:number;
+}
 export interface TextPagePreview {
   element:HTMLElement; plan:MeasuredPagePlan; slices:readonly PreviewTextSlice[];
   publicationReady:false;
+  /** Present only when the caller requests successful phase timings. */
+  timings?:Readonly<PreviewPhaseTimings>;
 }
 // Multiple sections, logical text with typed inline styles. Caller owns exact mapping to raw source.
 // No external HTML, CSS, resource fetching or publication output.
@@ -442,8 +453,13 @@ export async function createPlainTextPagePreview(document:Document,options:{
   resolveImage?:PreviewImageResolver;
   /** Opt-in cache owned by the host for this live document. */
   measurementCache?:TextMeasurementCache;
+  collectTimings?:boolean;
 }):Promise<TextPagePreview>{
   live(document);
+  // Snapshot the opt-in before any asynchronous work. The clock is never read otherwise.
+  const timed=options.collectTimings===true;
+  const now=()=>timed?document.defaultView!.performance.now():0;
+  const started=now();
   if((options.blocks===undefined)===(options.sections===undefined))throw RangeError('Specify exactly one block list or section list');
   const sourceSections=options.sections??[{id:'preview',startOn:'page' as const,blocks:options.blocks!}];
   if(!sourceSections.length||sourceSections.length>128)throw RangeError('Invalid preview sections');
@@ -483,6 +499,7 @@ export async function createPlainTextPagePreview(document:Document,options:{
   for(const s of sections)for(const b of s.blocks)if(!isBreak(b)&&b.component)collectImages(b.component.children);
   if(imageIds.size>32)throw RangeError('Too many preview image resources');
   const images=new Map<string,ImageBitmap>();let imagePixels=0;
+  const validated=now();
   try{
   for(const id of imageIds){
     if(!resolveImage)throw Error('Component image resolver required');
@@ -497,10 +514,17 @@ export async function createPlainTextPagePreview(document:Document,options:{
     if(!positive(bitmap.width)||!positive(bitmap.height)||bitmap.width>8192||bitmap.height>8192||bitmap.width*bitmap.height>16000000||(imagePixels+=bitmap.width*bitmap.height)>32000000){bitmap.close();throw RangeError('Image resource pixel limit exceeded');}
     images.set(id,bitmap);
   }
+  const imagesReady=now();
   const {byKey,measuredSections}=await measurePreviewSections(document,sections,width,height,{measurePlainTextLines:measurementCache?(doc,r)=>measureWithTextCache(doc,snapshotRequest(r),measurementCache,measurePlainTextLines):measurePlainTextLines,resolveComponentWidths,placeComponent,listInset,listMarker});
+  const measured=now();
   const plan=paginateMeasured({schemaVersion:1,revision,fingerprint,content:{width,height},sections:measuredSections});
   if(!plan.pages.length)throw Error('No drawable content');
   if(plan.completeness!=='full')throw Error('Cannot render partial preview: '+plan.diagnostics.map(d=>d.code).join(', '));
-  return renderMeasuredPreview(document,plan,{width,height,paper,byKey,images},{styleText,frozenText,listInset});
+  const paginated=now();
+  const result=renderMeasuredPreview(document,plan,{width,height,paper,byKey,images},{styleText,frozenText,listInset});
+  if(!timed)return result;
+  const rendered=now();
+  return {...result,timings:Object.freeze({validationMs:validated-started,imagesMs:imagesReady-validated,
+    measurementMs:measured-imagesReady,paginationMs:paginated-measured,renderingMs:rendered-paginated})};
   }finally{for(const bitmap of images.values())bitmap.close();}
 }
