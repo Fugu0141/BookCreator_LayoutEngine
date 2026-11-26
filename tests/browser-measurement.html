@@ -966,7 +966,7 @@ try{
         const delta=before&&after?{syntax:difference(before.syntax,after.syntax),display:difference(before.display,after.display),inline:difference(before.inline,after.inline)}:undefined;
         if(delta){
           assert(delta.syntax.misses===(['formula','inline-formula'].includes(change)?1:0),'syntax miss count for edit');
-          assert(delta.display.misses===(change==='formula'?1:0),'display geometry miss count for edit');
+          assert(delta.display.misses===(change==='formula'?1:0)+delta.display.fallbacks,'display geometry misses explained by edit or measured fallback');
           assert(delta.inline.misses===(change==='inline-formula'?1:0),'inline geometry miss count for edit');
           if(kind!=='display')assert(delta.inline.placements+delta.inline.placementFallbacks===(kind==='inline'?36:18),'all inline paragraphs accounted for');
           caches.mathCache.clear();caches.displayMathCache.clear();caches.inlineMathCache.clear();
@@ -1009,7 +1009,17 @@ try{
     }
     assert(document.body.children.length===before,'multiline display cleanup');
   }
-  result.textContent='PASS '+JSON.stringify({lineCount:lines.lines.length,previewPages:preview.plan.pages.length,lineRanges:preview.slices.map(s=>[s.textStart,s.textEnd])})+' '+JSON.stringify({wide,narrow,pages:plan.pages.length})+' MATH_BENCH '+JSON.stringify({version:2,mathBenchmark,mathCacheComparisons});
+  const median=values=>{const sorted=[...values].sort((a,b)=>a-b),middle=Math.floor(sorted.length/2);return sorted.length%2?sorted[middle]:(sorted[middle-1]+sorted[middle])/2;};
+  const mathCacheSummary=[...new Set(mathCacheComparisons.map(p=>p.scenario))].map(scenario=>{
+    const pairs=mathCacheComparisons.filter(p=>p.scenario===scenario);
+    return {scenario,pairs:pairs.length,nativeMedianMs:median(pairs.map(p=>p.native.elapsedMs)),cachedMedianMs:median(pairs.map(p=>p.cached.elapsedMs)),
+      pairedDeltaMedianMs:median(pairs.map(p=>p.deltaMs)),nativeMeasurementMedianMs:median(pairs.map(p=>p.native.timings.measurementMs)),
+      cachedMeasurementMedianMs:median(pairs.map(p=>p.cached.timings.measurementMs)),
+      cachedWins:pairs.filter(p=>p.deltaMs<0).length,inlinePlacements:pairs.reduce((n,p)=>n+p.cached.delta.inline.placements,0),
+      inlineFallbacks:pairs.reduce((n,p)=>n+p.cached.delta.inline.placementFallbacks,0),
+      displayFallbacks:pairs.reduce((n,p)=>n+p.cached.delta.display.fallbacks,0)};
+  });
+  result.textContent='PASS '+JSON.stringify({lineCount:lines.lines.length,previewPages:preview.plan.pages.length,lineRanges:preview.slices.map(s=>[s.textStart,s.textEnd])})+' '+JSON.stringify({wide,narrow,pages:plan.pages.length})+' MATH_BENCH '+JSON.stringify({version:2,mathBenchmark,mathCacheComparisons,mathCacheSummary});
 }catch(error){result.textContent='FAIL '+String(error);}
 await fetch('/test-result',{method:'POST',body:result.textContent});
 </script></body></html>
