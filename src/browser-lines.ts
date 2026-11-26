@@ -190,15 +190,18 @@ async function measureVariableLines(document:Document,root:ShadowRoot,el:HTMLEle
   // frozen rows to load their fonts and pass the original native capability probe.
   if(fixed)await readyPreviewMathFont(document,root,r.mathFontFamily);
   const lines:MeasuredTextLine[]=[];let top=0;
+  // Fixed candidates are speculative: require a tighter geometric agreement
+  // than the legacy wrapped-to-frozen tolerance, or retry the native path.
+  const tolerance=fixed ? 0.125 : 1;
   for(const {group,start,end,line,rowSegments} of frozen){
     const q=line.getBoundingClientRect(),row=glyphBoxes(document,r,rowSegments,start,end,q);
     if(q.height<=0||line.scrollWidth>line.clientWidth+1||row.length!==group.length||
-      row.some((g,i)=>Math.abs(g.left-group[i].left)>1||Math.abs(g.right-group[i].right)>1||
-        Math.abs(g.top+top-group[i].top)>1||Math.abs(g.bottom+top-group[i].bottom)>1||
+      row.some((g,i)=>Math.abs(g.left-group[i].left)>tolerance||Math.abs(g.right-group[i].right)>tolerance||
+        Math.abs(g.top+top-group[i].top)>tolerance||Math.abs(g.bottom+top-group[i].bottom)>tolerance||
         g.top< -1||g.bottom>q.height+1))throw Error('Frozen variable-height line does not match wrapped geometry');
     lines.push({start,end,height:um(q.height)});top+=q.height;
   }
-  if(Math.abs(top-rect.height)>1||lines[0].start!==0||lines.at(-1)!.end!==r.text.length||lines.some((l,i)=>i>0&&l.start!==lines[i-1].end))throw Error('Incomplete variable-height line mapping');
+  if(Math.abs(top-rect.height)>tolerance||lines[0].start!==0||lines.at(-1)!.end!==r.text.length||lines.some((l,i)=>i>0&&l.start!==lines[i-1].end))throw Error('Incomplete variable-height line mapping');
   return lines;
 }
 function live(document:Document){
