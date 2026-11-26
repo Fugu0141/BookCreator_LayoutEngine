@@ -8,6 +8,8 @@ import type {PlainTextMeasureRequest,InlineStyleRun,InlineMathAtom} from './brow
 export interface MeasuredTextLine {
   /** UTF-16 offsets in the original logical text, not a transformed Markdown source. */
   start:number; end:number; height:number;
+  /** Measured native display node; only present for an isolated formula row. */
+  displayMath?:MeasuredDisplayMath;
 }
 export interface MeasuredTextLines {
   request:Readonly<PlainTextMeasureRequest>;
@@ -38,9 +40,13 @@ function snapshotRequest(r:PlainTextMeasureRequest):Readonly<PlainTextMeasureReq
     const boundaries=new Set([...new Intl.Segmenter(undefined,{granularity:'grapheme'}).segment(r.text)].map(g=>g.index));boundaries.add(r.text.length);
     let total=0;
     atoms=Object.freeze(r.inlineMath.map((atom,i)=>{
-      if(!atom||typeof atom!=='object'||Object.keys(atom).some(k=>k!=='start'&&k!=='formula')||atom.start!==positions[i]||!boundaries.has(atom.start)||!boundaries.has(atom.start+1)||typeof atom.formula!=='string'||(total+=atom.formula.length)>10000)throw RangeError('Invalid inline math atom range or source limit');
+      if(!atom||typeof atom!=='object'||Object.keys(atom).some(k=>k!=='start'&&k!=='formula'&&k!=='display')||(atom.display!==undefined&&atom.display!==true)||atom.start!==positions[i]||!boundaries.has(atom.start)||!boundaries.has(atom.start+1)||typeof atom.formula!=='string'||(total+=atom.formula.length)>10000)throw RangeError('Invalid inline math atom range or source limit');
+      if(atom.display===true){
+        const before=atom.start===0||r.text[atom.start-1]==='\n',after=atom.start+1===r.text.length||r.text[atom.start+1]==='\n'||r.text.slice(atom.start+1,atom.start+3)==='\r\n';
+        if(!before||!after)throw RangeError('Display math atom must occupy an entire hard line');
+      }
       parsePreviewMath(atom.formula);
-      return Object.freeze({start:atom.start,formula:atom.formula});
+      return Object.freeze({start:atom.start,formula:atom.formula,...(atom.display===true?{display:true as const}:{})});
     }));
   }
   if(r.inlineStyles===undefined)return Object.freeze({...r,inlineMath:atoms});
@@ -181,12 +187,17 @@ export async function measurePlainTextLines(document:Document,request:PlainTextM
       const body=raw.replace(/(?:\r\n|\n)$/,'');
       if(body.length){
         const measured=await measurePlainTextLines(document,{...r,text:body,multiline:false,paragraphGap:undefined,inlineStyles:slicedRuns(r,start,start+body.length),inlineMath:slicedMath(r,start,start+body.length)});
-        for(const [i,line] of measured.lines.entries())lines.push({start:start+line.start,end:start+(i===measured.lines.length-1?raw.length:line.end),height:line.height});
+        for(const [i,line] of measured.lines.entries())lines.push({start:start+line.start,end:start+(i===measured.lines.length-1?raw.length:line.end),height:line.height,...(line.displayMath?{displayMath:line.displayMath}:{})});
       }else lines.push({start,end:start+raw.length,height:Math.ceil(r.fontSize*r.lineHeight)+(r.paragraphGap??0)});
       start+=raw.length;
     }
     if(start!==r.text.length||!lines.length)throw Error('Incomplete hard-line mapping');
     return {request:r,lines,measurement:'browser-dom-lines',publicationReady:false};
+  }
+  if(r.inlineMath?.[0]?.display===true){
+    if(r.text!=='\uFFFC'||r.inlineMath.length!==1)throw RangeError('Expected isolated display math row');
+    const displayMath=await measureDisplayMath(document,r.inlineMath[0].formula,r.width,r.fontSize);
+    return {request:r,lines:[{start:0,end:1,height:displayMath.height,displayMath}],measurement:'browser-dom-lines',publicationReady:false};
   }
   const host=document.createElement('div');
   host.style.cssText='all:initial;position:fixed;top:0;left:0;visibility:hidden;pointer-events:none;contain:layout style paint;display:block;';
@@ -238,7 +249,11 @@ export async function measurePlainTextLines(document:Document,request:PlainTextM
 // Preserve separator code units in DOM textContent without letting them create extra visual rows.
 function frozenText(el:HTMLElement,r:PlainTextMeasureRequest,line:MeasuredTextLine){
   const raw=r.text.slice(line.start,line.end),body=raw.replace(/(?:\r\n|\n)$/,'');
-  appendStyled(el,r,line.start,line.start+body.length);
+  if(line.displayMath){
+    const node=line.displayMath.element;
+    node.dataset.slotDisplayMath='true';node.dataset.mathStart=String(line.start);node.dataset.mathEnd=String(line.start+1);
+    node.style.color='inherit';el.append(node);
+  }else appendStyled(el,r,line.start,line.start+body.length);
   if(body.length!==raw.length){const ending=el.ownerDocument.createElement('span');ending.hidden=true;ending.style.display='none';ending.textContent=raw.slice(body.length);el.append(ending);}
 }
 
@@ -440,6 +455,7 @@ export async function createPlainTextPagePreview(document:Document,options:{
     const listItem=b.listItem===undefined?undefined:snapshotListItem(b.listItem,b.request.width);
     if(listItem&&component)throw RangeError('List items do not support component frames yet');
     if(b.request.inlineMath!==undefined&&(listItem||b.sourceTextStart!==undefined||b.displayMath!==undefined))throw RangeError('Inline math requires a host-owned source map and cannot be combined with list items or display math');
+    if(b.request.inlineMath?.some(a=>a.display===true)&&(!component||b.splitPolicy!=='strict'))throw RangeError('Display math rows require a strict component text slot');
     if(b.equationNumber!==undefined&&(b.displayMath!==true||typeof b.equationNumber!=='string'||!/^([1-9][0-9]{0,5})\.([1-9][0-9]{0,5})$/.test(b.equationNumber)))throw RangeError('Equation number requires a valid strict display math block');
     if(b.displayMath!==undefined){
       if(b.displayMath!==true||b.splitPolicy!=='strict'||component||listItem||namedSlots.length||b.request.inlineStyles!==undefined||b.request.multiline||b.request.paragraphGap!==undefined)throw RangeError('Display math requires an independent strict block');
