@@ -1,0 +1,35 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {createMathCompilationCache,validateCompiledMath,parsePreviewMath} from '../dist/math-preview.js';
+test('compilation cache distinguishes exact source and math mode',()=>{
+  const c=createMathCompilationCache();
+  validateCompiledMath('x^2','inline',c);
+  validateCompiledMath('x^2','inline',c);
+  validateCompiledMath('x^2','block',c);
+  validateCompiledMath('x ^2','inline',c);
+  assert.equal(c.stats().entries,3);assert.equal(c.stats().hits,1);assert.equal(c.stats().misses,3);
+  assert.throws(()=>validateCompiledMath('x\n+y','inline',c));
+  validateCompiledMath('x\n+y','block',c);
+  assert.throws(()=>validateCompiledMath('x\n+y','inline',c));
+  assert.throws(()=>validateCompiledMath('\\input{secret}','block',c));
+  assert.throws(()=>validateCompiledMath('x','inline',{}),/Invalid math compilation cache/);
+  assert.equal(c.stats().entries,4);
+  const exposed=parsePreviewMath('x^2');exposed.children.length=0;
+  validateCompiledMath('x^2','inline',c);
+  assert.equal(c.stats().entries,4);
+});
+test('compilation cache is bounded, LRU and explicitly clearable',()=>{
+  const c=createMathCompilationCache();
+  validateCompiledMath('x','inline',c);
+  for(let i=0;i<511;i++)validateCompiledMath('x_'+i,'inline',c);
+  validateCompiledMath('x','inline',c);
+  validateCompiledMath('y','inline',c);
+  assert.equal(c.stats().entries,512);
+  const old=c.stats().hits;
+  validateCompiledMath('x','inline',c);assert.equal(c.stats().hits,old+1);
+  const misses=c.stats().misses;
+  validateCompiledMath('x_0','inline',c);assert.equal(c.stats().misses,misses+1);
+  for(let i=0;i<210;i++)validateCompiledMath('x+'.repeat(180)+i,'block',c);
+  assert.ok(c.stats().entries<=512&&c.stats().characters<=100000&&c.stats().nodes<=50000);
+  c.clear();assert.deepEqual(c.stats(),{entries:0,characters:0,nodes:0,hits:0,misses:0});
+});
