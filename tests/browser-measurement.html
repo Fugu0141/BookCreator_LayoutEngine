@@ -836,9 +836,44 @@ try{
         assert(geometry.stats().entries===1,'font set change discards prior candidates');
       }finally{document.fonts.delete(face);}
       geometry.clear();
-      assert(JSON.stringify(geometry.stats())===JSON.stringify({entries:0,characters:0,hits:0,misses:0}),'inline geometry release');
+      assert(JSON.stringify(geometry.stats())===JSON.stringify({entries:0,characters:0,hits:0,misses:0,placements:0,placementFallbacks:0}),'inline geometry release');
     }finally{host.remove();}
     assert(document.body.children.length===before,'isolated inline measurement hosts removed');
+  }
+  await phase("fixed inline wrapping and native row validation");
+  {
+    const syntax=createMathCompilationCache(),geometry=createInlineMathGeometryCache(document);
+    const formulas=['x^2','\\frac{x^2+1}{2}','\\sqrt{x+1}'];
+    const width=60000,height=45000;
+    const text='前の文章 \uFFFC 後の文章。 '.repeat(9);
+    const atoms=[...text.matchAll(/\uFFFC/g)].map((m,i)=>({start:m.index,formula:formulas[i%3]}));
+    const req={...request,text,width,fontSize:5000,lineHeight:1.8,inlineMath:atoms};
+    const compare=async r=>{
+      const a=await measurePlainTextLines(document,r,syntax);
+      const b=await measurePlainTextLines(document,r,syntax,undefined,geometry);
+      assert(JSON.stringify(a.lines)===JSON.stringify(b.lines),'fixed inline wrapping preserves line ranges and heights');
+      const options={revision:'1',fingerprint:'fixed-inline',width:r.width,height,blocks:[{origin:{documentId:'fixed',revision:'1',blockKey:'inline'},request:r,splitPolicy:'allow'}]};
+      const p=await createPlainTextPagePreview(document,options);
+      const q=await createPlainTextPagePreview(document,{...options,mathCache:syntax,inlineMathCache:geometry});
+      assert(JSON.stringify(p.plan)===JSON.stringify(q.plan)&&JSON.stringify(p.slices)===JSON.stringify(q.slices),'fixed wrapping preserves page boundaries and logical offsets');
+      assert(p.element.shadowRoot.innerHTML===q.element.shadowRoot.innerHTML,'final paper retains native MathML and source attributes');
+      assert(q.element.shadowRoot.querySelectorAll('math').length===r.inlineMath.length,'no fixed placeholder survives into final paper');
+    };
+    await compare(req);
+    assert(geometry.stats().placements>0,'at least one fixed candidate accepted, not only fallback');
+    assert(geometry.stats().entries===3&&geometry.stats().misses===3,'distinct formulas measured once in this environment');
+    const misses=geometry.stats().misses;
+    const changedText='変更 '+text;
+    await compare({...req,text:changedText,inlineMath:atoms.map(a=>({...a,start:a.start+3}))});
+    await compare({...req,width:90000});
+    assert(geometry.stats().misses===misses,'body and width edits reuse natural math geometry');
+    await compare({...req,inlineMath:atoms.map((a,i)=>i===0?{...a,formula:'x^3'}:a)});
+    assert(geometry.stats().misses===misses+1,'one changed formula measures one new candidate');
+    const overflow={...req,text:'\uFFFC',width:1000,inlineMath:[{start:0,formula:'\\frac{x^2+1}{2}'}]};
+    const fallback=geometry.stats().placementFallbacks;
+    let rejected=false;try{await measurePlainTextLines(document,overflow,syntax,undefined,geometry);}catch{rejected=true;}
+    assert(rejected&&geometry.stats().placementFallbacks===fallback+1,'invalid fixed placement retries native and rejects overflow');
+    assert(document.body.children.length===before,'fixed and fallback hosts removed');
   }
   await phase("math workload baseline");
   const mathBenchmark=[];
