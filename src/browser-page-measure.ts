@@ -14,11 +14,55 @@ interface MeasureServices{
   listInset(item:PreviewListItem):number;
   listMarker(item:PreviewListItem):string;
 }
-export async function measurePreviewSections(document:Document,sections:readonly {id:string;startOn:'page'|'continuous';blocks:readonly (PreviewTextBlock|PageBreak)[]}[],width:number,height:number,{measurePlainTextLines,measureDisplayMath,resolveComponentWidths,placeComponent,listInset,listMarker}:MeasureServices){
+// Retain only value data, never a measured MathML node or image bitmap.
+type ValueMeasurement=Omit<MeasuredPreviewBlock,'block'|'math'>;
+type RetainedEntry={key:string;value:ValueMeasurement};
+export type BlockMeasurementSnapshot=ReadonlyMap<string,RetainedEntry>;
+export interface BlockMeasurementWork {readonly measuredBlocks:number;readonly reusedBlocks:number;readonly bypassedBlocks:number}
+const MAX_KEY_CHARS=250000,MAX_LINES=10000;
+function cleanRequest(r:PlainTextMeasureRequest):PlainTextMeasureRequest{
+  return {text:r.text,width:r.width,fontSize:r.fontSize,fontFamily:r.fontFamily,fontWeight:r.fontWeight,lineHeight:r.lineHeight,
+    multiline:r.multiline,paragraphGap:r.paragraphGap,mathFontFamily:r.mathFontFamily,
+    inlineStyles:r.inlineStyles?.map(s=>({start:s.start,end:s.end,fontFamily:s.fontFamily,fontWeight:s.fontWeight,italic:s.italic,underline:s.underline,color:s.color,fontSize:s.fontSize,baseline:s.baseline})),
+    inlineMath:r.inlineMath?.map(a=>({start:a.start,formula:a.formula,display:a.display,equationNumber:a.equationNumber}))};
+}
+function componentKey(c:PreviewComponentChild):unknown{
+  // Only fields used by width resolution, measurement and placement.
+  return [c.type,c.id,c.width,c.x,c.y,
+    c.type==='group'?[c.direction,c.height,c.gap,c.padding,c.children.map(componentKey)]:
+    c.type==='label'?[c.text,c.fontFamily,c.fontWeight,c.fontSize,c.lineHeight]:
+    c.type==='slot'?c.name:
+    c.type==='rect'||c.type==='image'?c.height:null];
+}
+function measurementKey(b:PreviewTextBlock,width:number,height:number):string|undefined{
+  const requests=[b.request,...(b.namedSlots??[]).map(s=>s.request)];
+  if(b.displayMath||requests.some(r=>r.inlineMath?.some(a=>a.display===true)))return undefined;
+  const c=b.component,l=b.listItem;
+  // Source offsets/revision and purely visual component fields are not
+  // measurement inputs. The current block always supplies rendering metadata.
+  return JSON.stringify([width,height,cleanRequest(b.request),b.splitPolicy,
+    c?[c.direction,c.gap,c.padding,c.children.map(componentKey)]:null,
+    l?[l.kind,l.kind==='ordered'?l.number:null,l.depth,l.indentStep,l.markerWidth,l.gap]:null,
+    (b.namedSlots??[]).map(s=>[s.name,cleanRequest({...s.request,width:100000})])]);
+}
+function valueCopy(v:ValueMeasurement):ValueMeasurement|undefined{
+  const all=[v.measurement,...v.labels.values(),...v.slots.values(),...(v.marker?[v.marker]:[])];
+  if(all.some(m=>m.lines.some(l=>l.displayMath)))return undefined;
+  const copy=(m:MeasuredTextLines):MeasuredTextLines=>({
+    request:cleanRequest(m.request),lines:m.lines.map(l=>({start:l.start,end:l.end,height:l.height})),
+    measurement:'browser-dom-lines',publicationReady:false
+  });
+  return {measurement:copy(v.measurement),labels:new Map([...v.labels].map(([k,m])=>[k,copy(m)])),
+    slots:new Map([...v.slots].map(([k,m])=>[k,copy(m)])),marker:v.marker?copy(v.marker):undefined,
+    placement:v.placement?structuredClone(v.placement):undefined};
+}
+function countLines(v:ValueMeasurement){return v.measurement.lines.length+[...v.labels.values(),...v.slots.values()].reduce((n,m)=>n+m.lines.length,0)+(v.marker?.lines.length??0);}
+export async function measurePreviewSections(document:Document,sections:readonly {id:string;startOn:'page'|'continuous';blocks:readonly (PreviewTextBlock|PageBreak)[]}[],width:number,height:number,{measurePlainTextLines,measureDisplayMath,resolveComponentWidths,placeComponent,listInset,listMarker}:MeasureServices,retained?:{previous?:BlockMeasurementSnapshot}){
   const isBreak=(b:PreviewTextBlock|PageBreak):b is PageBreak=>'kind' in b&&b.kind==='pagebreak';
   const byKey=new Map<string,MeasuredPreviewBlock>();
   const measuredSections:MeasuredSection[]=[];
-  let totalLabelText=0;
+  let totalLabelText=0,keyChars=0,linesRetained=0,measuredBlocks=0,reusedBlocks=0,bypassedBlocks=0;
+  const next=new Map<string,RetainedEntry>();
   for(const section of sections){
     const blocks: (MeasuredSection['blocks'][number])[]=[];
     for(const b of section.blocks){
@@ -29,6 +73,22 @@ export async function measurePreviewSections(document:Document,sections:readonly
       b.sourceTextStart+b.request.text.length>b.origin.range.end))throw Error('Invalid exact source mapping');
     const fragmentable=!!b.component&&b.splitPolicy!=='strict';
     if(fragmentable&&(b.component!.direction!=='column'||b.component!.gap!==0||b.component!.children.length!==1||b.component!.children[0].type!=='content'))throw Error('Splittable components require a single content slot in a column frame');
+    // Enforce the global label budget even when every block is retained.
+    function countLabels(children:readonly PreviewComponentChild[]){for(const child of children){
+      if(child.type==='group')countLabels(child.children);
+      else if(child.type==='label'){
+        totalLabelText+=child.text.length;if(totalLabelText>50000)throw RangeError('Component label text limit exceeded');
+      }
+    }}
+    if(b.component)countLabels(b.component.children);
+    const key=retained?measurementKey(b,width,height):undefined;
+    const previous=key!==undefined?retained?.previous?.get(k):undefined;
+    const hit=previous?.key===key&&previous!==undefined?valueCopy(previous.value):undefined;
+    let value:Omit<MeasuredPreviewBlock,'block'>;
+    if(hit){value=hit;reusedBlocks++;}
+    else{
+    measuredBlocks++;
+    if(retained&&key===undefined)bypassedBlocks++;
     const geometry=b.component?resolveComponentWidths(b.component,b.request.width):undefined;
     const textWidth=geometry?.contentWidth??(b.request.width-(b.listItem?listInset(b.listItem):0));
     let marker:MeasuredTextLines|undefined;
@@ -53,16 +113,24 @@ export async function measurePreviewSections(document:Document,sections:readonly
         slots.set(child.name,await measurePlainTextLines(document,{...sources.get(child.name)!,width:geometry!.widths.get(child.id)!}));continue;
       }
       if(child.type!=='label')continue;
-      totalLabelText+=child.text.length;if(totalLabelText>50000)throw RangeError('Component label text limit exceeded');
       labels.set(child.id,await measurePlainTextLines(document,{text:child.text,width:geometry!.widths.get(child.id)!,fontFamily:child.fontFamily,fontWeight:child.fontWeight,fontSize:child.fontSize,lineHeight:child.lineHeight}));
     }}
     if(b.component)await measureLabels(b.component.children);
     const placement=b.component&&!fragmentable?placeComponent(b.component,b.request.width,measurement,labels,slots,geometry!.widths,height):undefined;
-    byKey.set(k,{block:b,measurement,labels,slots,placement,marker,math});
-    const heights=placement?[placement.rect.height]:measurement.lines.map(l=>l.height);
+    value={measurement,labels,slots,placement,marker,math};
+    }
+    if(retained&&key!==undefined&&!value.math&&keyChars+key.length<=MAX_KEY_CHARS){
+      const count=countLines(value);
+      if(linesRetained+count<=MAX_LINES){
+        const saved=valueCopy(value);
+        if(saved){next.set(k,{key,value:saved});keyChars+=key.length;linesRetained+=count;}
+      }
+    }
+    byKey.set(k,{block:b,...value});
+    const heights=value.placement?[value.placement.rect.height]:value.measurement.lines.map(l=>l.height);
     blocks.push({kind:'block' as const,origin:b.origin,width:b.request.width,unitHeights:heights,splitPolicy:b.splitPolicy,...(fragmentable?{fragmentPadding:{top:b.component!.padding,bottom:b.component!.padding}}:{}),startPosition:b.startPosition,startPositionSource:b.startPositionSource});
   }
     measuredSections.push({id:section.id,startOn:section.startOn,blocks});
   }
-  return {byKey,measuredSections};
+  return {byKey,measuredSections,measurementSnapshot:retained?next:undefined,measurementWork:Object.freeze({measuredBlocks,reusedBlocks,bypassedBlocks})};
 }
