@@ -527,7 +527,7 @@ export async function createPlainTextPagePreview(document:Document,options:{
     images.set(id,bitmap);
   }
   const imagesReady=now();
-  const {byKey,measuredSections}=await measurePreviewSections(document,sections,width,height,{measurePlainTextLines:measurementCache?(doc,r)=>r.inlineMath!==undefined||r.inlineStyles!==undefined?measurePlainTextLines(doc,r):measureWithTextCache(doc,snapshotRequest(r),measurementCache,measurePlainTextLines):measurePlainTextLines,resolveComponentWidths,placeComponent,listInset,listMarker});
+  const {byKey,measuredSections}=await measurePreviewSections(document,sections,width,height,{measurePlainTextLines:measurementCache?(doc,r)=>measureWithTextCache(doc,r.inlineMath!==undefined||r.inlineStyles!==undefined?r:snapshotRequest(r),measurementCache,measurePlainTextLines):measurePlainTextLines,resolveComponentWidths,placeComponent,listInset,listMarker});
   const measured=now();
   const plan=paginateMeasured({schemaVersion:1,revision,fingerprint,content:{width,height},sections:measuredSections});
   if(!plan.pages.length)throw Error('No drawable content');
