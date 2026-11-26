@@ -128,3 +128,8 @@ Allowlisted `matrix`, `pmatrix`, `bmatrix`, `Bmatrix`, `vmatrix`, `Vmatrix`, `ca
 ## M04 — independent math font role (experimental)
 
 `PlainTextMeasureRequest.mathFontFamily` and the optional trailing arguments of `createPreviewMath` / `measureDisplayMath` accept `auto` (legacy system math stack) or a regular, host-registered opaque `BCFont_...` alias. The alias applies only to MathML, not body/heading text or equation numbers. The same resolved family is used in wrapping, frozen-line geometry, standalone equations, isolated component display rows and named-slot math. Explicit registered faces are loaded before measurement; representative fraction and scalable-delimiter probes reject missing/unusable faces instead of silently accepting the selection. The host remains responsible for validating font bytes, OpenType MATH table and glyph coverage; browser probes alone cannot prove full font coverage or exclude per-glyph fallback. No network/file access by Engine, no arbitrary CSS families, no font downloads. CI uses a real registered TeX Gyre Math fixture; host theme persistence, user selection, licensed bundling and import validation remain follow-up work. CI pending.
+
+
+## M04 — multiline display formula source
+
+`parseDisplayMath` accepts LF/CRLF and indentation as whitespace within the same bounded grammar; `parsePreviewMath` remains strictly single-line for inline formulas. Original UTF-16 offsets, 2048-character limit and all grammar/resource restrictions remain. Display source whitespace does not create rendered line breaks: use aligned/matrix/cases row separators. Standalone and strict component display formulas preserve raw source ranges. CI pending.
