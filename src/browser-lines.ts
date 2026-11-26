@@ -1,4 +1,4 @@
-import {measureDisplayMath,parsePreviewMath,createPreviewMath,assertNativeMathLayout,type MeasuredDisplayMath} from './math-preview.js';
+import {measureDisplayMath,parsePreviewMath,createPreviewMath,readyPreviewMathFont,isPreviewMathFontFamily,type MeasuredDisplayMath} from './math-preview.js';
 import {validateImageCrop,imageSourceRect,type ImageCrop} from './image-crop.js';
 import {layoutTree} from './tree.js';
 import {applyPreviewFont,readyPreviewFont,isPreviewFontFamily,isPreviewFontWeight} from './preview-font.js';
@@ -27,6 +27,7 @@ function validate(request:PlainTextMeasureRequest){
     /[\p{Cc}\p{Cs}\p{Cf}\p{Zl}\p{Zp}]/u.test(request.multiline?request.text.replace(/\r\n|\n/g,''):request.text)||
     (request.multiline&&(!request.text.replace(/\r\n|\n/g,'').trim()||(request.text.match(/\n/g)?.length??0)>255))||
     !positive(request.width)||request.width>2000000||!positive(request.fontSize)||request.fontSize>100000||
+    (request.mathFontFamily!==undefined&&!isPreviewMathFontFamily(request.mathFontFamily))||
     !isPreviewFontFamily(request.fontFamily)||!isPreviewFontWeight(request.fontWeight)||!Number.isFinite(request.lineHeight)||request.lineHeight<1.25||request.lineHeight>4)
     throw new RangeError('Unsupported plain line measurement request');
 }
@@ -106,7 +107,7 @@ function appendStyled(el:HTMLElement,r:PlainTextMeasureRequest,start:number,end:
       const span=el.ownerDocument.createElement('span');
       span.dataset.inlineMath='true';span.dataset.mathStart=String(a);span.dataset.mathEnd=String(b);
       span.style.cssText='display:inline-block;vertical-align:baseline;white-space:nowrap;line-height:normal;font-family:math,serif;font-style:normal;font-weight:400;font-synthesis:none;';
-      span.append(createPreviewMath(el.ownerDocument,entry.atom.formula,'inline'));el.append(span);
+      span.append(createPreviewMath(el.ownerDocument,entry.atom.formula,'inline',r.mathFontFamily));el.append(span);
       segments.push({start:a,end:b,node:span,math:true});
     }else append(a,b,entry.run);
     cursor=b;
@@ -196,7 +197,7 @@ export async function measurePlainTextLines(document:Document,request:PlainTextM
   }
   if(r.inlineMath?.[0]?.display===true){
     if(r.text!=='\uFFFC'||r.inlineMath.length!==1)throw RangeError('Expected isolated display math row');
-    const displayMath=await measureDisplayMath(document,r.inlineMath[0].formula,r.width,r.fontSize);
+    const displayMath=await measureDisplayMath(document,r.inlineMath[0].formula,r.width,r.fontSize,undefined,r.mathFontFamily);
     return {request:r,lines:[{start:0,end:1,height:displayMath.height,displayMath}],measurement:'browser-dom-lines',publicationReady:false};
   }
   const host=document.createElement('div');
@@ -206,7 +207,7 @@ export async function measurePlainTextLines(document:Document,request:PlainTextM
   try{
     el.getBoundingClientRect();await readyPreviewFont(document,r.fontFamily,r.fontWeight,r.text);
     for(const run of r.inlineStyles??[])await readyPreviewFont(document,run.fontFamily??r.fontFamily,run.fontWeight??r.fontWeight,r.text.slice(run.start,run.end));
-    if(r.inlineMath?.length){await document.fonts.ready;assertNativeMathLayout(document,root);}
+    if(r.inlineMath?.length)await readyPreviewMathFont(document,root,r.mathFontFamily);
     if(r.inlineMath?.length||r.inlineStyles?.some(s=>s.fontSize!==undefined||(s.baseline&&s.baseline!=='normal')||(s.fontFamily!==undefined&&s.fontFamily!==r.fontFamily))){
       const lines=measureVariableLines(document,root,el,r,segments);
       return {request:r,lines,measurement:'browser-dom-lines',publicationReady:false};
@@ -513,7 +514,7 @@ export async function createPlainTextPagePreview(document:Document,options:{
       marker=await measurePlainTextLines(document,{...base,text:listMarker(b.listItem),width:b.listItem.markerWidth});
       if(marker.lines.length!==1)throw RangeError('List marker does not fit reserved width');
     }
-    const math=b.displayMath?await measureDisplayMath(document,b.request.text,textWidth,b.request.fontSize,b.equationNumber):undefined;
+    const math=b.displayMath?await measureDisplayMath(document,b.request.text,textWidth,b.request.fontSize,b.equationNumber,b.request.mathFontFamily):undefined;
     let measurement:MeasuredTextLines=math?{request:b.request,lines:[{start:0,end:b.request.text.length,height:math.height}],measurement:'browser-dom-lines',publicationReady:false}:await measurePlainTextLines(document,{...b.request,width:textWidth});
     if(marker){
       // Marker and the first text row are top-aligned. Reserve both measured boxes.
