@@ -557,6 +557,26 @@ try{
     }
     assert(document.body.children.length===before,'component display measurement cleanup');
   }
+  await phase("extended math functions, limits and fences");
+  {
+    const source='\\lim_{x\\to0}\\left(\\frac{\\sin x}{x}\\right)+\\sqrt[3]{x}+\\vec{a}\\cdot\\hat{b}';
+    const measured=await measureDisplayMath(document,source,150000,4200);
+    const math=measured.element.querySelector('math');
+    document.body.append(measured.element);
+    try{
+      const under=math.querySelector('munder'),base=under.children[0],sub=under.children[1];
+      assert(base.textContent==='lim'&&base.getAttribute('mathvariant')==='normal'&&sub.getBoundingClientRect().top>=base.getBoundingClientRect().bottom-1,'display limit below upright function');
+      assert(math.querySelector('mroot')&&math.querySelectorAll('mover[accent=true]').length===2,'indexed radical and accents');
+      const fence=math.querySelector('mo[fence=true]'),fraction=math.querySelector('mfrac');
+      assert(fence.getBoundingClientRect().height>=fraction.getBoundingClientRect().height-1,'fence stretches around fraction');
+      assert(math.getBoundingClientRect().height<=measured.element.getBoundingClientRect().height+.1,'extended display formula fits measured height');
+    }finally{measured.element.remove();}
+    const inline='前 \uFFFC 後。',req={...request,text:inline,inlineMath:[{start:2,formula:'\\lim_{x\\to0}\\sin x'}]};
+    const p=await createPlainTextPagePreview(document,{revision:'1',fingerprint:'extended-inline',width:req.width,height:100000,blocks:[{origin:{documentId:'math',revision:'1',blockKey:'extended'},request:req,splitPolicy:'strict'}]});
+    const node=p.element.shadowRoot.querySelector('[data-inline-math]');
+    assert(node.querySelector('msub')&&!node.querySelector('munder'),'inline limit uses compact script');
+    assert(document.body.children.length===before,'extended math measurement cleanup');
+  }
   result.textContent='PASS '+JSON.stringify({lineCount:lines.lines.length,previewPages:preview.plan.pages.length,lineRanges:preview.slices.map(s=>[s.textStart,s.textEnd])})+' '+JSON.stringify({wide,narrow,pages:plan.pages.length});
 }catch(error){result.textContent='FAIL '+String(error);}
 await fetch('/test-result',{method:'POST',body:result.textContent});
