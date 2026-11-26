@@ -41,13 +41,14 @@ function snapshotRequest(r:PlainTextMeasureRequest,display=false):Readonly<Plain
     const boundaries=new Set([...new Intl.Segmenter(undefined,{granularity:'grapheme'}).segment(r.text)].map(g=>g.index));boundaries.add(r.text.length);
     let total=0;
     atoms=Object.freeze(r.inlineMath.map((atom,i)=>{
-      if(!atom||typeof atom!=='object'||Object.keys(atom).some(k=>k!=='start'&&k!=='formula'&&k!=='display')||(atom.display!==undefined&&atom.display!==true)||atom.start!==positions[i]||!boundaries.has(atom.start)||!boundaries.has(atom.start+1)||typeof atom.formula!=='string'||(total+=atom.formula.length)>10000)throw RangeError('Invalid inline math atom range or source limit');
+      if(!atom||typeof atom!=='object'||Object.keys(atom).some(k=>k!=='start'&&k!=='formula'&&k!=='display'&&k!=='equationNumber')||(atom.display!==undefined&&atom.display!==true)||atom.start!==positions[i]||!boundaries.has(atom.start)||!boundaries.has(atom.start+1)||typeof atom.formula!=='string'||(total+=atom.formula.length)>10000)throw RangeError('Invalid inline math atom range or source limit');
+      if(atom.equationNumber!==undefined&&(atom.display!==true||typeof atom.equationNumber!=='string'||!/^([1-9][0-9]{0,5})\.([1-9][0-9]{0,5})$/.test(atom.equationNumber)))throw RangeError('Equation number requires a valid display math atom');
       if(atom.display===true){
         const before=atom.start===0||r.text[atom.start-1]==='\n',after=atom.start+1===r.text.length||r.text[atom.start+1]==='\n'||r.text.slice(atom.start+1,atom.start+3)==='\r\n';
         if(!before||!after)throw RangeError('Display math atom must occupy an entire hard line');
       }
       (atom.display===true?parseDisplayMath:parsePreviewMath)(atom.formula);
-      return Object.freeze({start:atom.start,formula:atom.formula,...(atom.display===true?{display:true as const}:{})});
+      return Object.freeze({start:atom.start,formula:atom.formula,...(atom.display===true?{display:true as const}:{}),...(atom.equationNumber!==undefined?{equationNumber:atom.equationNumber}:{})});
     }));
   }
   if(r.inlineStyles===undefined)return Object.freeze({...r,inlineMath:atoms});
@@ -197,7 +198,7 @@ export async function measurePlainTextLines(document:Document,request:PlainTextM
   }
   if(r.inlineMath?.[0]?.display===true){
     if(r.text!=='\uFFFC'||r.inlineMath.length!==1)throw RangeError('Expected isolated display math row');
-    const displayMath=await measureDisplayMath(document,r.inlineMath[0].formula,r.width,r.fontSize,undefined,r.mathFontFamily);
+    const displayMath=await measureDisplayMath(document,r.inlineMath[0].formula,r.width,r.fontSize,r.inlineMath[0].equationNumber,r.mathFontFamily);
     return {request:r,lines:[{start:0,end:1,height:displayMath.height,displayMath}],measurement:'browser-dom-lines',publicationReady:false};
   }
   const host=document.createElement('div');

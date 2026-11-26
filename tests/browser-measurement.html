@@ -519,8 +519,8 @@ try{
   await phase("strict component display math rows");
   {
     const formula='\\frac{a}{\\frac{b}{c}}',primary='前の文章。\r\n\uFFFC\r\n次の文章 \uFFFC。',hint='ヒント。\n\uFFFC\n結び。';
-    const req={...request,text:primary,multiline:true,inlineMath:[{start:primary.indexOf('\uFFFC'),formula,display:true},{start:primary.lastIndexOf('\uFFFC'),formula:'x^2'}]};
-    const slot={...slotRequest,text:hint,multiline:true,inlineMath:[{start:hint.indexOf('\uFFFC'),formula:'\\sqrt{x^2+1}',display:true}]};
+    const req={...request,text:primary,multiline:true,inlineMath:[{start:primary.indexOf('\uFFFC'),formula,display:true,equationNumber:'2.1'},{start:primary.lastIndexOf('\uFFFC'),formula:'x^2'}]};
+    const slot={...slotRequest,text:hint,multiline:true,inlineMath:[{start:hint.indexOf('\uFFFC'),formula:'\\sqrt{x^2+1}',display:true,equationNumber:'2.2'}]};
     const block={...multiBlock,sourceTextStart:undefined,request:req,namedSlots:[{name:'hint',request:slot},multiBlock.namedSlots[1]]};
     const options={...multiOptions,height:190000,blocks:[block]};
     const p=await createPlainTextPagePreview(document,options);
@@ -532,6 +532,11 @@ try{
       const primaryNode=root.querySelector('[data-content-slot] [data-slot-display-math]'),hintNode=root.querySelector('[data-named-slot=hint] [data-slot-display-math]');
       assert(primaryNode.querySelector('math[display=block] mfrac')&&hintNode.querySelector('math[display=block] msqrt'),'native display math in primary and named slot');
       assert(root.querySelector('[data-content-slot] [data-inline-math] math msup'),'inline and display atoms coexist');
+      assert(primaryNode.querySelector('[data-equation-number]').textContent==='(2.1)'&&hintNode.querySelector('[data-equation-number]').textContent==='(2.2)','host numbers rendered in both slots');
+      for(const node of [primaryNode,hintNode]){
+        const math=node.querySelector('math').getBoundingClientRect(),label=node.querySelector('[data-equation-number]').getBoundingClientRect(),box=node.getBoundingClientRect();
+        assert(label.left>math.right&&Math.abs(label.right-box.right)<.2&&label.bottom<=box.bottom+.1,'number inside slot without overlap');
+      }
       for(const [node,offset] of [[primaryNode,primary.indexOf('\uFFFC')],[hintNode,hint.indexOf('\uFFFC')]]){
         const row=node.parentElement,math=node.querySelector('math'),r=row.getBoundingClientRect(),m=math.getBoundingClientRect(),q=node.getBoundingClientRect();
         assert(Number(node.dataset.mathStart)===offset&&Number(node.dataset.mathEnd)===offset+1,'display math logical offset');
@@ -549,6 +554,8 @@ try{
       {...block,request:{...req,text:'before \uFFFC',multiline:false,inlineMath:[{start:7,formula,display:true}]}},
       {...block,request:{...req,text:'\uFFFC ',multiline:false,inlineMath:[{start:0,formula,display:true}]}},
       {...block,request:{...req,inlineMath:[{...req.inlineMath[0],display:false},req.inlineMath[1]]}},
+      {...block,request:{...req,inlineMath:[req.inlineMath[0],{...req.inlineMath[1],equationNumber:'2.3'}]}},
+      {...block,request:{...req,inlineMath:[{...req.inlineMath[0],equationNumber:'0.1'},req.inlineMath[1]]}},
       {...block,namedSlots:[{name:'hint',request:{...slot,inlineMath:[{...slot.inlineMath[0],formula:'x'.repeat(150)}]}},block.namedSlots[1]]},
       {...block,namedSlots:[{name:'hint',request:slot,sourceTextStart:40},block.namedSlots[1]]}
     ]){
