@@ -1207,12 +1207,14 @@ try{
     };
     const initial=await createRetainedTextPagePreview(document,make('1'));
     assert(initial.paginationWork.placedBlocks===8&&initial.paginationWork.reusedBlocks===0,'initial retained preview places every block');
+    assert(initial.measurementWork.measuredBlocks===8&&initial.measurementWork.reusedBlocks===0,'initial measurement work');
     assert(initial.pageDelta.reusedPageIndices.length===0&&initial.changedElement.shadowRoot.children.length===8,'initial retained preview has complete DOM');
     const baseNodes=Array.from(initial.changedElement.shadowRoot.children);
     const options=make('2',true);
     const edited=await createRetainedTextPagePreview(document,options,initial.pageDelta.snapshot);
     const oracle=await createPlainTextPagePreview(document,options);
     assert(edited.paginationWork.placedBlocks===1&&edited.paginationWork.reusedBlocks===7&&edited.paginationWork.reusedSuffixBlocks===5,'one changed block, seven placement reuses including suffix');
+    assert(edited.measurementWork.measuredBlocks===1&&edited.measurementWork.reusedBlocks===7,'one block measured, seven reused');
     assert(JSON.stringify(edited.pageDelta.reusedPageIndices)===JSON.stringify([0,1,3,4,5,6,7]),'only changed page generated');
     assert(JSON.stringify(edited.plan)===JSON.stringify(oracle.plan)&&JSON.stringify(edited.slices)===JSON.stringify(oracle.slices),'retained plan and source slices match full');
     const changed=new Map(Array.from(edited.changedElement.shadowRoot.children,n=>[Number(n.dataset.page),n]));
@@ -1220,6 +1222,7 @@ try{
     assert(edited.slices[0].sourceSlice.start===200,'latest source revision for reused page');
     const repeated=await createRetainedTextPagePreview(document,make('3',true),edited.pageDelta.snapshot);
     assert(repeated.paginationWork.placedBlocks===0&&repeated.pageDelta.reusedPageIndices.length===8&&repeated.changedElement.shadowRoot.children.length===0,'next retained snapshot reuses all placements and pages');
+    assert(repeated.measurementWork.measuredBlocks===0&&repeated.measurementWork.reusedBlocks===8,'no new block measurement on identical input');
     assert(Number.isFinite(edited.timings.paginationMs)&&edited.timings.paginationMs>=0,'retained pagination timing included');
     const legacy=await createIncrementalTextPagePreview(document,make('1'));
     const upgraded=await createRetainedTextPagePreview(document,options,legacy.pageDelta.snapshot);
@@ -1233,6 +1236,33 @@ try{
       assert(rejected,'invalid retained lease or incompatible page cache rejected');
     }
     assert(document.body.children.length===beforeRetained,'retained measurement hosts removed');
+  }
+  await phase("retained component and inline math measurements");
+  {
+    const width=100000,height=100000;
+    const make=(revision,color='#ffffff',label='例題')=>{
+      const origin=i=>({documentId:'retained-mixed',revision,blockKey:'mixed-'+i});
+      const body={...request,width,text:'本文。'};
+      const text='数式 \uFFFC を求める。';
+      const blocks=[
+        {origin:origin(0),request:body,splitPolicy:'strict',component:{direction:'column',padding:1000,gap:1000,background:color,textColor:'#111111',children:[
+          {type:'label',id:'label',width:'fill',text:label,fontFamily:body.fontFamily,fontWeight:400,fontSize:4000,lineHeight:1.5,color:'#111111'},
+          {type:'content',id:'content'}]}},
+        {origin:origin(1),request:{...body,text,inlineMath:[{start:text.indexOf('\uFFFC'),formula:'x^2'}]},splitPolicy:'strict'},
+        {origin:origin(2),request:{...body,text:'x^2'},displayMath:true,splitPolicy:'strict'}
+      ];
+      return {revision,fingerprint:'mixed-'+revision,width,height,sections:blocks.map((b,i)=>({id:'mixed-'+i,startOn:'page',blocks:[b]}))};
+    };
+    const first=await createRetainedTextPagePreview(document,make('1'));
+    assert(first.measurementWork.measuredBlocks===3&&first.measurementWork.bypassedBlocks===1,'display math measurement bypass');
+    const options=make('2','#eeeeee');
+    const next=await createRetainedTextPagePreview(document,options,first.pageDelta.snapshot);
+    const full=await createPlainTextPagePreview(document,options);
+    assert(next.measurementWork.measuredBlocks===1&&next.measurementWork.reusedBlocks===2,'component color and inline formula reuse value measurements');
+    assert(JSON.stringify(next.plan)===JSON.stringify(full.plan)&&JSON.stringify(next.slices)===JSON.stringify(full.slices),'mixed retained plan and slices parity');
+    assert(next.pageDelta.reusedPageIndices.length===0&&Array.from(full.element.shadowRoot.children).every((n,i)=>n.isEqualNode(next.changedElement.shadowRoot.children[i])),'mixed retained DOM parity');
+    const changed=await createRetainedTextPagePreview(document,make('3','#eeeeee','変更した例題'),next.pageDelta.snapshot);
+    assert(changed.measurementWork.measuredBlocks===2&&changed.measurementWork.reusedBlocks===1,'component label invalidates measurement');
   }
   await phase("multiline display source and exact offsets");
   {
