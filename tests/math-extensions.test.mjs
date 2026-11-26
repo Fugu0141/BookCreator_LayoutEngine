@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {parsePreviewMath} from '../dist/index.js';
+import {parsePreviewMath,isPreviewMathFontFamily} from '../dist/index.js';
 
 test('function tokens, limits, arrows, accents and indexed roots are typed',()=>{
   const nodes=parsePreviewMath('\\lim_{x\\to0}\\frac{\\sin x}{x}').children;
@@ -41,4 +41,10 @@ test('bounded native table environments preserve rectangular cells and nested fo
 });
 test('malformed tables, untrusted environments and resource excess are rejected',()=>{
   for(const bad of ['a&b','a\\\\b','\\end{matrix}','\\begin{pmatrix}a\\end{matrix}','\\begin{matrix}a&b\\\\c\\end{matrix}','\\begin{matrix}&b\\end{matrix}','\\begin{matrix}a\\\\\\end{matrix}','\\begin{matrix}a&\\end{matrix}','\\begin{aligned}a\\end{aligned}','\\begin{aligned}a&\\end{aligned}','\\begin{cases}a&b&c\\end{cases}','\\begin{array}a\\end{array}','\\begin{matrix}a&\\input{secret}\\end{matrix}','\\begin{matrix}'+Array(9).fill('x').join('&')+'\\end{matrix}','\\begin{matrix}'+Array(9).fill('x').join('\\\\')+'\\end{matrix}','\\begin{matrix}'+Array(8).fill(Array(8).fill('x').join('&')).join('\\\\')+'&x\\end{matrix}','\\begin{matrix}'.repeat(26)+'x'+'\\end{matrix}'.repeat(26)])assert.throws(()=>parsePreviewMath(bad),RangeError,bad);
+});
+
+
+test('math font role accepts only auto or opaque registered family aliases',()=>{
+  for(const value of ['auto','BCFont_Math','BCFont_'+ 'a'.repeat(64)])assert.equal(isPreviewMathFontFamily(value),true,value);
+  for(const value of [undefined,null,123,'serif','STIX Two Math','BCFont_','BCFont_'+ 'a'.repeat(65),'BCFont_X; color:red','BCFont_../../file','auto, serif'])assert.equal(isPreviewMathFontFamily(value),false,String(value));
 });
