@@ -2,7 +2,8 @@ import {measureDisplayMath,validateCompiledMath,createInlineMathAtom,measureInli
 import {validateImageCrop,type ImageCrop} from './image-crop.js';
 import {renderMeasuredPreview,pageRenderCacheEpoch,previousPageKeys,type PageRenderCache,type PageReuseSnapshot,type PageRenderDelta} from './browser-page-render.js';
 export {createPageRenderCache,type PageRenderCache,type PageReuseSnapshot,type PageRenderDelta} from './browser-page-render.js';
-import {measurePreviewSections} from './browser-page-measure.js';
+import {measurePreviewSections,type BlockMeasurementSnapshot,type BlockMeasurementWork} from './browser-page-measure.js';
+export type {BlockMeasurementWork} from './browser-page-measure.js';
 import {measureWithTextCache,measureWithParagraphCache,type TextMeasurementCache,type ParagraphMeasurementCache} from './text-measurement-cache.js';
 export {createTextMeasurementCache,createParagraphMeasurementCache,type TextMeasurementCache,type ParagraphMeasurementCache} from './text-measurement-cache.js';
 import {layoutTree} from './tree.js';
@@ -541,22 +542,25 @@ export interface RetainedPaginationWork {
 }
 export interface RetainedTextPagePreview extends IncrementalTextPagePreview {
   readonly paginationWork:Readonly<RetainedPaginationWork>;
+  readonly measurementWork:Readonly<BlockMeasurementWork>;
 }
 // The placement checkpoint follows the exact same lease as sparse DOM reuse.
 // No DOM or separate host-owned checkpoint is retained here.
 const retainedPaginationSnapshots=new WeakMap<PageReuseSnapshot,PaginationCheckpointSnapshot>();
+const retainedMeasurementSnapshots=new WeakMap<PageReuseSnapshot,{snapshot:BlockMeasurementSnapshot;inlineMathGeometry:boolean}>();
 /** Opt-in combined placement and DOM reuse. Same complete plan/slices and
  * sparse output contract as createIncrementalTextPagePreview. A valid sparse
  * snapshot from the older API simply starts a new placement checkpoint. */
 export async function createRetainedTextPagePreview(document:Document,options:TextPagePreviewOptions,previous?:PageReuseSnapshot):Promise<RetainedTextPagePreview>{
   if(options.pageCache!==undefined)throw RangeError('Retained page rendering and page template cache are mutually exclusive');
   const previousKeys=previousPageKeys(document,previous);
-  const result=await createTextPreview(document,options,{previousKeys},{previous:previous?retainedPaginationSnapshots.get(previous):undefined});
-  if(!result.pageDelta||!result.paginationWork)throw Error('Missing retained preview data');
-  const {element,pageDelta,paginationWork,...rest}=result;
-  return {...rest,changedElement:element,pageDelta,paginationWork};
+  const saved=previous?retainedMeasurementSnapshots.get(previous):undefined;
+  const result=await createTextPreview(document,options,{previousKeys},{previous:previous?retainedPaginationSnapshots.get(previous):undefined,measurement:saved?.inlineMathGeometry===!!options.inlineMathCache?saved.snapshot:undefined});
+  if(!result.pageDelta||!result.paginationWork||!result.measurementWork)throw Error('Missing retained preview data');
+  const {element,pageDelta,paginationWork,measurementWork,...rest}=result;
+  return {...rest,changedElement:element,pageDelta,paginationWork,measurementWork};
 }
-async function createTextPreview(document:Document,options:TextPagePreviewOptions,delta?:{previousKeys:ReadonlyMap<number,string>},retained?:{previous?:PaginationCheckpointSnapshot}):Promise<TextPagePreview & {pageDelta?:PageRenderDelta;paginationWork?:Readonly<RetainedPaginationWork>}>{
+async function createTextPreview(document:Document,options:TextPagePreviewOptions,delta?:{previousKeys:ReadonlyMap<number,string>},retained?:{previous?:PaginationCheckpointSnapshot;measurement?:BlockMeasurementSnapshot}):Promise<TextPagePreview & {pageDelta?:PageRenderDelta;paginationWork?:Readonly<RetainedPaginationWork>;measurementWork?:Readonly<BlockMeasurementWork>}>{
   live(document);
   const pageCache=options.pageCache,pageCacheEpoch=pageCache?pageRenderCacheEpoch(document,pageCache):undefined;
   // Snapshot the opt-in before any asynchronous work. The clock is never read otherwise.
@@ -621,7 +625,7 @@ async function createTextPreview(document:Document,options:TextPagePreviewOption
   }
   const imagesReady=now();
   const measure=(doc:Document,r:PlainTextMeasureRequest)=>measurePlainTextLines(doc,r,mathCache,displayMathCache,inlineMathCache);
-  const {byKey,measuredSections}=await measurePreviewSections(document,sections,width,height,{measurePlainTextLines:paragraphCache?(doc,r)=>measureWithParagraphCache(doc,snapshotRequest(r,false,mathCache),paragraphCache,!!inlineMathCache,(d,validated)=>measureValidatedTextLines(d,validated,mathCache,displayMathCache,inlineMathCache)):measurementCache?(doc,r)=>measureWithTextCache(doc,r.inlineMath!==undefined||r.inlineStyles!==undefined?r:snapshotRequest(r),measurementCache,measure):measure,measureDisplayMath:(doc,source,w,size,number,family)=>measureDisplayMath(doc,source,w,size,number,family,mathCache,displayMathCache),resolveComponentWidths,placeComponent,listInset,listMarker});
+  const {byKey,measuredSections,measurementSnapshot,measurementWork}=await measurePreviewSections(document,sections,width,height,{measurePlainTextLines:paragraphCache?(doc,r)=>measureWithParagraphCache(doc,snapshotRequest(r,false,mathCache),paragraphCache,!!inlineMathCache,(d,validated)=>measureValidatedTextLines(d,validated,mathCache,displayMathCache,inlineMathCache)):measurementCache?(doc,r)=>measureWithTextCache(doc,r.inlineMath!==undefined||r.inlineStyles!==undefined?r:snapshotRequest(r),measurementCache,measure):measure,measureDisplayMath:(doc,source,w,size,number,family)=>measureDisplayMath(doc,source,w,size,number,family,mathCache,displayMathCache),resolveComponentWidths,placeComponent,listInset,listMarker},retained?{previous:retained.measurement}:undefined);
   const measured=now();
   const paginationInput={schemaVersion:1 as const,revision,fingerprint,content:{width,height},sections:measuredSections};
   const incremental=retained?paginateMeasuredIncremental(paginationInput,retained.previous):undefined;
@@ -633,7 +637,8 @@ async function createTextPreview(document:Document,options:TextPagePreviewOption
   // Register only after successful rendering, and use the newly issued
   // page snapshot as the key. An unsuccessful job cannot advance a lease.
   if(incremental?.snapshot&&result.pageDelta)retainedPaginationSnapshots.set(result.pageDelta.snapshot,incremental.snapshot);
-  const output=incremental?{...result,paginationWork:Object.freeze({
+  if(measurementSnapshot&&result.pageDelta)retainedMeasurementSnapshots.set(result.pageDelta.snapshot,{snapshot:measurementSnapshot,inlineMathGeometry:!!inlineMathCache});
+  const output=incremental?{...result,measurementWork,paginationWork:Object.freeze({
     reusedBlocks:incremental.reusedBlocks,reusedSuffixBlocks:incremental.reusedSuffixBlocks,placedBlocks:incremental.placedBlocks
   })}:result;
   if(!timed)return output;
