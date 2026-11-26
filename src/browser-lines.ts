@@ -1,7 +1,7 @@
 import {measureDisplayMath,validateCompiledMath,createInlineMathAtom,measureInlineMathGeometry,recordInlineMathPlacement,readyPreviewMathFont,isPreviewMathFontFamily,type MeasuredDisplayMath,type MathCompilationCache,type DisplayMathGeometryCache,type InlineMathGeometry,type InlineMathGeometryCache} from './math-preview.js';
 import {validateImageCrop,type ImageCrop} from './image-crop.js';
-import {renderMeasuredPreview,pageRenderCacheEpoch,type PageRenderCache} from './browser-page-render.js';
-export {createPageRenderCache,type PageRenderCache} from './browser-page-render.js';
+import {renderMeasuredPreview,pageRenderCacheEpoch,previousPageKeys,type PageRenderCache,type PageReuseSnapshot,type PageRenderDelta} from './browser-page-render.js';
+export {createPageRenderCache,type PageRenderCache,type PageReuseSnapshot,type PageRenderDelta} from './browser-page-render.js';
 import {measurePreviewSections} from './browser-page-measure.js';
 import {measureWithTextCache,measureWithParagraphCache,type TextMeasurementCache,type ParagraphMeasurementCache} from './text-measurement-cache.js';
 export {createTextMeasurementCache,createParagraphMeasurementCache,type TextMeasurementCache,type ParagraphMeasurementCache} from './text-measurement-cache.js';
@@ -495,7 +495,7 @@ export interface TextPagePreview {
 }
 // Multiple sections, logical text with typed inline styles. Caller owns exact mapping to raw source.
 // No external HTML, CSS, resource fetching or publication output.
-export async function createPlainTextPagePreview(document:Document,options:{
+export interface TextPagePreviewOptions {
   revision:string;fingerprint:string;width:number;height:number;
   blocks?:readonly PreviewTextBlock[];
   sections?:readonly {id:string;startOn:'page'|'continuous';blocks:readonly (PreviewTextBlock|PageBreak)[]}[];
@@ -514,7 +514,26 @@ export async function createPlainTextPagePreview(document:Document,options:{
   displayMathCache?:DisplayMathGeometryCache;
   /** Experimental opt-in: fixed inline boxes for wrapping; native frozen rows verify placement. */
   inlineMathCache?:InlineMathGeometryCache;
-}):Promise<TextPagePreview>{
+}
+/** Sparse preview: the plan and slices are complete, but its detached shadow
+ * root contains ONLY newly generated pages. Never use it as a full preview.
+ * A base snapshot is valid only while the host still owns the exact prior
+ * successful paper and its font environment. Discard on session/font changes. */
+export interface IncrementalTextPagePreview extends Omit<TextPagePreview,'element'> {
+  readonly changedElement:HTMLElement;
+  readonly pageDelta:PageRenderDelta;
+}
+export async function createPlainTextPagePreview(document:Document,options:TextPagePreviewOptions):Promise<TextPagePreview>{
+  return createTextPreview(document,options);
+}
+export async function createIncrementalTextPagePreview(document:Document,options:TextPagePreviewOptions,previous?:PageReuseSnapshot):Promise<IncrementalTextPagePreview>{
+  if(options.pageCache!==undefined)throw RangeError('Sparse page rendering and page template cache are mutually exclusive');
+  const result=await createTextPreview(document,options,{previousKeys:previousPageKeys(document,previous)});
+  if(!result.pageDelta)throw Error('Missing page delta');
+  const {element,pageDelta,...rest}=result;
+  return {...rest,changedElement:element,pageDelta};
+}
+async function createTextPreview(document:Document,options:TextPagePreviewOptions,delta?:{previousKeys:ReadonlyMap<number,string>}):Promise<TextPagePreview & {pageDelta?:PageRenderDelta}>{
   live(document);
   const pageCache=options.pageCache,pageCacheEpoch=pageCache?pageRenderCacheEpoch(document,pageCache):undefined;
   // Snapshot the opt-in before any asynchronous work. The clock is never read otherwise.
@@ -585,7 +604,7 @@ export async function createPlainTextPagePreview(document:Document,options:{
   if(!plan.pages.length)throw Error('No drawable content');
   if(plan.completeness!=='full')throw Error('Cannot render partial preview: '+plan.diagnostics.map(d=>d.code).join(', '));
   const paginated=now();
-  const result=renderMeasuredPreview(document,plan,{width,height,paper,byKey,images,pageCache,pageCacheEpoch},{styleText,frozenText:(el,r,line)=>frozenText(el,r,line,mathCache),listInset});
+  const result=renderMeasuredPreview(document,plan,{width,height,paper,byKey,images,pageCache,pageCacheEpoch,delta},{styleText,frozenText:(el,r,line)=>frozenText(el,r,line,mathCache),listInset});
   if(!timed)return result;
   const rendered=now();
   return {...result,timings:Object.freeze({validationMs:validated-started,imagesMs:imagesReady-validated,

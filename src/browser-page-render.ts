@@ -24,6 +24,26 @@ export interface PageRenderCache {
   clear():void;
   stats():{entries:number;characters:number;nodes:number;hits:number;misses:number;bypasses:number};
 }
+/** Opaque document-owned metadata for one successfully published base paper.
+ * No DOM nodes are retained. The host must discard it on session/font changes. */
+export interface PageReuseSnapshot {readonly kind:'page-reuse-snapshot'}
+export interface PageRenderDelta {
+  readonly snapshot:PageReuseSnapshot;
+  /** Zero-based plan indices omitted from the detached result's shadow root. */
+  readonly reusedPageIndices:readonly number[];
+}
+const reuseSnapshots=new WeakMap<PageReuseSnapshot,{document:Document;keys:ReadonlyMap<number,string>}>();
+export function previousPageKeys(document:Document,snapshot?:PageReuseSnapshot):ReadonlyMap<number,string>{
+  if(snapshot===undefined)return new Map();
+  const state=reuseSnapshots.get(snapshot);
+  if(!state||state.document!==document)throw Error('Page reuse snapshot belongs to another document or is invalid');
+  return state.keys;
+}
+function makePageDelta(document:Document,keys:ReadonlyMap<number,string>,reused:number[]):PageRenderDelta{
+  const snapshot:PageReuseSnapshot=Object.freeze({kind:'page-reuse-snapshot'});
+  reuseSnapshots.set(snapshot,{document,keys});
+  return Object.freeze({snapshot,reusedPageIndices:Object.freeze(reused)});
+}
 type PageEntry={template:HTMLElement;characters:number;nodes:number};
 type PageCacheState={document:Document;entries:Map<string,PageEntry>;characters:number;nodes:number;hits:number;misses:number;bypasses:number;epoch:number};
 const pageCaches=new WeakMap<PageRenderCache,PageCacheState>();
@@ -58,13 +78,13 @@ function keepPage(state:PageCacheState,key:string,page:HTMLElement){
 }
 /** Serialize only fields consumed by the renderer. Exclude revisions and raw
  * source ranges, which affect slices/navigation, not the template. */
-function pageKey(p:MeasuredPage,width:number,height:number,paper:PreviewPaper|undefined,byKey:ReadonlyMap<string,MeasuredPreviewBlock>):string|undefined{
+function pageKey(p:MeasuredPage,width:number,height:number,paper:PreviewPaper|undefined,byKey:ReadonlyMap<string,MeasuredPreviewBlock>,plainOnly=false):string|undefined{
   const fragments=[];
   for(const f of p.fragments){
     const entry=byKey.get(previewBlockKey(f.origin));
     if(!entry)throw Error('Missing preview block');
     const {block,measurement,math}=entry;
-    if(math||block.component||block.listItem||measurement.lines.some(l=>l.displayMath))return undefined;
+    if(math||block.component||block.listItem||measurement.lines.some(l=>l.displayMath)||(plainOnly&&measurement.request.inlineMath!==undefined))return undefined;
     const r=measurement.request,lines=measurement.lines.slice(f.unitStart,f.unitEnd);
     if(!lines.length)throw Error('Missing preview lines');
     fragments.push([f.origin.documentId,f.origin.blockKey,[f.rect.x,f.rect.y,f.rect.width,f.rect.height],
@@ -79,7 +99,7 @@ const px=(um:number)=>um*96/25400;
 export const previewBlockKey=(o:Origin)=>JSON.stringify([o.documentId,o.blockKey]);
 // Internal ownership contract: math nodes are consumed by this render; bitmaps
 // are borrowed for this synchronous call, and closed by their owning orchestrator.
-export function renderMeasuredPreview(document:Document,plan:MeasuredPagePlan,{width,height,paper,byKey,images,pageCache,pageCacheEpoch}:{width:number;height:number;paper?:PreviewPaper;byKey:ReadonlyMap<string,MeasuredPreviewBlock>;images:ReadonlyMap<string,ImageBitmap>;pageCache?:PageRenderCache;pageCacheEpoch?:number},{styleText,frozenText,listInset}:RenderServices):TextPagePreview{
+export function renderMeasuredPreview(document:Document,plan:MeasuredPagePlan,{width,height,paper,byKey,images,pageCache,pageCacheEpoch,delta}:{width:number;height:number;paper?:PreviewPaper;byKey:ReadonlyMap<string,MeasuredPreviewBlock>;images:ReadonlyMap<string,ImageBitmap>;pageCache?:PageRenderCache;pageCacheEpoch?:number;delta?:{previousKeys:ReadonlyMap<number,string>}},{styleText,frozenText,listInset}:RenderServices):TextPagePreview & {pageDelta?:PageRenderDelta}{
   let renderedImagePixels=0;
   const element=document.createElement('div');element.style.cssText='all:initial;display:block;';
   const root=element.attachShadow({mode:'open'});
@@ -87,7 +107,15 @@ export function renderMeasuredPreview(document:Document,plan:MeasuredPagePlan,{w
   const candidateState=pageCache?pageCaches.get(pageCache):undefined;
   if(pageCache&&(!candidateState||candidateState.document!==document))throw Error('Page render cache belongs to another document');
   const state=candidateState&&candidateState.epoch===pageCacheEpoch?candidateState:undefined;
+  const nextKeys=new Map<number,string>(),reused:number[]=[];
+  let keyCharacters=0;
   for(const p of plan.pages){
+    const deltaKey=delta?pageKey(p,width,height,paper,byKey,true):undefined;
+    if(deltaKey!==undefined&&nextKeys.size<pageLimits.entries&&keyCharacters+deltaKey.length<=pageLimits.characters){
+      nextKeys.set(p.index,deltaKey);keyCharacters+=deltaKey.length;
+    }
+    const skip=delta!==undefined&&deltaKey!==undefined&&nextKeys.has(p.index)&&delta.previousKeys.get(p.index)===deltaKey;
+    if(skip)reused.push(p.index);
     const key=state?pageKey(p,width,height,paper,byKey):undefined;
     const cached=key!==undefined?state!.entries.get(key):undefined;
     if(state){
@@ -95,13 +123,16 @@ export function renderMeasuredPreview(document:Document,plan:MeasuredPagePlan,{w
       else if(cached){state.hits++;state.entries.delete(key);state.entries.set(key,cached);}
       else state.misses++;
     }
-    const page=cached?cached.template.cloneNode(true) as HTMLElement:document.createElement('div');page.dataset.page=String(p.index);
-    page.style.cssText='all:initial;display:block;position:relative;box-sizing:content-box;background:white;color:black;border:1px solid #888;margin:0 0 12px 0;overflow:visible;';
+    const page=skip?undefined:cached?cached.template.cloneNode(true) as HTMLElement:document.createElement('div');
     const right=(p.index%2===0)===(paper?.firstSide!=='left');
     const left=paper?(right?paper.inner:paper.outer):0,top=paper?.top??0;
-    page.dataset.side=right?'right':'left';
-    page.style.width=px(paper?.width??width)+'px';page.style.height=px(paper?.height??height)+'px';
-    if(paper&&!cached){const guide=document.createElement('div');guide.dataset.contentGuide='true';guide.style.cssText='position:absolute;box-sizing:border-box;outline:1px dashed #ccc;pointer-events:none;';Object.assign(guide.style,{left:px(left)+'px',top:px(top)+'px',width:px(width)+'px',height:px(height)+'px'});page.append(guide);}
+    if(page){
+      page.dataset.page=String(p.index);
+      page.style.cssText='all:initial;display:block;position:relative;box-sizing:content-box;background:white;color:black;border:1px solid #888;margin:0 0 12px 0;overflow:visible;';
+      page.dataset.side=right?'right':'left';
+      page.style.width=px(paper?.width??width)+'px';page.style.height=px(paper?.height??height)+'px';
+      if(paper&&!cached){const guide=document.createElement('div');guide.dataset.contentGuide='true';guide.style.cssText='position:absolute;box-sizing:border-box;outline:1px dashed #ccc;pointer-events:none;';Object.assign(guide.style,{left:px(left)+'px',top:px(top)+'px',width:px(width)+'px',height:px(height)+'px'});page.append(guide);}
+    }
     for(const f of p.fragments){
       const entry=byKey.get(previewBlockKey(f.origin));if(!entry)throw Error('Missing preview block');
       const {block,measurement,labels,slots,placement,marker,math}=entry, lineUnits=placement?measurement.lines:measurement.lines.slice(f.unitStart,f.unitEnd);
@@ -111,7 +142,7 @@ export function renderMeasuredPreview(document:Document,plan:MeasuredPagePlan,{w
       const sourceSlice=block.sourceTextStart===undefined?undefined:{start:block.sourceTextStart+textStart,end:block.sourceTextStart+textEnd};
       const namedSlots=(block.namedSlots??[]).map(s=>({name:s.name,textStart:0,textEnd:s.request.text.length,...(s.sourceTextStart===undefined?{}:{sourceSlice:{start:s.sourceTextStart,end:s.sourceTextStart+s.request.text.length}})}));
       slices.push({pageIndex:p.index,origin:f.origin,textStart,textEnd,...(sourceSlice?{sourceSlice}:{}),...(namedSlots.length?{namedSlots}:{})});
-      if(cached)continue; // Slices above always describe the current source revision.
+      if(!page||cached)continue; // Slices above always describe the current source revision.
       const fragment=document.createElement('div');fragment.dataset.block=f.origin.blockKey;fragment.dataset.document=f.origin.documentId;
       fragment.style.cssText='all:initial;display:block;position:absolute;box-sizing:border-box;';
       Object.assign(fragment.style,{left:px(left+f.rect.x)+'px',top:px(top+f.rect.y)+'px',width:px(f.rect.width)+'px',height:px(f.rect.height)+'px'});
@@ -196,8 +227,10 @@ export function renderMeasuredPreview(document:Document,plan:MeasuredPagePlan,{w
       }
       page.append(fragment);
     }
-    if(state&&key!==undefined&&!cached)keepPage(state,key,page);
-    root.append(page);
+    if(page){
+      if(state&&key!==undefined&&!cached)keepPage(state,key,page);
+      root.append(page);
+    }
   }
-  return {element,plan,slices,publicationReady:false};
+  return {element,plan,slices,publicationReady:false,...(delta?{pageDelta:makePageDelta(document,nextKeys,reused)}:{})};
 }
