@@ -164,17 +164,24 @@ function measureVariableLines(document:Document,root:ShadowRoot,el:HTMLElement,r
       groups.push([glyph]);
     }else group!.push(glyph);
   }
-  const lines:MeasuredTextLine[]=[];let top=0;
-  for(const group of groups){
+  // Build every frozen row before reading any geometry. Alternating writes
+  // and reads here forced synchronous browser layout for each row.
+  const batch=document.createDocumentFragment();
+  const frozen=groups.map(group=>{
     const start=group[0].start,end=group.at(-1)!.end;
     const line=document.createElement('div');styleText(line,r,false);
-    const rowSegments=appendStyled(line,r,start,end);root.append(line);
+    const rowSegments=appendStyled(line,r,start,end);batch.append(line);
+    return {group,start,end,line,rowSegments};
+  });
+  root.append(batch);
+  const lines:MeasuredTextLine[]=[];let top=0;
+  for(const {group,start,end,line,rowSegments} of frozen){
     const q=line.getBoundingClientRect(),row=glyphBoxes(document,r,rowSegments,start,end,q);
     if(q.height<=0||line.scrollWidth>line.clientWidth+1||row.length!==group.length||
       row.some((g,i)=>Math.abs(g.left-group[i].left)>1||Math.abs(g.right-group[i].right)>1||
         Math.abs(g.top+top-group[i].top)>1||Math.abs(g.bottom+top-group[i].bottom)>1||
         g.top< -1||g.bottom>q.height+1))throw Error('Frozen variable-height line does not match wrapped geometry');
-    lines.push({start,end,height:um(q.height)});top+=q.height;line.remove();
+    lines.push({start,end,height:um(q.height)});top+=q.height;
   }
   if(Math.abs(top-rect.height)>1||lines[0].start!==0||lines.at(-1)!.end!==r.text.length||lines.some((l,i)=>i>0&&l.start!==lines[i-1].end))throw Error('Incomplete variable-height line mapping');
   return lines;
@@ -239,14 +246,19 @@ export async function measurePlainTextLines(document:Document,request:PlainTextM
       if(row===groups.length)groups.push({start:g.index,end});else groups[row].end=end;
     }
     if(groups.length!==count||groups[0]?.start!==0||groups.at(-1)?.end!==r.text.length||groups.some((g,i)=>i>0&&g.start!==groups[i-1].end))throw Error('Incomplete line mapping');
-    // Re-render each frozen line without reflow. Reject horizontal overflow rather than clipping it.
+    // Re-render all frozen rows in one write phase, then read their real
+    // geometry without intervening DOM mutations. Reject overflow as before.
+    const batch=document.createDocumentFragment();
+    const frozen=groups.map(group=>{
+      const line=document.createElement('div');styleText(line,r,false);appendStyled(line,r,group.start,group.end);batch.append(line);
+      return {group,line};
+    });
+    root.append(batch);
     const lines:MeasuredTextLine[]=[];
-    for(const group of groups){
-      const line=document.createElement('div');styleText(line,r,false);appendStyled(line,r,group.start,group.end);root.append(line);
+    for(const {group,line} of frozen){
       const rect=line.getBoundingClientRect();
       if(line.scrollWidth>line.clientWidth+1||Math.abs(rect.height-linePx)>1)throw Error('Frozen line does not fit measured geometry');
       lines.push({...group,height:um(Math.max(linePx,rect.height,height/count))});
-      line.remove();
     }
     return {request:r,lines,measurement:'browser-dom-lines',publicationReady:false};
   }finally{host.remove();}
@@ -515,7 +527,7 @@ export async function createPlainTextPagePreview(document:Document,options:{
     images.set(id,bitmap);
   }
   const imagesReady=now();
-  const {byKey,measuredSections}=await measurePreviewSections(document,sections,width,height,{measurePlainTextLines:measurementCache?(doc,r)=>measureWithTextCache(doc,snapshotRequest(r),measurementCache,measurePlainTextLines):measurePlainTextLines,resolveComponentWidths,placeComponent,listInset,listMarker});
+  const {byKey,measuredSections}=await measurePreviewSections(document,sections,width,height,{measurePlainTextLines:measurementCache?(doc,r)=>measureWithTextCache(doc,r.inlineMath!==undefined||r.inlineStyles!==undefined?r:snapshotRequest(r),measurementCache,measurePlainTextLines):measurePlainTextLines,resolveComponentWidths,placeComponent,listInset,listMarker});
   const measured=now();
   const plan=paginateMeasured({schemaVersion:1,revision,fingerprint,content:{width,height},sections:measuredSections});
   if(!plan.pages.length)throw Error('No drawable content');
