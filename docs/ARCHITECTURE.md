@@ -4,7 +4,7 @@
 - 状態: 設計ドラフト。実装・PoC・公開パッケージなし。
 - 関連: [BookCreator DESIGN.md](https://github.com/Fugu0141/BookCreator/blob/main/DESIGN.md) v0.8.3、[実装前レビュー](https://github.com/Fugu0141/BookCreator/blob/main/docs/PRE_IMPLEMENTATION_REVIEW.md)
 - 文書処理ライブラリ: [BookCreator Markdown](https://github.com/Fugu0141/BookCreator_Markdown)
-- 方針: TypeScript strict、Node.js/ブラウザ対応可能な共通コア、MIT公開を第一希望（依存確認後に確定）。
+- 方針: TypeScript strict、Node.js/ブラウザ対応可能な共通コア、MIT Licenseで公開（第三者依存のライセンス確認は継続）。
 
 ## 1. 目的と責務
 
@@ -118,7 +118,7 @@ row/column/stack/canvasの混在と入れ子、固定/auto/fill/%サイズ、内
 
 HTMLによる全体プレビューを出版確認に使い、利用者が出力するときだけPDFを生成する（Q09）。確定PagePlanを固定ページ描画の入力とし、PDFレンダラーに独立した改ページ判断をさせない構成を優先する。フォントロード、画像、物理寸法、倍率、印刷CSS、背景、クリッピングを一致させる。描画・PDFアダプタを分ける場合も同一の意味・計測条件を保証できるか検証する。PDFのテキスト選択、フォント埋込み、リンク、数式の品質を確認する。ページ数・サイズ・内容・配置の不一致は正式出力失敗として扱う。確認・検査・既存PDFの保全は利用アプリが担当する。
 
-Chromium/HTML/CSS/SVGを最初の計測・描画候補とするが、完全一致やブラウザのみの正式PDF生成は未検証。Web版PDF方式は保留、ローカル生成優先。コアはネットワークを要求しない。必要な場合は既存エンジンを比較し、MIT希望・機能・性能・保守性と合わせて採用方式を判断する。
+Chromium/HTML/CSS/SVGを最初の計測・描画候補とするが、完全一致やブラウザのみの正式PDF生成は未検証。Web版PDF方式は保留、ローカル生成優先。コアはネットワークを要求しない。必要な場合は既存エンジンを比較し、MITとの整合性・機能・性能・保守性と合わせて採用方式を判断する。
 
 ## 6. リポジトリ/モジュール案
 
@@ -140,7 +140,7 @@ Chromium/HTML/CSS/SVGを最初の計測・描画候補とするが、完全一�
       conformance/
     docs/
 
-コアの公開APIとアダプタは分離。TypeScript/ESM、npm配布、SemVerの候補を記録する。パッケージ名、Node最低バージョン、モジュール分割、ライセンスは未決。CIは型検査、単体テスト、ブラウザビルド、fixture、依存ライセンス確認を目標とする。任意HTML/CSS/JSの実行、ファイルアクセス、PDFへの出力先書込みはコアの責務外。未知/不正入力は診断し、安全な深さ・ページ数・時間・メモリ上限を設ける。
+コアの公開APIとアダプタは分離。TypeScript/ESM、npm配布、SemVerの候補を記録する。パッケージ名、Node最低バージョン、モジュール分割は未決。プロジェクトのライセンスはMIT（LICENSE参照）。CIは型検査、単体テスト、ブラウザビルド、fixture、依存ライセンス確認を目標とする。任意HTML/CSS/JSの実行、ファイルアクセス、PDFへの出力先書込みはコアの責務外。未知/不正入力は診断し、安全な深さ・ページ数・時間・メモリ上限を設ける。
 
 ## 7. 詳細設計・PoCの順番
 
