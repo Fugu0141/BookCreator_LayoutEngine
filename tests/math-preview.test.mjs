@@ -14,7 +14,7 @@ test('bounded TeX subset yields fraction, root and paired scripts',()=>{
   assert.deepEqual(parsePreviewMath('x^12').children.map(x=>x.kind),['script','mn']);
 });
 test('reject malformed or unsafe formula syntax and enforce work bounds',()=>{
-  for(const value of ['', ' ', 'x^', 'x^2^3', '{}','{x','x}', '\\frac{x}', '\\sqrt{}','\\input{a}','\\href{x}{y}','\\htmlClass{x}{y}','\\def\\x{y}','\\begin{matrix}a&b\\end{matrix}','x\n+y','x'.repeat(513),'{'.repeat(26)+'x'+'}'.repeat(26),'a'.repeat(2049)])
+  for(const value of ['', ' ', 'x^', 'x^2^3', '{}','{x','x}', '\\frac{x}', '\\sqrt{}','\\input{a}','\\href{x}{y}','\\htmlClass{x}{y}','\\def\\x{y}','\\begin{array}a&b\\end{array}','x\n+y','x'.repeat(513),'{'.repeat(26)+'x'+'}'.repeat(26),'a'.repeat(2049)])
     assert.throws(()=>parsePreviewMath(value),RangeError,value);
   assert.equal(parsePreviewMath('x<y').children[1].text,'<');
 });
