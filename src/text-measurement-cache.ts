@@ -22,7 +22,7 @@ export function createTextMeasurementCache(document:Document):TextMeasurementCac
 }
 function fontSnapshot(document:Document):FontSnapshot{
   const faces:FontFace[]=[],descriptors:string[]=[];
-  document.fonts.forEach(face=>{faces.push(face);descriptors.push(JSON.stringify([face.family,face.style,face.weight,face.stretch,face.unicodeRange,face.status,face.ascentOverride,face.descentOverride,face.lineGapOverride,face.featureSettings,face.variationSettings]));});
+  document.fonts.forEach(face=>{faces.push(face);descriptors.push(JSON.stringify([face.family,face.style,face.weight,face.stretch,face.unicodeRange,face.status,face.ascentOverride,face.descentOverride,face.lineGapOverride,face.featureSettings,(face as FontFace & {variationSettings?:string}).variationSettings]));});
   return {faces,descriptors,scale:document.defaultView!.devicePixelRatio};
 }
 function same(a:FontSnapshot|undefined,b:FontSnapshot){
