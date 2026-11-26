@@ -1,4 +1,4 @@
-import {measureDisplayMath,validateCompiledMath,createInlineMathAtom,readyPreviewMathFont,isPreviewMathFontFamily,type MeasuredDisplayMath,type MathCompilationCache,type DisplayMathGeometryCache} from './math-preview.js';
+import {measureDisplayMath,validateCompiledMath,createInlineMathAtom,measureInlineMathGeometry,recordInlineMathPlacement,readyPreviewMathFont,isPreviewMathFontFamily,type MeasuredDisplayMath,type MathCompilationCache,type DisplayMathGeometryCache,type InlineMathGeometry,type InlineMathGeometryCache} from './math-preview.js';
 import {validateImageCrop,type ImageCrop} from './image-crop.js';
 import {renderMeasuredPreview} from './browser-page-render.js';
 import {measurePreviewSections} from './browser-page-measure.js';
@@ -80,8 +80,8 @@ function slicedMath(r:PlainTextMeasureRequest,start:number,end:number):InlineMat
   return atoms?.length?atoms:undefined;
 }
 /** Use identical typed spans for wrapping, frozen-line validation and final page rendering. */
-function appendStyled(el:HTMLElement,r:PlainTextMeasureRequest,start:number,end:number,mathCache?:MathCompilationCache){
-  const segments:{start:number;end:number;node:Text|HTMLElement;math?:true}[]=[];
+function appendStyled(el:HTMLElement,r:PlainTextMeasureRequest,start:number,end:number,mathCache?:MathCompilationCache,candidates?:ReadonlyMap<number,InlineMathGeometry>){
+  const segments:{start:number;end:number;node:Text|HTMLElement;math?:true;placeholder?:true}[]=[];
   const append=(a:number,b:number,run?:InlineStyleRun)=>{
     if(a===b)return;
     const node=el.ownerDocument.createTextNode(r.text.slice(a,b));
@@ -109,10 +109,18 @@ function appendStyled(el:HTMLElement,r:PlainTextMeasureRequest,start:number,end:
     if(a>=b)continue;
     append(cursor,a);
     if('atom' in entry){
-      const span=createInlineMathAtom(el.ownerDocument,entry.atom.formula,r.mathFontFamily,mathCache);
+      const geometry=candidates?.get(a);
+      const span=geometry?el.ownerDocument.createElement('span'):createInlineMathAtom(el.ownerDocument,entry.atom.formula,r.mathFontFamily,mathCache);
+      if(geometry){
+        // Empty inline-blocks align their bottom margin edge to the baseline.
+        // A negative descent restores the baseline of the original formula.
+        span.style.cssText='display:inline-block;white-space:nowrap;padding:0;border:0;margin:0;box-sizing:border-box;';
+        span.style.width=geometry.widthPx+'px';span.style.height=geometry.heightPx+'px';
+        span.style.verticalAlign=(geometry.baselinePx-geometry.heightPx)+'px';
+      }
       span.dataset.mathStart=String(a);span.dataset.mathEnd=String(b);
       el.append(span);
-      segments.push({start:a,end:b,node:span,math:true});
+      segments.push({start:a,end:b,node:span,math:true,...(geometry?{placeholder:true as const}:{})});
     }else append(a,b,entry.run);
     cursor=b;
   }
@@ -138,8 +146,13 @@ function glyphBoxes(document:Document,r:PlainTextMeasureRequest,segments:StyledS
     let rs:DOMRect[];
     if(seg.math){
       if(a!==seg.start||b!==seg.end)throw Error('Math atom split');
-      const node=seg.node as HTMLElement,q=node.getBoundingClientRect(),ink=node.firstElementChild!.getBoundingClientRect();
-      if(ink.width<=0||ink.height<=0||ink.left<q.left-.5||ink.right>q.right+.5||ink.top<q.top-.5||ink.bottom>q.bottom+.5)throw Error('Invalid inline math geometry');
+      const node=seg.node as HTMLElement,q=node.getBoundingClientRect();
+      if(seg.placeholder){
+        if(q.width<=0||q.height<=0)throw Error('Invalid fixed inline math geometry');
+      }else{
+        const ink=node.firstElementChild!.getBoundingClientRect();
+        if(ink.width<=0||ink.height<=0||ink.left<q.left-.5||ink.right>q.right+.5||ink.top<q.top-.5||ink.bottom>q.bottom+.5)throw Error('Invalid inline math geometry');
+      }
       rs=[q];
     }else{
       range.setStart(seg.node,a-seg.start);range.setEnd(seg.node,b-seg.start);
@@ -150,7 +163,7 @@ function glyphBoxes(document:Document,r:PlainTextMeasureRequest,segments:StyledS
   }
   return boxes;
 }
-function measureVariableLines(document:Document,root:ShadowRoot,el:HTMLElement,r:PlainTextMeasureRequest,segments:StyledSegment[],mathCache?:MathCompilationCache):MeasuredTextLine[]{
+async function measureVariableLines(document:Document,root:ShadowRoot,el:HTMLElement,r:PlainTextMeasureRequest,segments:StyledSegment[],mathCache?:MathCompilationCache,fixed=false):Promise<MeasuredTextLine[]>{
   const rect=el.getBoundingClientRect(),glyphs=glyphBoxes(document,r,segments,0,r.text.length,rect);
   if(!glyphs.length||rect.height<=0||el.scrollWidth>el.clientWidth+1)throw Error('Invalid variable line geometry');
   const groups:GlyphBox[][]=[];
@@ -173,23 +186,29 @@ function measureVariableLines(document:Document,root:ShadowRoot,el:HTMLElement,r
     return {group,start,end,line,rowSegments};
   });
   root.append(batch);
+  // The wrapped fixed boxes contain no MathML. Wait for the actual native
+  // frozen rows to load their fonts and pass the original native capability probe.
+  if(fixed)await readyPreviewMathFont(document,root,r.mathFontFamily);
   const lines:MeasuredTextLine[]=[];let top=0;
+  // Fixed candidates are speculative: require a tighter geometric agreement
+  // than the legacy wrapped-to-frozen tolerance, or retry the native path.
+  const tolerance=fixed ? 0.125 : 1;
   for(const {group,start,end,line,rowSegments} of frozen){
     const q=line.getBoundingClientRect(),row=glyphBoxes(document,r,rowSegments,start,end,q);
     if(q.height<=0||line.scrollWidth>line.clientWidth+1||row.length!==group.length||
-      row.some((g,i)=>Math.abs(g.left-group[i].left)>1||Math.abs(g.right-group[i].right)>1||
-        Math.abs(g.top+top-group[i].top)>1||Math.abs(g.bottom+top-group[i].bottom)>1||
+      row.some((g,i)=>Math.abs(g.left-group[i].left)>tolerance||Math.abs(g.right-group[i].right)>tolerance||
+        Math.abs(g.top+top-group[i].top)>tolerance||Math.abs(g.bottom+top-group[i].bottom)>tolerance||
         g.top< -1||g.bottom>q.height+1))throw Error('Frozen variable-height line does not match wrapped geometry');
     lines.push({start,end,height:um(q.height)});top+=q.height;
   }
-  if(Math.abs(top-rect.height)>1||lines[0].start!==0||lines.at(-1)!.end!==r.text.length||lines.some((l,i)=>i>0&&l.start!==lines[i-1].end))throw Error('Incomplete variable-height line mapping');
+  if(Math.abs(top-rect.height)>tolerance||lines[0].start!==0||lines.at(-1)!.end!==r.text.length||lines.some((l,i)=>i>0&&l.start!==lines[i-1].end))throw Error('Incomplete variable-height line mapping');
   return lines;
 }
 function live(document:Document){
   if(!document.body||!document.defaultView||!document.fonts)throw Error('A live browser document is required');
 }
 // Grapheme ranges, real browser wrapping, bounded input. Reject ambiguous geometry instead of guessing.
-export async function measurePlainTextLines(document:Document,request:PlainTextMeasureRequest,mathCache?:MathCompilationCache,displayMathCache?:DisplayMathGeometryCache):Promise<MeasuredTextLines>{
+export async function measurePlainTextLines(document:Document,request:PlainTextMeasureRequest,mathCache?:MathCompilationCache,displayMathCache?:DisplayMathGeometryCache,inlineMathCache?:InlineMathGeometryCache):Promise<MeasuredTextLines>{
   live(document);const r=snapshotRequest(request,false,mathCache);
   if(r.multiline&&r.text.includes('\n')){
     const lines:MeasuredTextLine[]=[];let start=0;
@@ -198,7 +217,7 @@ export async function measurePlainTextLines(document:Document,request:PlainTextM
       const raw=match[0];if(!raw)continue;
       const body=raw.replace(/(?:\r\n|\n)$/,'');
       if(body.length){
-        const measured=await measurePlainTextLines(document,{...r,text:body,multiline:false,paragraphGap:undefined,inlineStyles:slicedRuns(r,start,start+body.length),inlineMath:slicedMath(r,start,start+body.length)},mathCache,displayMathCache);
+        const measured=await measurePlainTextLines(document,{...r,text:body,multiline:false,paragraphGap:undefined,inlineStyles:slicedRuns(r,start,start+body.length),inlineMath:slicedMath(r,start,start+body.length)},mathCache,displayMathCache,inlineMathCache);
         for(const [i,line] of measured.lines.entries())lines.push({start:start+line.start,end:start+(i===measured.lines.length-1?raw.length:line.end),height:line.height,...(line.displayMath?{displayMath:line.displayMath}:{})});
       }else lines.push({start,end:start+raw.length,height:Math.ceil(r.fontSize*r.lineHeight)+(r.paragraphGap??0)});
       start+=raw.length;
@@ -211,16 +230,33 @@ export async function measurePlainTextLines(document:Document,request:PlainTextM
     const displayMath=await measureDisplayMath(document,r.inlineMath[0].formula,r.width,r.fontSize,r.inlineMath[0].equationNumber,r.mathFontFamily,mathCache,displayMathCache);
     return {request:r,lines:[{start:0,end:1,height:displayMath.height,displayMath}],measurement:'browser-dom-lines',publicationReady:false};
   }
+  if(inlineMathCache&&r.inlineMath?.length){
+    try{
+      // Compile candidate geometry once per atom (hits are numeric only).
+      const candidates=new Map<number,InlineMathGeometry>();
+      for(const atom of r.inlineMath)candidates.set(atom.start,await measureInlineMathGeometry(document,atom.formula,r.fontSize,r.mathFontFamily,mathCache,inlineMathCache));
+      const result=await measureSoftLines(document,r,mathCache,candidates);
+      recordInlineMathPlacement(document,inlineMathCache,true);
+      return result;
+    }catch{
+      // A candidate is not a license to accept invalid geometry. The unchanged
+      // native path must independently validate the entire request.
+      recordInlineMathPlacement(document,inlineMathCache,false);
+    }
+  }
+  return measureSoftLines(document,r,mathCache);
+}
+async function measureSoftLines(document:Document,r:PlainTextMeasureRequest,mathCache?:MathCompilationCache,candidates?:ReadonlyMap<number,InlineMathGeometry>):Promise<MeasuredTextLines>{
   const host=document.createElement('div');
   host.style.cssText='all:initial;position:fixed;top:0;left:0;visibility:hidden;pointer-events:none;contain:layout style paint;display:block;';
   const root=host.attachShadow({mode:'closed'}), el=document.createElement('div');
-  styleText(el,r,true);const segments=appendStyled(el,r,0,r.text.length,mathCache);root.append(el);document.body.append(host);
+  styleText(el,r,true);const segments=appendStyled(el,r,0,r.text.length,mathCache,candidates);root.append(el);document.body.append(host);
   try{
     el.getBoundingClientRect();await readyPreviewFont(document,r.fontFamily,r.fontWeight,r.text);
     for(const run of r.inlineStyles??[])await readyPreviewFont(document,run.fontFamily??r.fontFamily,run.fontWeight??r.fontWeight,r.text.slice(run.start,run.end));
-    if(r.inlineMath?.length)await readyPreviewMathFont(document,root,r.mathFontFamily);
+    if(r.inlineMath?.length&&!candidates)await readyPreviewMathFont(document,root,r.mathFontFamily);
     if(r.inlineMath?.length||r.inlineStyles?.some(s=>s.fontSize!==undefined||(s.baseline&&s.baseline!=='normal')||(s.fontFamily!==undefined&&s.fontFamily!==r.fontFamily))){
-      const lines=measureVariableLines(document,root,el,r,segments,mathCache);
+      const lines=await measureVariableLines(document,root,el,r,segments,mathCache,!!candidates);
       return {request:r,lines,measurement:'browser-dom-lines',publicationReady:false};
     }
     const height=el.getBoundingClientRect().height;
@@ -469,10 +505,12 @@ export async function createPlainTextPagePreview(document:Document,options:{
   mathCache?:MathCompilationCache;
   /** Optional document-owned natural geometry cache for independent display equations. */
   displayMathCache?:DisplayMathGeometryCache;
+  /** Experimental opt-in: fixed inline boxes for wrapping; native frozen rows verify placement. */
+  inlineMathCache?:InlineMathGeometryCache;
 }):Promise<TextPagePreview>{
   live(document);
   // Snapshot the opt-in before any asynchronous work. The clock is never read otherwise.
-  const mathCache=options.mathCache,displayMathCache=options.displayMathCache;
+  const mathCache=options.mathCache,displayMathCache=options.displayMathCache,inlineMathCache=options.inlineMathCache;
   const timed=options.collectTimings===true;
   const now=()=>timed?document.defaultView!.performance.now():0;
   const started=now();
@@ -531,7 +569,7 @@ export async function createPlainTextPagePreview(document:Document,options:{
     images.set(id,bitmap);
   }
   const imagesReady=now();
-  const measure=(doc:Document,r:PlainTextMeasureRequest)=>measurePlainTextLines(doc,r,mathCache,displayMathCache);
+  const measure=(doc:Document,r:PlainTextMeasureRequest)=>measurePlainTextLines(doc,r,mathCache,displayMathCache,inlineMathCache);
   const {byKey,measuredSections}=await measurePreviewSections(document,sections,width,height,{measurePlainTextLines:measurementCache?(doc,r)=>measureWithTextCache(doc,r.inlineMath!==undefined||r.inlineStyles!==undefined?r:snapshotRequest(r),measurementCache,measure):measure,measureDisplayMath:(doc,source,w,size,number,family)=>measureDisplayMath(doc,source,w,size,number,family,mathCache,displayMathCache),resolveComponentWidths,placeComponent,listInset,listMarker});
   const measured=now();
   const plan=paginateMeasured({schemaVersion:1,revision,fingerprint,content:{width,height},sections:measuredSections});

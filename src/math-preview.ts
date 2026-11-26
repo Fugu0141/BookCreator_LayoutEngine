@@ -367,14 +367,21 @@ export interface InlineMathGeometry {
 type InlineGeometryEntry=NaturalGeometry&{baselinePx:number};
 export interface InlineMathGeometryCache {
   clear():void;
-  stats():{entries:number;characters:number;hits:number;misses:number};
+  stats():{entries:number;characters:number;hits:number;misses:number;placements:number;placementFallbacks:number};
 }
-const inlineGeometries=new WeakMap<InlineMathGeometryCache,GeometryState<InlineGeometryEntry>>();
+type InlineGeometryState=GeometryState<InlineGeometryEntry>&{placements:number;placementFallbacks:number};
+const inlineGeometries=new WeakMap<InlineMathGeometryCache,InlineGeometryState>();
+/** Internal placement accounting; no caller geometry is accepted. */
+export function recordInlineMathPlacement(document:Document,cache:InlineMathGeometryCache,accepted:boolean){
+  const state=inlineGeometries.get(cache);
+  if(!state||state.document!==document)throw Error('Inline math geometry cache belongs to another document');
+  if(accepted)state.placements++;else state.placementFallbacks++;
+}
 export function createInlineMathGeometryCache(document:Document):InlineMathGeometryCache{
-  const s:GeometryState<InlineGeometryEntry>={document,entries:new Map(),characters:0,hits:0,misses:0,fallbacks:0,epoch:0};
+  const s:InlineGeometryState={document,entries:new Map(),characters:0,hits:0,misses:0,fallbacks:0,epoch:0,placements:0,placementFallbacks:0};
   const cache:InlineMathGeometryCache={
-    clear(){emptyGeometry(s);s.environment=undefined;s.hits=0;s.misses=0;},
-    stats(){return {entries:s.entries.size,characters:s.characters,hits:s.hits,misses:s.misses};}
+    clear(){emptyGeometry(s);s.environment=undefined;s.hits=0;s.misses=0;s.placements=0;s.placementFallbacks=0;},
+    stats(){return {entries:s.entries.size,characters:s.characters,hits:s.hits,misses:s.misses,placements:s.placements,placementFallbacks:s.placementFallbacks};}
   };
   inlineGeometries.set(cache,s);return Object.freeze(cache);
 }
