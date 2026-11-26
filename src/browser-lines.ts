@@ -497,7 +497,7 @@ export async function createPlainTextPagePreview(document:Document,options:{
     if(!positive(bitmap.width)||!positive(bitmap.height)||bitmap.width>8192||bitmap.height>8192||bitmap.width*bitmap.height>16000000||(imagePixels+=bitmap.width*bitmap.height)>32000000){bitmap.close();throw RangeError('Image resource pixel limit exceeded');}
     images.set(id,bitmap);
   }
-  const {byKey,measuredSections}=await measurePreviewSections(document,sections,width,height,{measurePlainTextLines:(doc,r)=>measureWithTextCache(doc,snapshotRequest(r),measurementCache,measurePlainTextLines),resolveComponentWidths,placeComponent,listInset,listMarker});
+  const {byKey,measuredSections}=await measurePreviewSections(document,sections,width,height,{measurePlainTextLines:measurementCache?(doc,r)=>measureWithTextCache(doc,snapshotRequest(r),measurementCache,measurePlainTextLines):measurePlainTextLines,resolveComponentWidths,placeComponent,listInset,listMarker});
   const plan=paginateMeasured({schemaVersion:1,revision,fingerprint,content:{width,height},sections:measuredSections});
   if(!plan.pages.length)throw Error('No drawable content');
   if(plan.completeness!=='full')throw Error('Cannot render partial preview: '+plan.diagnostics.map(d=>d.code).join(', '));
