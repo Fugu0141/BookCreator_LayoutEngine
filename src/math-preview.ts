@@ -109,6 +109,52 @@ function parseMath(source:string,multiline:boolean):MathNode{
   }
   return row(0,false);
 }
+// Compilation is independent of fonts, document geometry and placement.
+// Only successful parser-produced trees are retained; no raw DOM or external AST is accepted.
+export interface MathCompilationCache {
+  clear():void;
+  stats():{entries:number;characters:number;nodes:number;hits:number;misses:number};
+}
+type CompiledEntry={ast:MathNode;characters:number;nodes:number};
+type CompilationState={entries:Map<string,CompiledEntry>;characters:number;nodes:number;hits:number;misses:number};
+const compilations=new WeakMap<MathCompilationCache,CompilationState>();
+const maxCompiledEntries=512,maxCompiledCharacters=100000,maxCompiledNodes=50000;
+export function createMathCompilationCache():MathCompilationCache{
+  const state:CompilationState={entries:new Map(),characters:0,nodes:0,hits:0,misses:0};
+  const cache:MathCompilationCache={
+    clear(){state.entries.clear();state.characters=0;state.nodes=0;state.hits=0;state.misses=0;},
+    stats(){return {entries:state.entries.size,characters:state.characters,nodes:state.nodes,hits:state.hits,misses:state.misses};}
+  };
+  compilations.set(cache,state);return Object.freeze(cache);
+}
+function freezeTree(value:unknown):number{
+  if(value===null||typeof value!=='object')return 0;
+  let nodes=Object.hasOwn(value,'kind')?1:0;
+  for(const child of Object.values(value))nodes+=freezeTree(child);
+  Object.freeze(value);return nodes;
+}
+function compiledMath(source:string,display:'block'|'inline',cache?:MathCompilationCache):MathNode{
+  const parse=display==='block'?parseDisplayMath:parsePreviewMath;
+  if(!cache)return parse(source);
+  const state=compilations.get(cache);if(!state)throw Error('Invalid math compilation cache');
+  // Never coerce an untrusted value into a key. Exact source and mode determine syntax.
+  if(typeof source!=='string'||source.length>2048)return parse(source);
+  const key=display+':'+source;
+  const existing=state.entries.get(key);
+  if(existing){state.hits++;state.entries.delete(key);state.entries.set(key,existing);return existing.ast;}
+  state.misses++;
+  const ast=parse(source),nodes=freezeTree(ast);
+  state.entries.set(key,{ast,nodes,characters:source.length});state.nodes+=nodes;state.characters+=source.length;
+  while(state.entries.size>maxCompiledEntries||state.characters>maxCompiledCharacters||state.nodes>maxCompiledNodes){
+    const oldest=state.entries.keys().next().value!,entry=state.entries.get(oldest)!;
+    state.entries.delete(oldest);state.characters-=entry.characters;state.nodes-=entry.nodes;
+  }
+  return ast;
+}
+/** Validate with the same compiler used for rendering. No AST is exposed to callers. */
+export function validateCompiledMath(source:string,display:'block'|'inline',cache?:MathCompilationCache):void{
+  compiledMath(source,display,cache);
+}
 const NS='http://www.w3.org/1998/Math/MathML';
 // Known OpenType MATH families first; never fetch a resource from the formula.
 export const mathPreviewFontFamily='"STIX Two Math", "Cambria Math", "Latin Modern Math", "TeX Gyre Termes Math", "DejaVu Math TeX Gyre", math, serif';
@@ -122,9 +168,11 @@ function mathFontCss(family:PreviewMathFontFamily){
   return family==='auto'?mathPreviewFontFamily:'"'+family+'"';
 }
 /** Only engine-produced MathML elements, with textContent for every token. */
-export function createPreviewMath(document:Document,source:string,display:'block'|'inline'='block',family:PreviewMathFontFamily='auto'):Element{
+export function createPreviewMath(document:Document,source:string,display:'block'|'inline'='block',family:PreviewMathFontFamily='auto',cache?:MathCompilationCache):Element{
   const css=mathFontCss(family);
-  const ast=display==='block'?parseDisplayMath(source):parsePreviewMath(source);
+  return renderCompiledMath(document,compiledMath(source,display,cache),display,css);
+}
+function renderCompiledMath(document:Document,ast:MathNode,display:'block'|'inline',css:string):Element{
   function fence(text:string,form:'prefix'|'postfix'){
     const token=document.createElementNS(NS,'mo');token.setAttribute('fence','true');token.setAttribute('stretchy','true');token.setAttribute('form',form);token.textContent=text;return token;
   }
@@ -194,7 +242,7 @@ export async function readyPreviewMathFont(document:Document,root:ShadowRoot,fam
 }
 export interface MeasuredDisplayMath {element:HTMLElement;width:number;height:number;publicationReady:false}
 /** Measure the exact native MathML node used for final drawing, not a text estimate. */
-export async function measureDisplayMath(document:Document,source:string,width:number,fontSize:number,equationNumber?:string,family:PreviewMathFontFamily='auto'):Promise<MeasuredDisplayMath>{
+export async function measureDisplayMath(document:Document,source:string,width:number,fontSize:number,equationNumber?:string,family:PreviewMathFontFamily='auto',cache?:MathCompilationCache):Promise<MeasuredDisplayMath>{
   mathFontCss(family);
   if(equationNumber!==undefined&&(typeof equationNumber!=='string'||!/^([1-9][0-9]{0,5})\.([1-9][0-9]{0,5})$/.test(equationNumber)))throw RangeError('Invalid equation number');
   if(!document.body||!document.defaultView||!Number.isSafeInteger(width)||width<1||width>2000000||!Number.isSafeInteger(fontSize)||fontSize<1000||fontSize>30000)throw RangeError('Invalid display math geometry');
@@ -203,7 +251,7 @@ export async function measureDisplayMath(document:Document,source:string,width:n
   const root=host.attachShadow({mode:'open'}),element=document.createElement('div');
   element.style.cssText='all:initial;display:flex;justify-content:center;align-items:center;box-sizing:border-box;direction:ltr;writing-mode:horizontal-tb;color:black;font-family:math,serif;';
   element.style.width=px(width)+'px';element.style.fontSize=px(fontSize)+'px';
-  const math=createPreviewMath(document,source,'block',family);(math as HTMLElement).style.flex='none';element.append(math);
+  const math=createPreviewMath(document,source,'block',family,cache);(math as HTMLElement).style.flex='none';element.append(math);
   let label:HTMLElement|undefined;
   if(equationNumber!==undefined){
     // Equal clearance on both sides preserves the equation's page-center position.
