@@ -2,7 +2,7 @@
 <html lang="en"><meta charset="utf-8"><title>Browser measurement smoke test</title>
 <body><pre id="result">RUNNING</pre>
 <script type="module">
-import {measurePlainText,paginateMeasured,measurePlainTextLines,createPlainTextPagePreview,measureDisplayMath,createPreviewMath,createTextMeasurementCache,createParagraphMeasurementCache,parsePreviewMath,parseDisplayMath,readyPreviewMathFont,createMathCompilationCache,createDisplayMathGeometryCache,createInlineMathGeometryCache,measureInlineMathGeometry,createInlineMathAtom} from '/dist/index.js';
+import {measurePlainText,paginateMeasured,measurePlainTextLines,createPlainTextPagePreview,measureDisplayMath,createPreviewMath,createTextMeasurementCache,createParagraphMeasurementCache,createPageRenderCache,parsePreviewMath,parseDisplayMath,readyPreviewMathFont,createMathCompilationCache,createDisplayMathGeometryCache,createInlineMathGeometryCache,measureInlineMathGeometry,createInlineMathAtom} from '/dist/index.js';
 const result=document.querySelector('#result');
 const assert=(condition,message)=>{if(!condition)throw Error(message);};
 const phase=async name=>{await fetch('/test-progress',{method:'POST',body:name});};
@@ -1094,6 +1094,57 @@ try{
       }
     }
     assert(paragraphComparisons.length===20&&document.body.children.length===before,'incremental comparison complete and hosts released');
+  }
+  await phase("incremental page rendering templates");
+  {
+    const cache=createPageRenderCache(document),paragraphCache=createParagraphMeasurementCache(document);
+    const width=80000,height=100000,paper={width:100000,height:120000,top:10000,bottom:10000,inner:12000,outer:8000,firstSide:'right'};
+    const make=(change='none')=>{
+      const revision=change==='none'?'1':'2',shift=change==='none'?0:100;
+      const base={...request,width,fontSize:5000,lineHeight:1.8};
+      const texts=['第1ページの本文。','第2ページの式 \uFFFC を求める。','第3ページの本文。','\\frac{x}{2}'];
+      const sections=texts.map((text,i)=>{
+        const req={...base,text:change==='text'&&i===0?text+' 変更':text,...(i===1?{inlineMath:[{start:text.indexOf('\uFFFC'),formula:change==='formula'?'x^3':'x^2'}]}:{})};
+        const exact=i===0||i===2;
+        return {id:'page-'+i,startOn:'page',blocks:[{origin:{documentId:'page-template',revision,blockKey:'p-'+i,...(exact?{range:{start:shift,end:shift+req.text.length}}:{})},request:req,splitPolicy:'strict',...(exact?{sourceTextStart:shift}:{}),...(i===3?{displayMath:true,equationNumber:'1.1'}:{})}]};
+      });
+      return {revision,fingerprint:'page-template-'+change,width,height,paper:change==='side'?{...paper,firstSide:'left'}:paper,sections};
+    };
+    const compare=async change=>{
+      const options=make(change);
+      const a=await createPlainTextPagePreview(document,options);
+      const b=await createPlainTextPagePreview(document,{...options,paragraphCache,pageCache:cache});
+      assert(JSON.stringify(a.plan)===JSON.stringify(b.plan)&&JSON.stringify(a.slices)===JSON.stringify(b.slices),'reused page templates preserve current plan and source slices');
+      assert(a.element.shadowRoot.innerHTML===b.element.shadowRoot.innerHTML,'page template paper is identical');
+      assert(b.plan.pages.length===4&&b.element.shadowRoot.querySelectorAll('math').length===2,'all pages and native math retained');
+      return b;
+    };
+    const first=await compare('none');
+    assert(cache.stats().entries===3&&cache.stats().misses===3&&cache.stats().bypasses===1,'three resource-free templates and one display bypass');
+    const firstPage=first.element.shadowRoot.querySelector('[data-page]');
+    firstPage.dataset.privateHostMutation='true';
+    firstPage.querySelector('[data-block]').replaceChildren('host mutation');
+    const warm=await compare('none');
+    assert(cache.stats().hits===3&&cache.stats().misses===3&&cache.stats().bypasses===2,'unchanged page clones reused');
+    assert(firstPage!==warm.element.shadowRoot.querySelector('[data-page]')&&!warm.element.shadowRoot.querySelector('[data-private-host-mutation]'),'host mutations cannot affect private template');
+    const moved=await compare('origin');
+    assert(cache.stats().hits===6&&cache.stats().misses===3&&moved.slices[0].sourceSlice.start===100,'new source offsets need no page reconstruction');
+    for(const change of ['text','formula']){
+      const previous=cache.stats();
+      await compare(change);
+      assert(cache.stats().hits===previous.hits+2&&cache.stats().misses===previous.misses+1,'only affected page rebuilt: '+change);
+    }
+    const previous=cache.stats();
+    await compare('side');
+    assert(cache.stats().misses===previous.misses+3,'paper side change invalidates templates');
+    const other=createPageRenderCache(document.implementation.createHTMLDocument('foreign'));
+    let rejected=false;
+    try{await createPlainTextPagePreview(document,{...make(),pageCache:other});}catch{rejected=true;}
+    assert(rejected,'page cache document ownership enforced');
+    const pending=createPlainTextPagePreview(document,{...make(),pageCache:cache});
+    cache.clear();await pending;
+    assert(Object.values(cache.stats()).every(v=>v===0),'invalidated preview cannot repopulate page cache');
+    assert(document.body.children.length===before,'page template measurement hosts removed');
   }
   await phase("multiline display source and exact offsets");
   {

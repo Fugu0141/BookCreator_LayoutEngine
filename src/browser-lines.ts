@@ -1,6 +1,7 @@
 import {measureDisplayMath,validateCompiledMath,createInlineMathAtom,measureInlineMathGeometry,recordInlineMathPlacement,readyPreviewMathFont,isPreviewMathFontFamily,type MeasuredDisplayMath,type MathCompilationCache,type DisplayMathGeometryCache,type InlineMathGeometry,type InlineMathGeometryCache} from './math-preview.js';
 import {validateImageCrop,type ImageCrop} from './image-crop.js';
-import {renderMeasuredPreview} from './browser-page-render.js';
+import {renderMeasuredPreview,pageRenderCacheEpoch,type PageRenderCache} from './browser-page-render.js';
+export {createPageRenderCache,type PageRenderCache} from './browser-page-render.js';
 import {measurePreviewSections} from './browser-page-measure.js';
 import {measureWithTextCache,measureWithParagraphCache,type TextMeasurementCache,type ParagraphMeasurementCache} from './text-measurement-cache.js';
 export {createTextMeasurementCache,createParagraphMeasurementCache,type TextMeasurementCache,type ParagraphMeasurementCache} from './text-measurement-cache.js';
@@ -504,6 +505,8 @@ export async function createPlainTextPagePreview(document:Document,options:{
   measurementCache?:TextMeasurementCache;
   /** Experimental incremental line plans, including styled and inline-math paragraphs. Mutually exclusive with measurementCache. */
   paragraphCache?:ParagraphMeasurementCache;
+  /** Optional resource-free page templates, owned by the host for this document. */
+  pageCache?:PageRenderCache;
   collectTimings?:boolean;
   /** Optional book-session-owned, font-independent syntax compilation cache. */
   mathCache?:MathCompilationCache;
@@ -513,6 +516,7 @@ export async function createPlainTextPagePreview(document:Document,options:{
   inlineMathCache?:InlineMathGeometryCache;
 }):Promise<TextPagePreview>{
   live(document);
+  const pageCache=options.pageCache,pageCacheEpoch=pageCache?pageRenderCacheEpoch(document,pageCache):undefined;
   // Snapshot the opt-in before any asynchronous work. The clock is never read otherwise.
   const mathCache=options.mathCache,displayMathCache=options.displayMathCache,inlineMathCache=options.inlineMathCache;
   const timed=options.collectTimings===true;
@@ -581,7 +585,7 @@ export async function createPlainTextPagePreview(document:Document,options:{
   if(!plan.pages.length)throw Error('No drawable content');
   if(plan.completeness!=='full')throw Error('Cannot render partial preview: '+plan.diagnostics.map(d=>d.code).join(', '));
   const paginated=now();
-  const result=renderMeasuredPreview(document,plan,{width,height,paper,byKey,images},{styleText,frozenText:(el,r,line)=>frozenText(el,r,line,mathCache),listInset});
+  const result=renderMeasuredPreview(document,plan,{width,height,paper,byKey,images,pageCache,pageCacheEpoch},{styleText,frozenText:(el,r,line)=>frozenText(el,r,line,mathCache),listInset});
   if(!timed)return result;
   const rendered=now();
   return {...result,timings:Object.freeze({validationMs:validated-started,imagesMs:imagesReady-validated,

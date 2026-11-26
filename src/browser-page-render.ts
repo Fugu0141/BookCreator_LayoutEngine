@@ -2,7 +2,7 @@
 // pagination plan. No measuring, font loading, pagination or resource decoding.
 import {imageSourceRect} from './image-crop.js';
 import type {MeasuredDisplayMath} from './math-preview.js';
-import type {MeasuredPagePlan,Origin} from './pagination.js';
+import type {MeasuredPagePlan,MeasuredPage,Origin} from './pagination.js';
 import type {PlainTextMeasureRequest} from './browser-measurement.js';
 import type {MeasuredTextLine,MeasuredTextLines,PreviewTextBlock,PreviewTextSlice,PreviewComponentChild,PreviewListItem,TextPagePreview} from './browser-lines.js';
 type ComponentPlacement=import('./tree.js').PlacedNode;
@@ -17,23 +17,91 @@ interface RenderServices{
   frozenText(el:HTMLElement,r:PlainTextMeasureRequest,line:MeasuredTextLine):void;
   listInset(item:PreviewListItem):number;
 }
+/** Detached page templates are never exposed to hosts. Each hit returns a fresh
+ * clone; navigation and original source ranges are rebuilt from the current plan.
+ * Only resource-free plain text pages are eligible in this first implementation. */
+export interface PageRenderCache {
+  clear():void;
+  stats():{entries:number;characters:number;nodes:number;hits:number;misses:number;bypasses:number};
+}
+type PageEntry={template:HTMLElement;characters:number;nodes:number};
+type PageCacheState={document:Document;entries:Map<string,PageEntry>;characters:number;nodes:number;hits:number;misses:number;bypasses:number;epoch:number};
+const pageCaches=new WeakMap<PageRenderCache,PageCacheState>();
+const pageLimits={entries:64,characters:250000,nodes:20000};
+export function createPageRenderCache(document:Document):PageRenderCache{
+  const state:PageCacheState={document,entries:new Map(),characters:0,nodes:0,hits:0,misses:0,bypasses:0,epoch:0};
+  const cache:PageRenderCache={
+    clear(){state.entries.clear();state.characters=0;state.nodes=0;state.hits=0;state.misses=0;state.bypasses=0;state.epoch++;},
+    stats(){return {entries:state.entries.size,characters:state.characters,nodes:state.nodes,hits:state.hits,misses:state.misses,bypasses:state.bypasses};}
+  };
+  pageCaches.set(cache,state);return Object.freeze(cache);
+}
+/** A lease prevents an asynchronous old preview from writing after clear. */
+export function pageRenderCacheEpoch(document:Document,cache:PageRenderCache):number{
+  const state=pageCaches.get(cache);
+  if(!state||state.document!==document)throw Error('Page render cache belongs to another document');
+  return state.epoch;
+}
+function dropPage(state:PageCacheState,key:string){
+  const old=state.entries.get(key);if(!old)return;
+  state.entries.delete(key);state.characters-=old.characters;state.nodes-=old.nodes;
+}
+function keepPage(state:PageCacheState,key:string,page:HTMLElement){
+  // Count actual descendants (including text nodes) and retained key length.
+  let nodes=1;const walker=state.document.createTreeWalker(page,0xffffffff);
+  while(walker.nextNode())if(++nodes>pageLimits.nodes)return;
+  if(key.length>pageLimits.characters)return;
+  dropPage(state,key);
+  state.entries.set(key,{template:page.cloneNode(true) as HTMLElement,characters:key.length,nodes});
+  state.characters+=key.length;state.nodes+=nodes;
+  while(state.entries.size>pageLimits.entries||state.characters>pageLimits.characters||state.nodes>pageLimits.nodes)dropPage(state,state.entries.keys().next().value!);
+}
+/** Serialize only fields consumed by the renderer. Exclude revisions and raw
+ * source ranges, which affect slices/navigation, not the template. */
+function pageKey(p:MeasuredPage,width:number,height:number,paper:PreviewPaper|undefined,byKey:ReadonlyMap<string,MeasuredPreviewBlock>):string|undefined{
+  const fragments=[];
+  for(const f of p.fragments){
+    const entry=byKey.get(previewBlockKey(f.origin));
+    if(!entry)throw Error('Missing preview block');
+    const {block,measurement,math}=entry;
+    if(math||block.component||block.listItem||measurement.lines.some(l=>l.displayMath))return undefined;
+    const r=measurement.request,lines=measurement.lines.slice(f.unitStart,f.unitEnd);
+    if(!lines.length)throw Error('Missing preview lines');
+    fragments.push([f.origin.documentId,f.origin.blockKey,[f.rect.x,f.rect.y,f.rect.width,f.rect.height],
+      [r.text,r.width,r.fontSize,r.fontFamily,r.fontWeight??400,r.lineHeight,r.mathFontFamily??'auto',
+        r.inlineStyles?.map(s=>[s.start,s.end,s.fontFamily,s.fontWeight,s.italic,s.underline,s.color,s.fontSize,s.baseline]),
+        r.inlineMath?.map(a=>[a.start,a.formula])],
+      lines.map(l=>[l.start,l.end,l.height])]);
+  }
+  return JSON.stringify([1,p.index,width,height,paper?[paper.width,paper.height,paper.top,paper.bottom,paper.inner,paper.outer,paper.firstSide]:null,fragments]);
+}
 const px=(um:number)=>um*96/25400;
 export const previewBlockKey=(o:Origin)=>JSON.stringify([o.documentId,o.blockKey]);
 // Internal ownership contract: math nodes are consumed by this render; bitmaps
 // are borrowed for this synchronous call, and closed by their owning orchestrator.
-export function renderMeasuredPreview(document:Document,plan:MeasuredPagePlan,{width,height,paper,byKey,images}:{width:number;height:number;paper?:PreviewPaper;byKey:ReadonlyMap<string,MeasuredPreviewBlock>;images:ReadonlyMap<string,ImageBitmap>},{styleText,frozenText,listInset}:RenderServices):TextPagePreview{
+export function renderMeasuredPreview(document:Document,plan:MeasuredPagePlan,{width,height,paper,byKey,images,pageCache,pageCacheEpoch}:{width:number;height:number;paper?:PreviewPaper;byKey:ReadonlyMap<string,MeasuredPreviewBlock>;images:ReadonlyMap<string,ImageBitmap>;pageCache?:PageRenderCache;pageCacheEpoch?:number},{styleText,frozenText,listInset}:RenderServices):TextPagePreview{
   let renderedImagePixels=0;
   const element=document.createElement('div');element.style.cssText='all:initial;display:block;';
   const root=element.attachShadow({mode:'open'});
   const slices:PreviewTextSlice[]=[];
+  const candidateState=pageCache?pageCaches.get(pageCache):undefined;
+  if(pageCache&&(!candidateState||candidateState.document!==document))throw Error('Page render cache belongs to another document');
+  const state=candidateState&&candidateState.epoch===pageCacheEpoch?candidateState:undefined;
   for(const p of plan.pages){
-    const page=document.createElement('div');page.dataset.page=String(p.index);
+    const key=state?pageKey(p,width,height,paper,byKey):undefined;
+    const cached=key!==undefined?state!.entries.get(key):undefined;
+    if(state){
+      if(key===undefined)state.bypasses++;
+      else if(cached){state.hits++;state.entries.delete(key);state.entries.set(key,cached);}
+      else state.misses++;
+    }
+    const page=cached?cached.template.cloneNode(true) as HTMLElement:document.createElement('div');page.dataset.page=String(p.index);
     page.style.cssText='all:initial;display:block;position:relative;box-sizing:content-box;background:white;color:black;border:1px solid #888;margin:0 0 12px 0;overflow:visible;';
     const right=(p.index%2===0)===(paper?.firstSide!=='left');
     const left=paper?(right?paper.inner:paper.outer):0,top=paper?.top??0;
     page.dataset.side=right?'right':'left';
     page.style.width=px(paper?.width??width)+'px';page.style.height=px(paper?.height??height)+'px';
-    if(paper){const guide=document.createElement('div');guide.dataset.contentGuide='true';guide.style.cssText='position:absolute;box-sizing:border-box;outline:1px dashed #ccc;pointer-events:none;';Object.assign(guide.style,{left:px(left)+'px',top:px(top)+'px',width:px(width)+'px',height:px(height)+'px'});page.append(guide);}
+    if(paper&&!cached){const guide=document.createElement('div');guide.dataset.contentGuide='true';guide.style.cssText='position:absolute;box-sizing:border-box;outline:1px dashed #ccc;pointer-events:none;';Object.assign(guide.style,{left:px(left)+'px',top:px(top)+'px',width:px(width)+'px',height:px(height)+'px'});page.append(guide);}
     for(const f of p.fragments){
       const entry=byKey.get(previewBlockKey(f.origin));if(!entry)throw Error('Missing preview block');
       const {block,measurement,labels,slots,placement,marker,math}=entry, lineUnits=placement?measurement.lines:measurement.lines.slice(f.unitStart,f.unitEnd);
@@ -43,6 +111,7 @@ export function renderMeasuredPreview(document:Document,plan:MeasuredPagePlan,{w
       const sourceSlice=block.sourceTextStart===undefined?undefined:{start:block.sourceTextStart+textStart,end:block.sourceTextStart+textEnd};
       const namedSlots=(block.namedSlots??[]).map(s=>({name:s.name,textStart:0,textEnd:s.request.text.length,...(s.sourceTextStart===undefined?{}:{sourceSlice:{start:s.sourceTextStart,end:s.sourceTextStart+s.request.text.length}})}));
       slices.push({pageIndex:p.index,origin:f.origin,textStart,textEnd,...(sourceSlice?{sourceSlice}:{}),...(namedSlots.length?{namedSlots}:{})});
+      if(cached)continue; // Slices above always describe the current source revision.
       const fragment=document.createElement('div');fragment.dataset.block=f.origin.blockKey;fragment.dataset.document=f.origin.documentId;
       fragment.style.cssText='all:initial;display:block;position:absolute;box-sizing:border-box;';
       Object.assign(fragment.style,{left:px(left+f.rect.x)+'px',top:px(top+f.rect.y)+'px',width:px(f.rect.width)+'px',height:px(f.rect.height)+'px'});
@@ -127,6 +196,7 @@ export function renderMeasuredPreview(document:Document,plan:MeasuredPagePlan,{w
       }
       page.append(fragment);
     }
+    if(state&&key!==undefined&&!cached)keepPage(state,key,page);
     root.append(page);
   }
   return {element,plan,slices,publicationReady:false};
