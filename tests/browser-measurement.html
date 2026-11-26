@@ -2,7 +2,7 @@
 <html lang="en"><meta charset="utf-8"><title>Browser measurement smoke test</title>
 <body><pre id="result">RUNNING</pre>
 <script type="module">
-import {measurePlainText,paginateMeasured,measurePlainTextLines,createPlainTextPagePreview,measureDisplayMath,createPreviewMath,createTextMeasurementCache,parsePreviewMath,parseDisplayMath,readyPreviewMathFont,createMathCompilationCache,createDisplayMathGeometryCache} from '/dist/index.js';
+import {measurePlainText,paginateMeasured,measurePlainTextLines,createPlainTextPagePreview,measureDisplayMath,createPreviewMath,createTextMeasurementCache,parsePreviewMath,parseDisplayMath,readyPreviewMathFont,createMathCompilationCache,createDisplayMathGeometryCache,createInlineMathGeometryCache,measureInlineMathGeometry,createInlineMathAtom} from '/dist/index.js';
 const result=document.querySelector('#result');
 const assert=(condition,message)=>{if(!condition)throw Error(message);};
 const phase=async name=>{await fetch('/test-progress',{method:'POST',body:name});};
@@ -786,6 +786,59 @@ try{
     geometry.clear();
     assert(JSON.stringify(geometry.stats())===JSON.stringify({entries:0,characters:0,hits:0,misses:0,fallbacks:0}),'display geometry cache release');
     assert(document.body.children.length===before,'all geometry measurement hosts removed');
+  }
+  await phase("inline math natural geometry");
+  {
+    await document.fonts.ready;
+    const syntax=createMathCompilationCache(),geometry=createInlineMathGeometryCache(document);
+    const formula='\\frac{x^2+1}{2}',size=5000;
+    const formulas=['x^2','\\frac{x^2+1}{2}','\\sqrt{x+1}','\\left(\\frac{x}{2}\\right)'];
+    const host=document.createElement('div');
+    host.style.cssText='all:initial;position:fixed;top:0;left:0;visibility:hidden;';
+    const root=host.attachShadow({mode:'closed'});document.body.append(host);
+    const checkContext=async(source,fontSize,expected)=>{
+      // Compare with the baseline of adjacent text in the real wrapping-style row.
+      for(const [width,lineHeight,family] of [[60000,1.4,'serif'],[100000,2.2,'sans-serif']]){
+        const row=document.createElement('div');
+        row.style.cssText='all:initial;display:block;box-sizing:border-box;padding:0;border:0;margin:0;overflow-wrap:anywhere;word-break:normal;writing-mode:horizontal-tb;direction:ltr;text-align:start;font-kerning:none;font-variant-ligatures:none;white-space:break-spaces;font-synthesis:none;';
+        row.style.width=width*96/25400+'px';row.style.fontSize=fontSize*96/25400+'px';
+        row.style.fontFamily=family;row.style.lineHeight=fontSize*lineHeight*96/25400+'px';
+        const atom=createInlineMathAtom(document,source,'auto',syntax),marker=document.createElement('span');
+        marker.style.cssText='all:initial;display:inline-block;vertical-align:baseline;width:0;height:0;padding:0;border:0;margin:0;';
+        row.append('前 ',atom,marker,' 後');root.append(row);
+        try{
+          const q=atom.getBoundingClientRect(),baseline=marker.getBoundingClientRect().top-q.top;
+          assert(Math.abs(q.width-expected.widthPx)<=.125&&Math.abs(q.height-expected.heightPx)<=.125&&Math.abs(baseline-expected.baselinePx)<=.125,'isolated inline geometry agrees with adjacent text baseline');
+        }finally{row.remove();}
+      }
+    };
+    try{
+      for(const source of formulas){
+        const a=await measureInlineMathGeometry(document,source,size,'auto',syntax,geometry);
+        assert(Object.isFrozen(a)&&a.widthPx>0&&a.heightPx>0&&a.baselinePx>=0&&a.baselinePx<=a.heightPx&&a.publicationReady===false,'finite immutable inline geometry');
+        await checkContext(source,size,a);
+        const b=await measureInlineMathGeometry(document,source,size,'auto',syntax,geometry);
+        assert(JSON.stringify(a)===JSON.stringify(b)&&a!==b,'independent numeric cache result');
+      }
+      assert(geometry.stats().entries===4&&geometry.stats().misses===4&&geometry.stats().hits===4,'unchanged inline formulas skip isolated measurement');
+      const cold=await measureInlineMathGeometry(document,formula,6000,'auto',syntax,geometry);
+      await checkContext(formula,6000,cold);
+      assert(geometry.stats().misses===5,'font size is a geometry key');
+      let rejected=false;try{await measureInlineMathGeometry(document,'\\input{secret}',size,'auto',syntax,geometry);}catch{rejected=true;}
+      assert(rejected&&geometry.stats().entries===5,'malformed formula never retained');
+      const foreign=createInlineMathGeometryCache(document.implementation.createHTMLDocument('foreign'));
+      rejected=false;try{await measureInlineMathGeometry(document,formula,size,'auto',syntax,foreign);}catch{rejected=true;}
+      assert(rejected,'foreign inline geometry cache refused');
+      const face=new FontFace('BCFont_InlineGeometryInvalidation','local("serif")');
+      document.fonts.add(face);
+      try{
+        await measureInlineMathGeometry(document,formula,size,'auto',syntax,geometry);
+        assert(geometry.stats().entries===1,'font set change discards prior candidates');
+      }finally{document.fonts.delete(face);}
+      geometry.clear();
+      assert(JSON.stringify(geometry.stats())===JSON.stringify({entries:0,characters:0,hits:0,misses:0}),'inline geometry release');
+    }finally{host.remove();}
+    assert(document.body.children.length===before,'isolated inline measurement hosts removed');
   }
   await phase("math workload baseline");
   const mathBenchmark=[];

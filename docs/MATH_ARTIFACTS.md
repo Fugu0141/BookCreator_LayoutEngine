@@ -57,3 +57,12 @@ Chromium smokeに12種類の固定合成数式を使う初期比較を追加。�
 - 再利用時はfonts.readyを待ち、保存済み寸法を番号の左右余白・高さの配置候補に用い、反復する数式フォントのネイティブ能力probeを省く。現在のMathML要素の幅・高さは実際に確認し、候補と厳密一致かつ既存の溢れ・ラベル幾何検査に合格した場合のみ採用。不一致/候補による拒否時は破棄して従来の全実測・検証に戻る。現段階はネイティブMathMLレイアウトそのものを省略しない。数式固有のベースライン計測、inlineのatomic box、SVG化は未実装。
 - `createPlainTextPagePreview({displayMathCache})` から独立数式、部品のhard-line数式に伝播。未指定時は従来と同じ経路。新規の値・候補は出版確定を許可しない。statsのhits/misses/fallbacksは数式寸法候補の採用/全実測/候補失敗を記録する。
 - ブラウザー検査で異なる式番号/幅、式変更、サイズ変更、実際のoverflow拒否、非共有DOM、plan/slices/DOM一致、別文書拒否、FontFaceSet追加削除、clearとホスト解放を確認する。CI・性能改善値・Desktop接続は未確認。
+
+
+## インライン数式の自然寸法・基線 C-2（UX-10h-8q）
+
+- #37は全2CI成功・main統合済み。独立数式に続き、`measureInlineMathGeometry(document,source,fontSize,family,mathCache,geometryCache)` を追加する。実際のインライン数式と同じspan/MathMLを隔離した計測DOMに配置し、幅・高さと隣接するゼロ寸法のbaselineマーカーから上端基準のベースラインを取得する。値はCSS pxの不変レコード、publicationReady=false。文字の基線・上下の張り出しを保った将来のatomic box化に用いる候補。
+- `createInlineMathAtom` で計測用spanと既存紙面のspan生成を共通化。原稿範囲は紙面側で付与する。生DOMの共有や保存はしない。既存の行割付・凍結行実測は変更しない。
+- `createInlineMathGeometryCache(document)` は独立数式の寸法キャッシュとは別の所有オブジェクト。原文・サイズ・数式フォント別に512件/100,000 UTF-16コード単位のLRU、FontFaceSet/記述子/状態/DPR変更時の失効、文書所有、epoch、clearを共有する。キャッシュヒットでは数値だけを返し、隔離DOM生成や能力probeを行わない。元の数式解析上限は維持し、不正な入力・計測失敗は保存しない。FontFaceSet外の環境変更はホストからの失効が必要。
+- Chromiumで4種類の数式の寸法/基線を本文のフォント・行高・幅が異なる2つの実行コンテキストと比較し、許容差0.125 CSS px以内を検査する。キャッシュ有無の値、サイズ変更、不正入力、別文書拒否、フォント環境失効、clear、DOM解放も検証する。
+- 今回は候補APIの独立したPoC。通常の紙面生成に固定寸法のboxを代入する変更は行わないため、本番のインライン数式の再レイアウトは省略されない。実際の折返し位置・行高・原稿範囲・PDFの印刷品質と互換性を検証した上で次段階で接続する。任意のフォント/文脈での等価性、CI、性能改善値、Windows実機は未確認。

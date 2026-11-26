@@ -1,4 +1,4 @@
-import {measureDisplayMath,validateCompiledMath,createPreviewMath,readyPreviewMathFont,isPreviewMathFontFamily,type MeasuredDisplayMath,type MathCompilationCache,type DisplayMathGeometryCache} from './math-preview.js';
+import {measureDisplayMath,validateCompiledMath,createInlineMathAtom,readyPreviewMathFont,isPreviewMathFontFamily,type MeasuredDisplayMath,type MathCompilationCache,type DisplayMathGeometryCache} from './math-preview.js';
 import {validateImageCrop,type ImageCrop} from './image-crop.js';
 import {renderMeasuredPreview} from './browser-page-render.js';
 import {measurePreviewSections} from './browser-page-measure.js';
@@ -109,10 +109,9 @@ function appendStyled(el:HTMLElement,r:PlainTextMeasureRequest,start:number,end:
     if(a>=b)continue;
     append(cursor,a);
     if('atom' in entry){
-      const span=el.ownerDocument.createElement('span');
-      span.dataset.inlineMath='true';span.dataset.mathStart=String(a);span.dataset.mathEnd=String(b);
-      span.style.cssText='display:inline-block;vertical-align:baseline;white-space:nowrap;line-height:normal;font-family:math,serif;font-style:normal;font-weight:400;font-synthesis:none;';
-      span.append(createPreviewMath(el.ownerDocument,entry.atom.formula,'inline',r.mathFontFamily,mathCache));el.append(span);
+      const span=createInlineMathAtom(el.ownerDocument,entry.atom.formula,r.mathFontFamily,mathCache);
+      span.dataset.mathStart=String(a);span.dataset.mathEnd=String(b);
+      el.append(span);
       segments.push({start:a,end:b,node:span,math:true});
     }else append(a,b,entry.run);
     cursor=b;

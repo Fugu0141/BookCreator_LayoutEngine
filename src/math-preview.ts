@@ -248,10 +248,10 @@ export interface DisplayMathGeometryCache {
 }
 type NaturalGeometry={widthPx:number;heightPx:number;characters:number};
 type MathFontEnvironment={faces:FontFace[];descriptors:string[];scale:number;status:string};
-type GeometryState={document:Document;entries:Map<string,NaturalGeometry>;characters:number;hits:number;misses:number;fallbacks:number;epoch:number;environment?:MathFontEnvironment};
+type GeometryState<T extends NaturalGeometry=NaturalGeometry>={document:Document;entries:Map<string,T>;characters:number;hits:number;misses:number;fallbacks:number;epoch:number;environment?:MathFontEnvironment};
 const geometries=new WeakMap<DisplayMathGeometryCache,GeometryState>();
 const maxGeometryEntries=512,maxGeometryCharacters=100000;
-function emptyGeometry(s:GeometryState){s.entries.clear();s.characters=0;s.epoch++;}
+function emptyGeometry<T extends NaturalGeometry>(s:GeometryState<T>){s.entries.clear();s.characters=0;s.epoch++;}
 export function createDisplayMathGeometryCache(document:Document):DisplayMathGeometryCache{
   const s:GeometryState={document,entries:new Map(),characters:0,hits:0,misses:0,fallbacks:0,epoch:0};
   const cache:DisplayMathGeometryCache={
@@ -260,7 +260,7 @@ export function createDisplayMathGeometryCache(document:Document):DisplayMathGeo
   };
   geometries.set(cache,s);return Object.freeze(cache);
 }
-function syncMathEnvironment(s:GeometryState){
+function syncMathEnvironment<T extends NaturalGeometry>(s:GeometryState<T>){
   const faces:FontFace[]=[],descriptors:string[]=[];
   s.document.fonts.forEach(face=>{faces.push(face);descriptors.push(JSON.stringify([face.family,face.style,face.weight,face.stretch,face.unicodeRange,face.status,face.ascentOverride,face.descentOverride,face.lineGapOverride,face.featureSettings,(face as FontFace & {variationSettings?:string}).variationSettings]));});
   const next:MathFontEnvironment={faces,descriptors,scale:s.document.defaultView!.devicePixelRatio,status:s.document.fonts.status};
@@ -270,8 +270,8 @@ function syncMathEnvironment(s:GeometryState){
     emptyGeometry(s);s.environment=next;
   }
 }
-function dropGeometry(s:GeometryState,key:string){const old=s.entries.get(key);if(old){s.entries.delete(key);s.characters-=old.characters;}}
-function putGeometry(s:GeometryState,key:string,entry:NaturalGeometry){
+function dropGeometry<T extends NaturalGeometry>(s:GeometryState<T>,key:string){const old=s.entries.get(key);if(old){s.entries.delete(key);s.characters-=old.characters;}}
+function putGeometry<T extends NaturalGeometry>(s:GeometryState<T>,key:string,entry:T){
   dropGeometry(s,key);s.entries.set(key,Object.freeze(entry));s.characters+=entry.characters;
   while(s.entries.size>maxGeometryEntries||s.characters>maxGeometryCharacters)dropGeometry(s,s.entries.keys().next().value!);
 }
@@ -346,4 +346,83 @@ export async function measureDisplayMath(document:Document,source:string,width:n
     element.style.height=px(measured.height)+'px';
     return {element,width:measured.width,height:measured.height,publicationReady:false};
   }finally{host.remove();element.remove();}
+}
+
+/** The same unbreakable native atom is used for measurement and paper drawing.
+ * The caller supplies its logical source range, not arbitrary HTML. */
+export function createInlineMathAtom(document:Document,source:string,family:PreviewMathFontFamily='auto',cache?:MathCompilationCache):HTMLSpanElement{
+  const span=document.createElement('span');
+  span.dataset.inlineMath='true';
+  span.style.cssText='display:inline-block;vertical-align:baseline;white-space:nowrap;line-height:normal;font-family:math,serif;font-style:normal;font-weight:400;font-synthesis:none;';
+  span.append(createPreviewMath(document,source,'inline',family,cache));
+  return span;
+}
+export interface InlineMathGeometry {
+  readonly widthPx:number;
+  readonly heightPx:number;
+  /** CSS px from the top of the atom to its baseline. */
+  readonly baselinePx:number;
+  readonly publicationReady:false;
+}
+type InlineGeometryEntry=NaturalGeometry&{baselinePx:number};
+export interface InlineMathGeometryCache {
+  clear():void;
+  stats():{entries:number;characters:number;hits:number;misses:number};
+}
+const inlineGeometries=new WeakMap<InlineMathGeometryCache,GeometryState<InlineGeometryEntry>>();
+export function createInlineMathGeometryCache(document:Document):InlineMathGeometryCache{
+  const s:GeometryState<InlineGeometryEntry>={document,entries:new Map(),characters:0,hits:0,misses:0,fallbacks:0,epoch:0};
+  const cache:InlineMathGeometryCache={
+    clear(){emptyGeometry(s);s.environment=undefined;s.hits=0;s.misses=0;},
+    stats(){return {entries:s.entries.size,characters:s.characters,hits:s.hits,misses:s.misses};}
+  };
+  inlineGeometries.set(cache,s);return Object.freeze(cache);
+}
+function inlineValue(entry:InlineGeometryEntry):InlineMathGeometry{
+  return Object.freeze({widthPx:entry.widthPx,heightPx:entry.heightPx,baselinePx:entry.baselinePx,publicationReady:false});
+}
+/** Experimental isolated natural-size probe. Does not authorize paragraph layout.
+ * Host must invalidate for system font or browser geometry changes outside FontFaceSet.
+ * A hit returns only numeric geometry, without creating or measuring a DOM node. */
+export async function measureInlineMathGeometry(document:Document,source:string,fontSize:number,family:PreviewMathFontFamily='auto',cache?:MathCompilationCache,geometryCache?:InlineMathGeometryCache):Promise<InlineMathGeometry>{
+  mathFontCss(family);
+  if(!document.body||!document.defaultView||!document.fonts||!Number.isSafeInteger(fontSize)||fontSize<1000||fontSize>30000)throw RangeError('Invalid inline math geometry');
+  if(typeof source!=='string'||source.length>2048)throw RangeError('Unsupported math source');
+  const state=geometryCache?inlineGeometries.get(geometryCache):undefined;
+  if(geometryCache&&(!state||state.document!==document))throw Error('Inline math geometry cache belongs to another document');
+  const key=JSON.stringify([source,fontSize,family]);
+  if(state)syncMathEnvironment(state);
+  const epoch=state?.epoch;
+  if(state){
+    await document.fonts.ready;syncMathEnvironment(state);
+    const existing=state.epoch===epoch&&document.fonts.status==='loaded'?state.entries.get(key):undefined;
+    if(existing){
+      state.hits++;state.entries.delete(key);state.entries.set(key,existing);
+      return inlineValue(existing);
+    }
+    state.misses++;
+  }
+  const host=document.createElement('div');
+  host.style.cssText='all:initial;position:fixed;top:0;left:0;visibility:hidden;pointer-events:none;contain:layout style paint;display:block;';
+  const root=host.attachShadow({mode:'closed'}),row=document.createElement('div');
+  row.style.cssText='all:initial;display:block;width:max-content;white-space:pre;direction:ltr;writing-mode:horizontal-tb;font-family:serif;line-height:normal;';
+  row.style.fontSize=fontSize*96/25400+'px';
+  const atom=createInlineMathAtom(document,source,family,cache);
+  const marker=document.createElement('span');
+  marker.style.cssText='all:initial;display:inline-block;vertical-align:baseline;width:0;height:0;padding:0;border:0;margin:0;';
+  row.append(atom,marker);root.append(row);document.body.append(host);
+  try{
+    await readyPreviewMathFont(document,root,family);
+    const q=atom.getBoundingClientRect(),ink=atom.firstElementChild!.getBoundingClientRect();
+    const baseline=marker.getBoundingClientRect().top-q.top;
+    if(![q.width,q.height,ink.width,ink.height,baseline].every(Number.isFinite)||q.width<=0||q.height<=0||ink.width<=0||ink.height<=0||
+      baseline<0||baseline>q.height||ink.left<q.left-.5||ink.right>q.right+.5||ink.top<q.top-.5||ink.bottom>q.bottom+.5)
+      throw Error('Unsupported isolated inline math geometry');
+    const entry={widthPx:q.width,heightPx:q.height,baselinePx:baseline,characters:source.length};
+    if(state){
+      syncMathEnvironment(state);
+      if(state.epoch===epoch&&document.fonts.status==='loaded')putGeometry(state,key,entry);
+    }
+    return inlineValue(entry);
+  }finally{host.remove();}
 }
