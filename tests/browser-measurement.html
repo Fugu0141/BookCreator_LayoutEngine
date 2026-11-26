@@ -568,7 +568,14 @@ try{
       assert(base.textContent==='lim'&&base.getAttribute('mathvariant')==='normal'&&sub.getBoundingClientRect().top>=base.getBoundingClientRect().bottom-1,'display limit below upright function');
       assert(math.querySelector('mroot')&&math.querySelectorAll('mover[accent=true]').length===2,'indexed radical and accents');
       const fence=math.querySelector('mo[fence=true]'),fraction=math.querySelector('mfrac');
-      assert(fence.getBoundingClientRect().height>=fraction.getBoundingClientRect().height-1,'fence stretches around fraction');
+      // MathML/OpenType delimiter shortfall permits a stretched glyph to be shorter
+      // than the full fraction box. Compare against an equivalent short fence.
+      const small=await measureDisplayMath(document,'\\left(x\\right)',150000,4200);
+      document.body.append(small.element);
+      try{
+        const h=fence.getBoundingClientRect().height,normal=small.element.querySelector('mo[fence=true]').getBoundingClientRect().height;
+        assert(h>normal+1&&fraction.getBoundingClientRect().height>normal,'fence grows for tall fraction: '+h+' vs '+normal);
+      }finally{small.element.remove();}
       assert(math.getBoundingClientRect().height<=measured.element.getBoundingClientRect().height+.1,'extended display formula fits measured height');
     }finally{measured.element.remove();}
     const inline='前 \uFFFC 後。',req={...request,text:inline,inlineMath:[{start:2,formula:'\\lim_{x\\to0}\\sin x'}]};
