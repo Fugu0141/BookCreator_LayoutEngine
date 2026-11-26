@@ -79,6 +79,8 @@ export function parsePreviewMath(source:string):MathNode{
   return row(0,false);
 }
 const NS='http://www.w3.org/1998/Math/MathML';
+// Known OpenType MATH families first; never fetch a resource from the formula.
+export const mathPreviewFontFamily='"STIX Two Math", "Cambria Math", "Latin Modern Math", "TeX Gyre Termes Math", "DejaVu Math TeX Gyre", math, serif';
 /** Only engine-produced MathML elements, with textContent for every token. */
 export function createPreviewMath(document:Document,source:string,display:'block'|'inline'='block'):Element{
   const ast=parsePreviewMath(source);
@@ -101,7 +103,7 @@ export function createPreviewMath(document:Document,source:string,display:'block
     else el.textContent=n.text;
     return el;
   }
-  const math=document.createElementNS(NS,'math');math.setAttribute('display',display);math.append(render(ast));return math;
+  const math=document.createElementNS(NS,'math');math.setAttribute('display',display);math.setAttribute('style','font-family:'+mathPreviewFontFamily+';');math.append(render(ast));return math;
 }
 /** Check native fraction support in the actual measurement document. */
 export function assertNativeMathLayout(document:Document,root:ShadowRoot){
@@ -120,7 +122,7 @@ export async function measureDisplayMath(document:Document,source:string,width:n
   const root=host.attachShadow({mode:'open'}),element=document.createElement('div');
   element.style.cssText='all:initial;display:flex;justify-content:center;align-items:center;box-sizing:border-box;direction:ltr;writing-mode:horizontal-tb;color:black;font-family:math,serif;';
   element.style.width=px(width)+'px';element.style.fontSize=px(fontSize)+'px';
-  const math=createPreviewMath(document,source);math.setAttribute('style','flex:none;');element.append(math);
+  const math=createPreviewMath(document,source);math.setAttribute('style','font-family:'+mathPreviewFontFamily+';flex:none;');element.append(math);
   let label:HTMLElement|undefined;
   if(equationNumber!==undefined){
     // Equal clearance on both sides preserves the equation's page-center position.
