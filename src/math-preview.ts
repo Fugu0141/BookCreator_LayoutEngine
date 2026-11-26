@@ -276,14 +276,16 @@ function putGeometry<T extends NaturalGeometry>(s:GeometryState<T>,key:string,en
   while(s.entries.size>maxGeometryEntries||s.characters>maxGeometryCharacters)dropGeometry(s,s.entries.keys().next().value!);
 }
 export interface MeasuredDisplayMath {element:HTMLElement;width:number;height:number;publicationReady:false}
-/** Measure the exact native MathML node used for final drawing, not a text estimate. */
-export async function measureDisplayMath(document:Document,source:string,width:number,fontSize:number,equationNumber?:string,family:PreviewMathFontFamily='auto',cache?:MathCompilationCache,geometryCache?:DisplayMathGeometryCache):Promise<MeasuredDisplayMath>{
-  mathFontCss(family);
-  if(equationNumber!==undefined&&(typeof equationNumber!=='string'||!/^([1-9][0-9]{0,5})\.([1-9][0-9]{0,5})$/.test(equationNumber)))throw RangeError('Invalid equation number');
-  if(!document.body||!document.defaultView||!Number.isSafeInteger(width)||width<1||width>2000000||!Number.isSafeInteger(fontSize)||fontSize<1000||fontSize>30000)throw RangeError('Invalid display math geometry');
-  const px=(v:number)=>v*96/25400,um=(v:number)=>Math.ceil(v*25400/96);
-  const host=document.createElement('div');host.style.cssText='all:initial;position:absolute;left:-100000px;top:0;visibility:hidden;';
-  const root=host.attachShadow({mode:'open'}),element=document.createElement('div');
+/** Private native display artifact: the source and exact measured geometry,
+ * never the live node. Only successful measurements can create a handle. */
+export interface DisplayMathArtifact {readonly kind:'display-math-artifact'}
+type DisplayMathArtifactData={document:Document;source:string;availableWidth:number;fontSize:number;equationNumber?:string;family:PreviewMathFontFamily;width:number;height:number;styleText:string};
+const artifactData=new WeakMap<DisplayMathArtifact,DisplayMathArtifactData>();
+const measuredArtifacts=new WeakMap<MeasuredDisplayMath,DisplayMathArtifact>();
+export function displayMathArtifact(measured:MeasuredDisplayMath):DisplayMathArtifact|undefined{return measuredArtifacts.get(measured);}
+function createDisplayMathElement(document:Document,source:string,width:number,fontSize:number,equationNumber:string|undefined,family:PreviewMathFontFamily,cache?:MathCompilationCache){
+  const px=(v:number)=>v*96/25400;
+  const element=document.createElement('div');
   element.style.cssText='all:initial;display:flex;justify-content:center;align-items:center;box-sizing:border-box;direction:ltr;writing-mode:horizontal-tb;color:black;font-family:math,serif;';
   element.style.width=px(width)+'px';element.style.fontSize=px(fontSize)+'px';
   const math=createPreviewMath(document,source,'block',family,cache);(math as HTMLElement).style.flex='none';element.append(math);
@@ -295,6 +297,30 @@ export async function measureDisplayMath(document:Document,source:string,width:n
     label.style.cssText='position:absolute;right:0;top:50%;transform:translateY(-50%);white-space:nowrap;font-family:serif;font-style:normal;font-weight:400;line-height:normal;font-variant-numeric:tabular-nums;';
     label.textContent='('+equationNumber+')';element.append(label);
   }
+  return {element,math,label};
+}
+/** Rebuild a fresh native node from the measured artifact without layout reads.
+ * The host must still own the same document/font environment as measurement. */
+export function restoreDisplayMathArtifact(document:Document,artifact:DisplayMathArtifact,cache?:MathCompilationCache):MeasuredDisplayMath{
+  const data=artifactData.get(artifact);
+  if(!data||data.document!==document)throw Error('Display math artifact belongs to another document or is invalid');
+  const {element}=createDisplayMathElement(document,data.source,data.availableWidth,data.fontSize,data.equationNumber,data.family,cache);
+  // Preserve the exact measured CSS serialization, including shorthand and
+  // declaration order. Replaying CSSOM assignments can normalize it differently.
+  element.setAttribute('style',data.styleText);
+  const result:MeasuredDisplayMath={element,width:data.width,height:data.height,publicationReady:false};
+  measuredArtifacts.set(result,artifact);
+  return result;
+}
+/** Measure the exact native MathML node used for final drawing, not a text estimate. */
+export async function measureDisplayMath(document:Document,source:string,width:number,fontSize:number,equationNumber?:string,family:PreviewMathFontFamily='auto',cache?:MathCompilationCache,geometryCache?:DisplayMathGeometryCache):Promise<MeasuredDisplayMath>{
+  mathFontCss(family);
+  if(equationNumber!==undefined&&(typeof equationNumber!=='string'||!/^([1-9][0-9]{0,5})\.([1-9][0-9]{0,5})$/.test(equationNumber)))throw RangeError('Invalid equation number');
+  if(!document.body||!document.defaultView||!Number.isSafeInteger(width)||width<1||width>2000000||!Number.isSafeInteger(fontSize)||fontSize<1000||fontSize>30000)throw RangeError('Invalid display math geometry');
+  const px=(v:number)=>v*96/25400,um=(v:number)=>Math.ceil(v*25400/96);
+  const host=document.createElement('div');host.style.cssText='all:initial;position:absolute;left:-100000px;top:0;visibility:hidden;';
+  const root=host.attachShadow({mode:'open'});
+  const {element,math,label}=createDisplayMathElement(document,source,width,fontSize,equationNumber,family,cache);
   const state=geometryCache?geometries.get(geometryCache):undefined;
   if(geometryCache&&(!state||state.document!==document))throw Error('Display math geometry cache belongs to another document');
   const key=JSON.stringify([source,fontSize,family]);
@@ -344,7 +370,11 @@ export async function measureDisplayMath(document:Document,source:string,width:n
       }
     }
     element.style.height=px(measured.height)+'px';
-    return {element,width:measured.width,height:measured.height,publicationReady:false};
+    const result:MeasuredDisplayMath={element,width:measured.width,height:measured.height,publicationReady:false};
+    const artifact:DisplayMathArtifact=Object.freeze({kind:'display-math-artifact'});
+    artifactData.set(artifact,{document,source,availableWidth:width,fontSize,equationNumber,family,width:measured.width,height:measured.height,styleText:element.getAttribute('style')!});
+    measuredArtifacts.set(result,artifact);
+    return result;
   }finally{host.remove();element.remove();}
 }
 

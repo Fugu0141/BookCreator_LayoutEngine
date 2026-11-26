@@ -1,6 +1,6 @@
 // Measurement boundary: receives validated snapshot sections, produces a value
 // pagination input plus transient render data. Does not paginate or render pages.
-import type {measureDisplayMath as MeasureDisplayMath} from './math-preview.js';
+import {displayMathArtifact,restoreDisplayMathArtifact,type DisplayMathArtifact,type MathCompilationCache,type measureDisplayMath as MeasureDisplayMath} from './math-preview.js';
 import type {MeasuredSection,PageBreak} from './pagination.js';
 import type {PlainTextMeasureRequest} from './browser-measurement.js';
 import type {MeasuredTextLines,PreviewTextBlock,PreviewComponent,PreviewComponentChild,PreviewListItem} from './browser-lines.js';
@@ -14,8 +14,10 @@ interface MeasureServices{
   listInset(item:PreviewListItem):number;
   listMarker(item:PreviewListItem):string;
 }
-// Retain only value data, never a measured MathML node or image bitmap.
-type ValueMeasurement=Omit<MeasuredPreviewBlock,'block'|'math'>;
+// Retain only value data and opaque node-free formula artifacts.
+type SavedLine=Omit<MeasuredTextLines['lines'][number],'displayMath'>&{artifact?:DisplayMathArtifact};
+type SavedText=Omit<MeasuredTextLines,'lines'>&{lines:SavedLine[]};
+type ValueMeasurement={measurement:SavedText;labels:Map<string,SavedText>;slots:Map<string,SavedText>;marker?:SavedText;placement?:ComponentPlacement;math?:DisplayMathArtifact};
 type RetainedEntry={key:string;value:ValueMeasurement};
 export type BlockMeasurementSnapshot=ReadonlyMap<string,RetainedEntry>;
 export interface BlockMeasurementWork {readonly measuredBlocks:number;readonly reusedBlocks:number;readonly bypassedBlocks:number}
@@ -35,29 +37,37 @@ function componentKey(c:PreviewComponentChild):unknown{
     c.type==='rect'||c.type==='image'?c.height:null];
 }
 function measurementKey(b:PreviewTextBlock,width:number,height:number):string|undefined{
-  const requests=[b.request,...(b.namedSlots??[]).map(s=>s.request)];
-  if(b.displayMath||requests.some(r=>r.inlineMath?.some(a=>a.display===true)))return undefined;
   const c=b.component,l=b.listItem;
   // Source offsets/revision and purely visual component fields are not
   // measurement inputs. The current block always supplies rendering metadata.
-  return JSON.stringify([width,height,cleanRequest(b.request),b.splitPolicy,
+  return JSON.stringify([width,height,cleanRequest(b.request),b.splitPolicy,b.displayMath??false,b.equationNumber??null,
     c?[c.direction,c.gap,c.padding,c.children.map(componentKey)]:null,
     l?[l.kind,l.kind==='ordered'?l.number:null,l.depth,l.indentStep,l.markerWidth,l.gap]:null,
     (b.namedSlots??[]).map(s=>[s.name,cleanRequest({...s.request,width:100000})])]);
 }
-function valueCopy(v:ValueMeasurement):ValueMeasurement|undefined{
+type LiveMeasurement=Omit<MeasuredPreviewBlock,'block'>;
+function valueCopy(v:LiveMeasurement):ValueMeasurement|undefined{
   const all=[v.measurement,...v.labels.values(),...v.slots.values(),...(v.marker?[v.marker]:[])];
-  if(all.some(m=>m.lines.some(l=>l.displayMath)))return undefined;
-  const copy=(m:MeasuredTextLines):MeasuredTextLines=>({
-    request:cleanRequest(m.request),lines:m.lines.map(l=>({start:l.start,end:l.end,height:l.height})),
+  if((v.math&&!displayMathArtifact(v.math))||all.some(m=>m.lines.some(l=>l.displayMath&&!displayMathArtifact(l.displayMath))))return undefined;
+  const copy=(m:MeasuredTextLines):SavedText=>({
+    request:cleanRequest(m.request),lines:m.lines.map(l=>({start:l.start,end:l.end,height:l.height,artifact:l.displayMath?displayMathArtifact(l.displayMath):undefined})),
     measurement:'browser-dom-lines',publicationReady:false
   });
   return {measurement:copy(v.measurement),labels:new Map([...v.labels].map(([k,m])=>[k,copy(m)])),
     slots:new Map([...v.slots].map(([k,m])=>[k,copy(m)])),marker:v.marker?copy(v.marker):undefined,
-    placement:v.placement?structuredClone(v.placement):undefined};
+    placement:v.placement?structuredClone(v.placement):undefined,math:v.math?displayMathArtifact(v.math):undefined};
 }
-function countLines(v:ValueMeasurement){return v.measurement.lines.length+[...v.labels.values(),...v.slots.values()].reduce((n,m)=>n+m.lines.length,0)+(v.marker?.lines.length??0);}
-export async function measurePreviewSections(document:Document,sections:readonly {id:string;startOn:'page'|'continuous';blocks:readonly (PreviewTextBlock|PageBreak)[]}[],width:number,height:number,{measurePlainTextLines,measureDisplayMath,resolveComponentWidths,placeComponent,listInset,listMarker}:MeasureServices,retained?:{previous?:BlockMeasurementSnapshot}){
+function restoreValue(document:Document,v:ValueMeasurement,cache?:MathCompilationCache):LiveMeasurement{
+  const copy=(m:SavedText):MeasuredTextLines=>({
+    request:cleanRequest(m.request),lines:m.lines.map(l=>({start:l.start,end:l.end,height:l.height,...(l.artifact?{displayMath:restoreDisplayMathArtifact(document,l.artifact,cache)}:{})})),
+    measurement:'browser-dom-lines',publicationReady:false
+  });
+  return {measurement:copy(v.measurement),labels:new Map([...v.labels].map(([k,m])=>[k,copy(m)])),
+    slots:new Map([...v.slots].map(([k,m])=>[k,copy(m)])),marker:v.marker?copy(v.marker):undefined,
+    placement:v.placement?structuredClone(v.placement):undefined,math:v.math?restoreDisplayMathArtifact(document,v.math,cache):undefined};
+}
+function countLines(v:LiveMeasurement){return v.measurement.lines.length+[...v.labels.values(),...v.slots.values()].reduce((n,m)=>n+m.lines.length,0)+(v.marker?.lines.length??0);}
+export async function measurePreviewSections(document:Document,sections:readonly {id:string;startOn:'page'|'continuous';blocks:readonly (PreviewTextBlock|PageBreak)[]}[],width:number,height:number,{measurePlainTextLines,measureDisplayMath,resolveComponentWidths,placeComponent,listInset,listMarker}:MeasureServices,retained?:{previous?:BlockMeasurementSnapshot;mathCache?:MathCompilationCache}){
   const isBreak=(b:PreviewTextBlock|PageBreak):b is PageBreak=>'kind' in b&&b.kind==='pagebreak';
   const byKey=new Map<string,MeasuredPreviewBlock>();
   const measuredSections:MeasuredSection[]=[];
@@ -83,7 +93,7 @@ export async function measurePreviewSections(document:Document,sections:readonly
     if(b.component)countLabels(b.component.children);
     const key=retained?measurementKey(b,width,height):undefined;
     const previous=key!==undefined?retained?.previous?.get(k):undefined;
-    const hit=previous?.key===key&&previous!==undefined?valueCopy(previous.value):undefined;
+    const hit=previous?.key===key&&previous!==undefined?restoreValue(document,previous.value,retained?.mathCache):undefined;
     let value:Omit<MeasuredPreviewBlock,'block'>;
     if(hit){value=hit;reusedBlocks++;}
     else{
@@ -119,11 +129,12 @@ export async function measurePreviewSections(document:Document,sections:readonly
     const placement=b.component&&!fragmentable?placeComponent(b.component,b.request.width,measurement,labels,slots,geometry!.widths,height):undefined;
     value={measurement,labels,slots,placement,marker,math};
     }
-    if(retained&&key!==undefined&&!value.math&&keyChars+key.length<=MAX_KEY_CHARS){
+    if(retained&&key!==undefined&&keyChars+key.length<=MAX_KEY_CHARS){
       const count=countLines(value);
       if(linesRetained+count<=MAX_LINES){
         const saved=valueCopy(value);
         if(saved){next.set(k,{key,value:saved});keyChars+=key.length;linesRetained+=count;}
+        else bypassedBlocks++;
       }
     }
     byKey.set(k,{block:b,...value});

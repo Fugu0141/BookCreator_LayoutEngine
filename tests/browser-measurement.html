@@ -2,7 +2,7 @@
 <html lang="en"><meta charset="utf-8"><title>Browser measurement smoke test</title>
 <body><pre id="result">RUNNING</pre>
 <script type="module">
-import {measurePlainText,paginateMeasured,measurePlainTextLines,createPlainTextPagePreview,createIncrementalTextPagePreview,createRetainedTextPagePreview,measureDisplayMath,createPreviewMath,createTextMeasurementCache,createParagraphMeasurementCache,createPageRenderCache,parsePreviewMath,parseDisplayMath,readyPreviewMathFont,createMathCompilationCache,createDisplayMathGeometryCache,createInlineMathGeometryCache,measureInlineMathGeometry,createInlineMathAtom} from '/dist/index.js';
+import {measurePlainText,paginateMeasured,measurePlainTextLines,createPlainTextPagePreview,createIncrementalTextPagePreview,createRetainedTextPagePreview,measureDisplayMath,displayMathArtifact,restoreDisplayMathArtifact,createPreviewMath,createTextMeasurementCache,createParagraphMeasurementCache,createPageRenderCache,parsePreviewMath,parseDisplayMath,readyPreviewMathFont,createMathCompilationCache,createDisplayMathGeometryCache,createInlineMathGeometryCache,measureInlineMathGeometry,createInlineMathAtom} from '/dist/index.js';
 const result=document.querySelector('#result');
 const assert=(condition,message)=>{if(!condition)throw Error(message);};
 const phase=async name=>{await fetch('/test-progress',{method:'POST',body:name});};
@@ -1254,15 +1254,62 @@ try{
       return {revision,fingerprint:'mixed-'+revision,width,height,sections:blocks.map((b,i)=>({id:'mixed-'+i,startOn:'page',blocks:[b]}))};
     };
     const first=await createRetainedTextPagePreview(document,make('1'));
-    assert(first.measurementWork.measuredBlocks===3&&first.measurementWork.bypassedBlocks===1,'display math measurement bypass');
+    assert(first.measurementWork.measuredBlocks===3&&first.measurementWork.bypassedBlocks===0,'initial mixed measurements retained');
     const options=make('2','#eeeeee');
     const next=await createRetainedTextPagePreview(document,options,first.pageDelta.snapshot);
     const full=await createPlainTextPagePreview(document,options);
-    assert(next.measurementWork.measuredBlocks===1&&next.measurementWork.reusedBlocks===2,'component color and inline formula reuse value measurements');
+    assert(next.measurementWork.measuredBlocks===0&&next.measurementWork.reusedBlocks===3,'component color and both formula types reuse measurements');
     assert(JSON.stringify(next.plan)===JSON.stringify(full.plan)&&JSON.stringify(next.slices)===JSON.stringify(full.slices),'mixed retained plan and slices parity');
-    assert(next.pageDelta.reusedPageIndices.length===0&&Array.from(full.element.shadowRoot.children).every((n,i)=>n.isEqualNode(next.changedElement.shadowRoot.children[i])),'mixed retained DOM parity');
+    assert(next.pageDelta.reusedPageIndices.length===0,'all mixed pages generated');
+    function firstDifference(a,b,path){
+      if(!a||!b)return path+': missing node';
+      if(a.nodeName!==b.nodeName||a.nodeValue!==b.nodeValue)return path+': node differs '+a.nodeName+' / '+b.nodeName;
+      if(a.nodeType===1){
+        const keys=new Set([...a.getAttributeNames(),...b.getAttributeNames()]);
+        for(const key of keys)if(a.getAttribute(key)!==b.getAttribute(key))return path+' @'+key+': '+a.getAttribute(key)+' / '+b.getAttribute(key);
+      }
+      if(a.childNodes.length!==b.childNodes.length)return path+': child count '+a.childNodes.length+' / '+b.childNodes.length;
+      for(let i=0;i<a.childNodes.length;i++){
+        const d=firstDifference(a.childNodes[i],b.childNodes[i],path+'/'+i);if(d)return d;
+      }
+      return '';
+    }
+    for(const [i,n] of Array.from(full.element.shadowRoot.children).entries()){
+      const actual=next.changedElement.shadowRoot.children[i];
+      assert(n.isEqualNode(actual),'mixed retained DOM parity, page '+i+': '+firstDifference(n,actual,'page'));
+    }
     const changed=await createRetainedTextPagePreview(document,make('3','#eeeeee','変更した例題'),next.pageDelta.snapshot);
-    assert(changed.measurementWork.measuredBlocks===2&&changed.measurementWork.reusedBlocks===1,'component label invalidates measurement');
+    assert(changed.measurementWork.measuredBlocks===1&&changed.measurementWork.reusedBlocks===2,'component label invalidates only its measurement');
+  }
+  await phase("node-free display math artifact");
+  {
+    const source='\\frac{a}{b}',width=80000,size=5000;
+    const original=await measureDisplayMath(document,source,width,size,'2.3');
+    const handle=displayMathArtifact(original);
+    assert(handle&&Object.isFrozen(handle),'successful measurement issues opaque artifact');
+    const restored=restoreDisplayMathArtifact(document,handle);
+    assert(restored.width===original.width&&restored.height===original.height&&restored.element.isEqualNode(original.element),'numbered equation restores exact node and dimensions');
+    assert(restored.element!==original.element&&!restored.element.isConnected,'fresh detached math node');
+    original.element.textContent='mutated';
+    assert(restored.element.querySelector('mfrac')&&restored.element.querySelector('[data-equation-number]').textContent==='(2.3)','artifact independent of old DOM');
+    assert(restoreDisplayMathArtifact(document,displayMathArtifact(restored)).element.isEqualNode(restored.element),'artifact works across generations');
+    for(const [doc,artifact] of [[document,{kind:'display-math-artifact'}],[document.implementation.createHTMLDocument('foreign'),handle]]){
+      let rejected=false;try{restoreDisplayMathArtifact(doc,artifact);}catch{rejected=true;}
+      assert(rejected,'forged or foreign math artifact rejected');
+    }
+    const make=(revision,number='2.3',formula=source)=>({revision,fingerprint:'numbered-retained-'+revision,width,height:100000,blocks:[{
+      origin:{documentId:'numbered-retained',revision,blockKey:'formula'},
+      request:{...request,text:formula,width,fontSize:size},displayMath:true,equationNumber:number,splitPolicy:'strict'
+    }]});
+    const first=await createRetainedTextPagePreview(document,make('1'));
+    const second=await createRetainedTextPagePreview(document,make('2'),first.pageDelta.snapshot);
+    assert(second.measurementWork.measuredBlocks===0&&second.measurementWork.reusedBlocks===1,'unchanged numbered equation not remeasured');
+    assert(first.changedElement.shadowRoot.firstElementChild.isEqualNode(second.changedElement.shadowRoot.firstElementChild),'fresh numbered page parity');
+    assert(first.changedElement.shadowRoot.querySelector('mfrac')!==second.changedElement.shadowRoot.querySelector('mfrac'),'prior formula node not moved');
+    const renumbered=await createRetainedTextPagePreview(document,make('3','2.4'),second.pageDelta.snapshot);
+    assert(renumbered.measurementWork.measuredBlocks===1,'equation number changes invalidate measurement');
+    const edited=await createRetainedTextPagePreview(document,make('4','2.4','x^2'),renumbered.pageDelta.snapshot);
+    assert(edited.measurementWork.measuredBlocks===1,'formula content changes invalidate measurement');
   }
   await phase("multiline display source and exact offsets");
   {
@@ -1277,6 +1324,14 @@ try{
     const multi={...multiBlock,sourceTextStart:undefined,request:{...request,text:primary,multiline:true,inlineMath:[{start:primary.indexOf('\uFFFC'),formula,display:true}]},namedSlots:[{name:'hint',request:{...slotRequest,text:hint,multiline:true,inlineMath:[{start:hint.indexOf('\uFFFC'),formula,display:true}]}},multiBlock.namedSlots[1]]};
     const q=await createPlainTextPagePreview(document,{...multiOptions,height:190000,blocks:[multi]});
     assert(q.element.shadowRoot.querySelectorAll('[data-slot-display-math] mtable').length===2,'primary and named multiline display formulas');
+    const retainedOptions={...multiOptions,height:190000,blocks:[multi]};
+    const first=await createRetainedTextPagePreview(document,retainedOptions);
+    const next=await createRetainedTextPagePreview(document,{...retainedOptions,revision:'next'},first.pageDelta.snapshot);
+    const full=await createPlainTextPagePreview(document,{...retainedOptions,revision:'next'});
+    assert(next.measurementWork.measuredBlocks===0&&next.measurementWork.reusedBlocks===1,'primary and named slot display artifacts avoid measurement');
+    assert(JSON.stringify(next.plan)===JSON.stringify(full.plan)&&JSON.stringify(next.slices)===JSON.stringify(full.slices),'slot display retained plan and slices parity');
+    assert(next.changedElement.shadowRoot.firstElementChild.isEqualNode(full.element.shadowRoot.firstElementChild),'slot display retained DOM parity');
+    assert(first.changedElement.shadowRoot.querySelectorAll('[data-slot-display-math] mtable').length===2,'original slot nodes remain in prior paper');
     for(const bad of [{...block,displayMath:undefined},{...block,request:{...req,text:'\uFFFC',inlineMath:[{start:0,formula}]},displayMath:undefined,sourceTextStart:undefined}]){
       let rejected=false;try{await createPlainTextPagePreview(document,{...options,blocks:[bad]});}catch{rejected=true;}
       assert(rejected,'ordinary/inline source cannot contain multiline formula');
