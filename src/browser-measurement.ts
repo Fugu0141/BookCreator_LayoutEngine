@@ -1,5 +1,6 @@
 import {applyPreviewFont,readyPreviewFont,isPreviewFontFamily,isPreviewFontWeight,type PreviewFontFamily} from './preview-font.js';
 export type {PreviewFontFamily} from './preview-font.js';
+import type {PreviewMathFontFamily} from './math-preview.js';
 // Browser-only experimental whole-block text measurement, not line fragmentation.
 // Host supplies a trusted dedicated measurement Document; never inject HTML or load resources.
 /** Non-overlapping UTF-16 ranges in logical text; no HTML or CSS strings. */
@@ -28,6 +29,8 @@ export interface PlainTextMeasureRequest {
   inlineStyles?:readonly InlineStyleRun[];
   /** Line preview only; exactly one atom for each U+FFFC placeholder. */
   inlineMath?:readonly InlineMathAtom[];
+  /** Independent math font role; auto uses the system math fallback stack. */
+  mathFontFamily?:PreviewMathFontFamily;
 }
 export interface PlainTextMeasurement {
   width:number;
@@ -41,7 +44,7 @@ const positive=(n:number)=>Number.isSafeInteger(n)&&n>0;
 const px=(um:number)=>um*96/25400;
 export async function measurePlainText(document:Document,request:PlainTextMeasureRequest):Promise<PlainTextMeasurement>{
   if(!document.body||!document.defaultView||!document.fonts)throw new Error('A live browser document is required');
-  if(request.inlineStyles!==undefined||request.inlineMath!==undefined||request.text?.includes('\uFFFC'))throw RangeError('Inline styles and math require line-based measurement');
+  if(request.inlineStyles!==undefined||request.inlineMath!==undefined||request.mathFontFamily!==undefined||request.text?.includes('\uFFFC'))throw RangeError('Inline styles and math require line-based measurement');
   if(typeof request.text!=='string'||!request.text.length||request.text.length>100000||
     !positive(request.width)||request.width>2000000||!positive(request.fontSize)||request.fontSize>100000||
     !isPreviewFontFamily(request.fontFamily)||!isPreviewFontWeight(request.fontWeight)||!Number.isFinite(request.lineHeight)||request.lineHeight<1||request.lineHeight>4)
