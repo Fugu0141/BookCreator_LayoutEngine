@@ -69,6 +69,24 @@ try{
   await createPlainTextPagePreview(document,{...styled,measurementCache:cache});
   assert(cache.stats().entries===0,'styled request bypasses conservative cache');
   }
+  await phase("batched frozen row validation");
+  {
+    const uniform={...request,text:'日本語 ABC 123。 '.repeat(36),width:40000};
+    const variable={...uniform,inlineStyles:[{start:0,end:3,fontSize:7000}]};
+    for(const req of [uniform,variable]){
+      const m=await measurePlainTextLines(document,req);
+      assert(m.lines.length>8,'multi-row batch fixture');
+      assert(m.lines.map(l=>req.text.slice(l.start,l.end)).join('')===req.text,'batch preserves exact logical ranges');
+      const opts={revision:'1',fingerprint:'batch-rows',width:req.width,height:30000,blocks:[{origin:{documentId:'batch',revision:'1',blockKey:'rows'},request:req,splitPolicy:'allow'}]};
+      const a=await createPlainTextPagePreview(document,opts);
+      const cache=createTextMeasurementCache(document);
+      const b=await createPlainTextPagePreview(document,{...opts,measurementCache:cache});
+      assert(JSON.stringify(a.plan)===JSON.stringify(b.plan)&&JSON.stringify(a.slices)===JSON.stringify(b.slices),'batched rows retain identical layout with cache mode');
+      assert(a.element.shadowRoot.innerHTML===b.element.shadowRoot.innerHTML,'batched row paper DOM equivalent');
+      assert(a.plan.pages.length>1,'batch rows span pages');
+      assert(document.body.children.length===before+1,'batched temporary measurement hosts cleaned up');
+    }
+  }
   await phase("remaining browser measurement checks");
   let rejected=false;try{await measurePlainTextLines(document,{...request,text:'a\nb'});}catch{rejected=true;}
   assert(rejected,'unsupported line contexts refused');
