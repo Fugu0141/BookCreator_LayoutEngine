@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {paginateMeasured,paginateMeasuredIncremental} from '../dist/index.js';
+import {paginateMeasured,paginateMeasuredIncremental,paginateMeasuredIncrementalCooperative} from '../dist/index.js';
 
 const origin=(key,revision='1',offset=0)=>({documentId:'doc',blockKey:key,revision,range:{start:offset,end:offset+2}});
 const block=(key,heights,extra={})=>({kind:'block',origin:origin(key),width:100,unitHeights:heights,splitPolicy:'allow',...extra});
@@ -135,4 +135,43 @@ test('many valid multi-section edits preserve full parity through repeated conve
     assert.equal(previous.reusedBlocks+previous.placedBlocks,blocks.length+2);
   }
   assert.ok(reusedTail>0);
+});
+
+test('cooperative pagination shares full and incremental results, including invalid input',async()=>{
+  const blocks=Array.from({length:70},(_,i)=>block('b'+i,[10,15,20]));
+  const original=input([section('s',blocks)]);
+  const prior=check(original);
+  const changed=input([section('s',blocks.map((b,i)=>({...b,origin:origin(b.origin.blockKey,'2',i*3),unitHeights:i===35?[20,15,20]:b.unitHeights})))],'2');
+  for(const [value,previous] of [[original,undefined],[changed,prior.snapshot],[input([section('s',[block('bad',[0])])]),prior.snapshot]]){
+    const stages=[];
+    const actual=await paginateMeasuredIncrementalCooperative(value,previous,stage=>{stages.push(stage);return new Promise(resolve=>setTimeout(resolve,0));});
+    const expected=paginateMeasuredIncremental(value,previous);
+    assert.deepEqual(actual.plan,expected.plan);
+    for(const key of ['placedBlocks','reusedBlocks','reusedSuffixBlocks'])assert.equal(actual[key],expected[key]);
+    assert.equal(!!actual.snapshot,!!expected.snapshot);
+    assert.ok(stages.includes('paginate-validate'));
+    if(expected.snapshot){
+      assert.ok(stages.includes('paginate-key'));assert.ok(stages.includes('paginate-place'));
+      assert.equal(check(value,actual.snapshot).placedBlocks,0);
+    }
+  }
+});
+test('cooperative pagination yields inside a large block and aborts without changing prior snapshot',async()=>{
+  const original=input([section('s',[block('large',Array(1024).fill(1))])]);
+  const prior=check(original);
+  const changed=input([section('s',[block('large',Array(1024).fill(2))])],'2');
+  for(const stop of ['paginate-validate','paginate-key','paginate-place']){
+    const reason=new Error(stop);
+    let calls=0;
+    await assert.rejects(paginateMeasuredIncrementalCooperative(changed,prior.snapshot,stage=>{
+      if(stage!==stop)return;
+      calls++;return new Promise((resolve,reject)=>setTimeout(()=>reject(reason),0));
+    }),e=>e===reason);
+    assert.equal(calls,1);assert.equal(check(original,prior.snapshot).placedBlocks,0);
+  }
+  const stages=[];
+  const result=await paginateMeasuredIncrementalCooperative(changed,prior.snapshot,stage=>{stages.push(stage);});
+  assert.deepEqual(result.plan,paginateMeasured(changed));
+  assert.ok(stages.filter(s=>s==='paginate-validate').length>=4);
+  assert.ok(stages.filter(s=>s==='paginate-place').length>=4);
 });
