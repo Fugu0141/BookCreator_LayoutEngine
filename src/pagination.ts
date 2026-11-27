@@ -174,8 +174,7 @@ function* runPagination(input:PaginationInput,incremental?:IncrementalState):Gen
   let copied=0;
   const savedByLive=new WeakMap<Fragment,SavedFragment>();
   const copyFragment=(f:SavedFragment):Fragment=>{
-    const {originKey:key,...geometry}=f;
-    const live={...geometry,rect:{...f.rect},origin:currentOrigins.get(key)!};
+    const live:Fragment={origin:currentOrigins.get(f.originKey)!,rect:{...f.rect},unitStart:f.unitStart,unitEnd:f.unitEnd,continuationIndex:f.continuationIndex,breakReason:f.breakReason};
     savedByLive.set(live,f);
     return live;
   };
