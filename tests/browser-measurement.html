@@ -1264,6 +1264,33 @@ try{
     let priorityCancelled=false;
     try{await createRetainedTextPagePreview(document,options,initial.pageDelta.snapshot,(stage,index)=>{if(stage==='render-page'&&index===2)throw Error('priority cancelled');},[6,2]);}catch(e){priorityCancelled=e.message==='priority cancelled';}
     assert(priorityCancelled&&document.body.children.length===beforeRetained,'priority cancellation releases measurement hosts');
+    // Provisional snapshots are separate from the final DOM and lease.
+    const delivered=[],visited=[];
+    const streaming=await createRetainedTextPagePreview(document,options,initial.pageDelta.snapshot,(stage,index)=>{
+      if(stage==='render-page')visited.push(index);
+    },[6,2,4],async page=>{
+      delivered.push(page.index);
+      assert(page.index===2&&page.pageCount===8&&page.element.inert&&!page.element.isConnected,'only newly generated priority page delivered');
+      assert(JSON.stringify(visited)===JSON.stringify([6,2]),'delivery happens before remaining page traversal');
+      page.element.textContent='host-owned transient copy';
+      await new Promise(resolve=>setTimeout(resolve,0));
+    });
+    assert(JSON.stringify(delivered)===JSON.stringify([2]),'unchanged priority pages need no provisional copies');
+    assert(streaming.changedElement.shadowRoot.firstElementChild.isEqualNode(changed.get(2)),'consumer mutation cannot change final DOM');
+    assert(JSON.stringify(streaming.slices)===JSON.stringify(oracle.slices),'provisional copy preserves canonical slices');
+    const reason=new Error('provisional consumer cancelled');let receivedError;
+    try{await createRetainedTextPagePreview(document,options,initial.pageDelta.snapshot,undefined,[2],()=>{throw reason;});}catch(e){receivedError=e;}
+    assert(receivedError===reason&&document.body.children.length===beforeRetained,'provisional receiver failure aborts and releases resources');
+    const {createProvisionalPageDelivery}=await import('/dist/preview-page-delivery.js');
+    const rasterPage=document.createElement('div'),canvas=document.createElement('canvas');
+    canvas.width=2;canvas.height=2;canvas.getContext('2d').fillStyle='#ff0000';canvas.getContext('2d').fillRect(0,0,2,2);rasterPage.append(canvas);
+    const rasterDelivery=createProvisionalPageDelivery([0],page=>{
+      const copied=page.element.querySelector('canvas');
+      assert(copied!==canvas&&copied.getContext('2d').getImageData(0,0,1,1).data[0]===255,'provisional raster pixels preserved');
+      copied.getContext('2d').clearRect(0,0,2,2);
+    });
+    await rasterDelivery(rasterPage,0,1);
+    assert(canvas.getContext('2d').getImageData(0,0,1,1).data[3]===255,'original raster unaffected by copy mutation');
     for(const stop of ['validated','measure-block','paginate','render-page','complete']){
       const reason=new Error('cancel '+stop);
       let caught;

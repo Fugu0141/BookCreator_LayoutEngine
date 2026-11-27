@@ -1,6 +1,7 @@
 // DOM rendering boundary. Receives already measured blocks and a completed
 // pagination plan. No measuring, font loading, pagination or resource decoding.
 import {prioritizePages} from './preview-page-priority.js';
+import {createProvisionalPageDelivery,type ProvisionalPageReceiver} from './preview-page-delivery.js';
 import {imageSourceRect} from './image-crop.js';
 import type {MeasuredDisplayMath} from './math-preview.js';
 import type {MeasuredPagePlan,MeasuredPage,Origin} from './pagination.js';
@@ -100,7 +101,7 @@ const px=(um:number)=>um*96/25400;
 export const previewBlockKey=(o:Origin)=>JSON.stringify([o.documentId,o.blockKey]);
 // Internal ownership contract: math nodes are consumed by this render; bitmaps
 // are borrowed for this call (including optional cooperative waits), and closed by their owning orchestrator.
-export async function renderMeasuredPreview(document:Document,plan:MeasuredPagePlan,{width,height,paper,byKey,images,pageCache,pageCacheEpoch,delta}:{width:number;height:number;paper?:PreviewPaper;byKey:ReadonlyMap<string,MeasuredPreviewBlock>;images:ReadonlyMap<string,ImageBitmap>;pageCache?:PageRenderCache;pageCacheEpoch?:number;delta?:{previousKeys:ReadonlyMap<number,string>}},{styleText,frozenText,listInset}:RenderServices,checkpoint?:PreviewCheckpoint,priorityPages?:readonly number[]):Promise<TextPagePreview & {pageDelta?:PageRenderDelta}>{
+export async function renderMeasuredPreview(document:Document,plan:MeasuredPagePlan,{width,height,paper,byKey,images,pageCache,pageCacheEpoch,delta}:{width:number;height:number;paper?:PreviewPaper;byKey:ReadonlyMap<string,MeasuredPreviewBlock>;images:ReadonlyMap<string,ImageBitmap>;pageCache?:PageRenderCache;pageCacheEpoch?:number;delta?:{previousKeys:ReadonlyMap<number,string>}},{styleText,frozenText,listInset}:RenderServices,checkpoint?:PreviewCheckpoint,priorityPages?:readonly number[],onPriorityPage?:ProvisionalPageReceiver):Promise<TextPagePreview & {pageDelta?:PageRenderDelta}>{
   let renderedImagePixels=0;
   const element=document.createElement('div');element.style.cssText='all:initial;display:block;';
   const root=element.attachShadow({mode:'open'});
@@ -121,6 +122,7 @@ export async function renderMeasuredPreview(document:Document,plan:MeasuredPageP
   if(priorityPages)for(const p of plan.pages)admitKey(p);
   const ordered=prioritizePages(plan.pages,priorityPages);
   const drawn=new Map<number,HTMLElement>();
+  const deliver=onPriorityPage?createProvisionalPageDelivery(priorityPages,onPriorityPage):undefined;
   for(const p of ordered){
     if(checkpoint)await checkpoint('render-page',p.index);
     if(!priorityPages)admitKey(p);
@@ -241,6 +243,7 @@ export async function renderMeasuredPreview(document:Document,plan:MeasuredPageP
     if(page){
       if(state&&key!==undefined&&!cached)keepPage(state,key,page);
       if(priorityPages)drawn.set(p.index,page);else root.append(page);
+      if(deliver)await deliver(page,p.index,plan.pages.length);
     }
   }
   if(priorityPages){
