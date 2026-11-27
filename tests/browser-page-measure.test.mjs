@@ -47,6 +47,18 @@ test('retained measurement skips unchanged blocks, binds current source and igno
   assert.equal(calls,3);assert.equal(placements,1);assert.equal(second.measurementWork.reusedBlocks,2);
   assert.equal(second.byKey.get(previewBlockKey(b.origin)).block,updated);
   assert.equal(second.measuredSections[0].blocks[1].origin,updated.origin);
+  assert.equal(first.measurementWork.sharedSnapshotEntries,0);
+  assert.equal(second.measurementWork.sharedSnapshotEntries,2);
+  const key=previewBlockKey(b.origin);
+  assert.equal(first.measurementSnapshot.get(key),second.measurementSnapshot.get(key));
+  assert.notEqual(first.measurementSnapshot,second.measurementSnapshot);
+  // Mutating the transient render data must not affect either snapshot.
+  second.byKey.get(key).measurement.lines[0].height=123;
+  second.byKey.get(key).labels.get('label').lines[0].height=456;
+  second.byKey.get(key).placement.rect.height=789;
+  assert.equal(first.measurementSnapshot.get(key).value.measurement.lines[0].height,6000);
+  assert.equal(first.measurementSnapshot.get(key).value.labels.get('label').lines[0].height,6000);
+  assert.equal(first.measurementSnapshot.get(key).value.placement.rect.height,26000);
   const third=await run([{...a,request:{...a.request,text:'xy'}},updated],second.measurementSnapshot);
   assert.equal(calls,4);assert.equal(third.measurementWork.reusedBlocks,1);
   await run([a,updated],third.measurementSnapshot,31000);
@@ -62,4 +74,22 @@ test('standalone and slot display math bypass retained value data',async()=>{
   const second=await run(first.measurementSnapshot);
   assert.equal(calls,2);assert.equal(second.measurementWork.bypassedBlocks,1);assert.equal(second.measurementWork.reusedBlocks,0);
   assert.equal(second.measurementSnapshot.size,0);
+});
+
+test('shared entries reapply the line budget in current source order',async()=>{
+  const svc={...services,measurePlainTextLines:async(_document,r)=>({request:r,lines:Array.from({length:5000},(_,i)=>({start:i,end:i+1,height:6000})),measurement:'browser-dom-lines',publicationReady:false})};
+  const make=id=>({...block('book',id),origin:{...origin('book',id),range:{start:0,end:5000}},request:{...request,text:'a'.repeat(5000)}});
+  const [a,b,c]=['a','b','c'].map(make);
+  const run=(blocks,previous)=>measurePreviewSections(null,[{id:'book',startOn:'page',blocks}],10000,30000,svc,{previous});
+  const first=await run([a,b,c]);
+  const second=await run([c,b,a],first.measurementSnapshot);
+  const key=b=>previewBlockKey(b.origin);
+  assert.deepEqual([...first.measurementSnapshot.keys()],[key(a),key(b)]);
+  assert.deepEqual([...second.measurementSnapshot.keys()],[key(c),key(b)]);
+  assert.equal(second.measurementWork.reusedBlocks,2);
+  assert.equal(second.measurementWork.sharedSnapshotEntries,1);
+  assert.equal(second.measurementSnapshot.get(key(b)),first.measurementSnapshot.get(key(b)));
+  const third=await run([a,b,c],second.measurementSnapshot);
+  assert.equal(third.measurementWork.measuredBlocks,1);
+  assert.equal(third.measurementWork.sharedSnapshotEntries,1);
 });

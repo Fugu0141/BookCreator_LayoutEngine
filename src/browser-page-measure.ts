@@ -18,9 +18,11 @@ interface MeasureServices{
 type SavedLine=Omit<MeasuredTextLines['lines'][number],'displayMath'>&{artifact?:DisplayMathArtifact};
 type SavedText=Omit<MeasuredTextLines,'lines'>&{lines:SavedLine[]};
 type ValueMeasurement={measurement:SavedText;labels:Map<string,SavedText>;slots:Map<string,SavedText>;marker?:SavedText;placement?:ComponentPlacement;math?:DisplayMathArtifact};
-type RetainedEntry={key:string;value:ValueMeasurement};
+// Private, node-free entries are never mutated after capture. restoreValue
+// always rebuilds independently owned live render data.
+type RetainedEntry=Readonly<{key:string;value:ValueMeasurement;lineCount:number}>;
 export type BlockMeasurementSnapshot=ReadonlyMap<string,RetainedEntry>;
-export interface BlockMeasurementWork {readonly measuredBlocks:number;readonly reusedBlocks:number;readonly bypassedBlocks:number}
+export interface BlockMeasurementWork {readonly measuredBlocks:number;readonly reusedBlocks:number;readonly bypassedBlocks:number;readonly sharedSnapshotEntries:number}
 const MAX_KEY_CHARS=250000,MAX_LINES=10000;
 function cleanRequest(r:PlainTextMeasureRequest):PlainTextMeasureRequest{
   return {text:r.text,width:r.width,fontSize:r.fontSize,fontFamily:r.fontFamily,fontWeight:r.fontWeight,lineHeight:r.lineHeight,
@@ -71,7 +73,7 @@ export async function measurePreviewSections(document:Document,sections:readonly
   const isBreak=(b:PreviewTextBlock|PageBreak):b is PageBreak=>'kind' in b&&b.kind==='pagebreak';
   const byKey=new Map<string,MeasuredPreviewBlock>();
   const measuredSections:MeasuredSection[]=[];
-  let totalLabelText=0,keyChars=0,linesRetained=0,measuredBlocks=0,reusedBlocks=0,bypassedBlocks=0;
+  let totalLabelText=0,keyChars=0,linesRetained=0,measuredBlocks=0,reusedBlocks=0,bypassedBlocks=0,sharedSnapshotEntries=0;
   const next=new Map<string,RetainedEntry>();
   for(const section of sections){
     const blocks: (MeasuredSection['blocks'][number])[]=[];
@@ -131,11 +133,17 @@ export async function measurePreviewSections(document:Document,sections:readonly
     value={measurement,labels,slots,placement,marker,math};
     }
     if(retained&&key!==undefined&&keyChars+key.length<=MAX_KEY_CHARS){
-      const count=countLines(value);
+      // The hit already has an isolated value snapshot. Share that entry,
+      // not the transient live data or its DOM nodes. Reapply both budgets
+      // in current source order, including when blocks have moved.
+      const count=hit&&previous?previous.lineCount:countLines(value);
       if(linesRetained+count<=MAX_LINES){
-        const saved=valueCopy(value);
-        if(saved){next.set(k,{key,value:saved});keyChars+=key.length;linesRetained+=count;}
-        else bypassedBlocks++;
+        const saved=hit&&previous?previous.value:valueCopy(value);
+        if(saved){
+          const entry=hit&&previous?previous:Object.freeze({key,value:saved,lineCount:count});
+          next.set(k,entry);keyChars+=key.length;linesRetained+=count;
+          if(hit&&previous)sharedSnapshotEntries++;
+        }else bypassedBlocks++;
       }
     }
     byKey.set(k,{block:b,...value});
@@ -144,5 +152,5 @@ export async function measurePreviewSections(document:Document,sections:readonly
   }
     measuredSections.push({id:section.id,startOn:section.startOn,blocks});
   }
-  return {byKey,measuredSections,measurementSnapshot:retained?next:undefined,measurementWork:Object.freeze({measuredBlocks,reusedBlocks,bypassedBlocks})};
+  return {byKey,measuredSections,measurementSnapshot:retained?next:undefined,measurementWork:Object.freeze({measuredBlocks,reusedBlocks,bypassedBlocks,sharedSnapshotEntries})};
 }

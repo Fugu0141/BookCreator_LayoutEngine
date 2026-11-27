@@ -1331,6 +1331,7 @@ try{
     const next=await createRetainedTextPagePreview(document,options,first.pageDelta.snapshot);
     const full=await createPlainTextPagePreview(document,options);
     assert(next.measurementWork.measuredBlocks===0&&next.measurementWork.reusedBlocks===3,'component color and both formula types reuse measurements');
+    assert(next.measurementWork.sharedSnapshotEntries===3,'component and formula snapshots shared without retaining live DOM');
     assert(JSON.stringify(next.plan)===JSON.stringify(full.plan)&&JSON.stringify(next.slices)===JSON.stringify(full.slices),'mixed retained plan and slices parity');
     assert(next.pageDelta.reusedPageIndices.length===0,'all mixed pages generated');
     function firstDifference(a,b,path){
@@ -1376,6 +1377,7 @@ try{
     const first=await createRetainedTextPagePreview(document,make('1'));
     const second=await createRetainedTextPagePreview(document,make('2'),first.pageDelta.snapshot);
     assert(second.measurementWork.measuredBlocks===0&&second.measurementWork.reusedBlocks===1,'unchanged numbered equation not remeasured');
+    assert(second.measurementWork.sharedSnapshotEntries===1,'numbered formula value shared, not its live node');
     assert(first.changedElement.shadowRoot.firstElementChild.isEqualNode(second.changedElement.shadowRoot.firstElementChild),'fresh numbered page parity');
     assert(first.changedElement.shadowRoot.querySelector('mfrac')!==second.changedElement.shadowRoot.querySelector('mfrac'),'prior formula node not moved');
     const renumbered=await createRetainedTextPagePreview(document,make('3','2.4'),second.pageDelta.snapshot);
