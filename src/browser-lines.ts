@@ -553,6 +553,7 @@ export interface RetainedPaginationWork {
   readonly reusedBlocks:number;
   readonly reusedSuffixBlocks:number;
   readonly placedBlocks:number;
+  readonly sharedSnapshotFragments:number;
 }
 /** Safe boundaries between completed units. The optional host callback may
  * return a task promise to yield to the event loop, or throw to abandon work.
@@ -664,7 +665,7 @@ async function createTextPreview(document:Document,options:TextPagePreviewOption
   if(incremental?.snapshot&&result.pageDelta)retainedPaginationSnapshots.set(result.pageDelta.snapshot,incremental.snapshot);
   if(measurementSnapshot&&result.pageDelta)retainedMeasurementSnapshots.set(result.pageDelta.snapshot,{snapshot:measurementSnapshot,inlineMathGeometry:!!inlineMathCache});
   const output=incremental?{...result,measurementWork,paginationWork:Object.freeze({
-    reusedBlocks:incremental.reusedBlocks,reusedSuffixBlocks:incremental.reusedSuffixBlocks,placedBlocks:incremental.placedBlocks
+    reusedBlocks:incremental.reusedBlocks,reusedSuffixBlocks:incremental.reusedSuffixBlocks,placedBlocks:incremental.placedBlocks,sharedSnapshotFragments:incremental.sharedSnapshotFragments
   })}:result;
   if(!timed)return output;
   const rendered=now();

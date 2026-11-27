@@ -202,3 +202,49 @@ test('cooperative prefix and converged tail copying can be cancelled without mut
   result.plan.pages[0].fragments[0].rect.height=999;
   assert.deepEqual(check(edited,result.snapshot).plan,paginateMeasured(edited));
 });
+
+test('private placement geometry is shared without retaining old source metadata or exposing mutable rectangles',()=>{
+  const blocks=Array.from({length:100},(_,i)=>block('b'+i,[10]));
+  const first=check(input([section('s',blocks)]));
+  assert.equal(first.sharedSnapshotFragments,0);
+  const edited=blocks.map((b,i)=>({...b,origin:origin(b.origin.blockKey,'2',i*3),unitHeights:i===20?[15]:i===21?[5]:b.unitHeights}));
+  const next=input([section('s',edited)],'2');
+  const second=check(next,first.snapshot);
+  assert.equal(second.sharedSnapshotFragments,98);
+  assert.equal(second.plan.pages[0].fragments[0].origin,edited[0].origin);
+  assert.notEqual(second.plan.pages[0].fragments[0].rect,first.plan.pages[0].fragments[0].rect);
+  first.plan.pages[0].fragments[0].rect.height=999;
+  first.plan.pages[0].fragments[0].origin.blockKey='mutated';
+  second.plan.pages[0].fragments[0].rect.height=888;
+  const third=check(next,second.snapshot);
+  assert.equal(third.sharedSnapshotFragments,100);
+  assert.equal(third.placedBlocks,0);
+  const fourth=check(next,first.snapshot);
+  assert.equal(fourth.sharedSnapshotFragments,98);
+});
+test('snapshot stores only placement values and rebinds even non-cloneable extra origin metadata',()=>{
+  const a=block('a',[60,60],{splitPolicy:'avoid'});
+  a.origin.extra=()=>1;
+  const first=check(input([section('s',[a])]));
+  assert.ok(first.snapshot);
+  const b={...a,origin:{...origin('a','2',10),extra:()=>2}};
+  const next=input([section('s',[b])],'2');
+  const second=check(next,first.snapshot);
+  assert.equal(second.sharedSnapshotFragments,2);
+  assert.equal(second.plan.diagnostics[0].origin,b.origin);
+  assert.equal(second.plan.pages[0].fragments[0].origin,b.origin);
+});
+test('snapshot creation cooperates and cancellation preserves the previous lease',async()=>{
+  const blocks=Array.from({length:512},(_,i)=>block('b'+i,[10]));
+  const value=input([section('s',blocks)]);
+  const first=check(value);
+  let calls=0;
+  const reason=new Error('snapshot superseded');
+  await assert.rejects(paginateMeasuredIncrementalCooperative(value,first.snapshot,stage=>{
+    if(stage==='paginate-snapshot'&&++calls===3)return new Promise((_,reject)=>setTimeout(()=>reject(reason),0));
+  }),e=>e===reason);
+  assert.equal(calls,3);
+  const resumed=check(value,first.snapshot);
+  assert.equal(resumed.sharedSnapshotFragments,512);
+  assert.equal(resumed.placedBlocks,0);
+});

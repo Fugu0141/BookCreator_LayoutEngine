@@ -71,14 +71,21 @@ export interface IncrementalPaginationResult {
   reusedBlocks:number;
   reusedSuffixBlocks:number;
   placedBlocks:number;
+  /** Number of private fragment values shared with the preceding snapshot. */
+  sharedSnapshotFragments:number;
 }
 type Checkpoint={used:number;reason:Fragment['breakReason'];pageCount:number;lastFragmentCount:number;diagnosticCount:number};
-type SavedPagination={width:number;height:number;keys:string[];checkpoints:Checkpoint[];plan:MeasuredPagePlan};
-type IncrementalState={previous?:SavedPagination;next?:SavedPagination;reusedBlocks:number;reusedSuffixBlocks:number;placedBlocks:number};
+// Private geometry contains only a stable source key, never live Origin
+// metadata. These values are immutable by ownership and may span generations.
+type SavedFragment=Readonly<Omit<Fragment,'origin'|'rect'>&{originKey:string;rect:Readonly<Rect>}>;
+type SavedDiagnostic=Readonly<Omit<PaginationDiagnostic,'origin'>&{originKey?:string}>;
+type SavedPage={readonly index:number;readonly fragments:readonly SavedFragment[]};
+type SavedPagination={width:number;height:number;keys:string[];checkpoints:Checkpoint[];plan:{pages:SavedPage[];diagnostics:SavedDiagnostic[]}};
+type IncrementalState={previous?:SavedPagination;next?:SavedPagination;reusedBlocks:number;reusedSuffixBlocks:number;placedBlocks:number;sharedSnapshotFragments:number};
 const snapshots=new WeakMap<PaginationCheckpointSnapshot,SavedPagination>();
 const MAX_CHECKPOINT_EVENTS=10000,MAX_CHECKPOINT_UNITS=100000,MAX_CHECKPOINT_FRAGMENTS=50000;
 const originKey=(o:Origin)=>JSON.stringify([o.documentId,o.blockKey]);
-export type PaginationWorkStage='paginate-validate'|'paginate-key'|'paginate-place'|'paginate-match'|'paginate-reuse';
+export type PaginationWorkStage='paginate-validate'|'paginate-key'|'paginate-place'|'paginate-match'|'paginate-reuse'|'paginate-snapshot';
 export type PaginationWorkCheckpoint=(stage:PaginationWorkStage)=>void|Promise<void>;
 function finishSynchronously(work:Generator<PaginationWorkStage,MeasuredPagePlan,void>):MeasuredPagePlan {
   let step=work.next();
@@ -92,7 +99,7 @@ export function paginateMeasured(input:PaginationInput):MeasuredPagePlan {
  * state is reached, an identical suffix. Validation, copying and current-origin
  * rebinding still scan the input. No browser measurement reuse is implied. */
 export function paginateMeasuredIncremental(input:PaginationInput,previous?:PaginationCheckpointSnapshot):IncrementalPaginationResult {
-  const state:IncrementalState={previous:previous?snapshots.get(previous):undefined,reusedBlocks:0,reusedSuffixBlocks:0,placedBlocks:0};
+  const state:IncrementalState={previous:previous?snapshots.get(previous):undefined,reusedBlocks:0,reusedSuffixBlocks:0,placedBlocks:0,sharedSnapshotFragments:0};
   const plan=finishSynchronously(runPagination(input,state));
   return finishIncremental(plan,state);
 }
@@ -100,7 +107,7 @@ export function paginateMeasuredIncremental(input:PaginationInput,previous?:Pagi
  * and must keep it unchanged until completion. A rejected checkpoint aborts
  * without publishing a new snapshot or changing the previous snapshot. */
 export async function paginateMeasuredIncrementalCooperative(input:PaginationInput,previous:PaginationCheckpointSnapshot|undefined,checkpoint:PaginationWorkCheckpoint):Promise<IncrementalPaginationResult>{
-  const state:IncrementalState={previous:previous?snapshots.get(previous):undefined,reusedBlocks:0,reusedSuffixBlocks:0,placedBlocks:0};
+  const state:IncrementalState={previous:previous?snapshots.get(previous):undefined,reusedBlocks:0,reusedSuffixBlocks:0,placedBlocks:0,sharedSnapshotFragments:0};
   const work=runPagination(input,state);
   try{
     let step=work.next();
@@ -117,7 +124,7 @@ function finishIncremental(plan:MeasuredPagePlan,state:IncrementalState):Increme
     snapshot=Object.freeze({kind:'pagination-checkpoint-snapshot' as const});
     snapshots.set(snapshot,state.next);
   }
-  return {plan,snapshot,reusedBlocks:state.reusedBlocks,reusedSuffixBlocks:state.reusedSuffixBlocks,placedBlocks:state.placedBlocks};
+  return {plan,snapshot,reusedBlocks:state.reusedBlocks,reusedSuffixBlocks:state.reusedSuffixBlocks,placedBlocks:state.placedBlocks,sharedSnapshotFragments:state.sharedSnapshotFragments};
 }
 function* runPagination(input:PaginationInput,incremental?:IncrementalState):Generator<PaginationWorkStage,MeasuredPagePlan,void> {
   const result:MeasuredPagePlan={schemaVersion:1,revision:input.revision,fingerprint:input.fingerprint,completeness:'partial',measurement:'premeasured',publicationReady:false,pages:[],diagnostics:[]};
@@ -165,9 +172,17 @@ function* runPagination(input:PaginationInput,incremental?:IncrementalState):Gen
   let prefix=0,eventIndex=0,suffix=0;
   let compatible:SavedPagination|undefined;
   let copied=0;
-  const copyFragment=(f:Fragment):Fragment=>({...f,rect:{...f.rect},origin:currentOrigins.get(originKey(f.origin))!});
-  const copyDiagnostic=(d:PaginationDiagnostic):PaginationDiagnostic=>({...d,origin:d.origin?currentOrigins.get(originKey(d.origin)):undefined});
-  function* copyFragments(source:readonly Fragment[],target:Fragment[],start=0,end=source.length):Generator<PaginationWorkStage,void,void>{
+  const savedByLive=new WeakMap<Fragment,SavedFragment>();
+  const copyFragment=(f:SavedFragment):Fragment=>{
+    const live:Fragment={origin:currentOrigins.get(f.originKey)!,rect:{...f.rect},unitStart:f.unitStart,unitEnd:f.unitEnd,continuationIndex:f.continuationIndex,breakReason:f.breakReason};
+    savedByLive.set(live,f);
+    return live;
+  };
+  const copyDiagnostic=(d:SavedDiagnostic):PaginationDiagnostic=>{
+    const {originKey:key,...value}=d;
+    return {...value,origin:key===undefined?undefined:currentOrigins.get(key)};
+  };
+  function* copyFragments(source:readonly SavedFragment[],target:Fragment[],start=0,end=source.length):Generator<PaginationWorkStage,void,void>{
     for(let i=start;i<end;i++){
       if(copied++%128===0)yield 'paginate-reuse';
       target.push(copyFragment(source[i]));
@@ -325,11 +340,35 @@ function* runPagination(input:PaginationInput,incremental?:IncrementalState):Gen
     }
   }
   result.completeness='full';
-  if(retain&&incremental&&result.pages.reduce((n,p)=>n+p.fragments.length,0)<=MAX_CHECKPOINT_FRAGMENTS){
+  if(retain&&incremental){
+    let fragments=0,scanned=0;
+    for(const page of result.pages){
+      if(scanned++%128===0)yield 'paginate-snapshot';
+      fragments+=page.fragments.length;
+      if(fragments>MAX_CHECKPOINT_FRAGMENTS)return result;
+    }
     checkpoints.push(capture());
-    // Snapshot ownership is private, and only complete plans are reusable.
-    // An unsupported cloning environment/extra origin data simply disables reuse.
-    try{incremental.next={width,height,keys:eventKeys,checkpoints,plan:structuredClone(result)};}catch{/* no snapshot */}
+    const pages:SavedPage[]=[],diagnostics:SavedDiagnostic[]=[];
+    let shared=0;
+    for(const page of result.pages){
+      if(scanned++%128===0)yield 'paginate-snapshot';
+      const values:SavedFragment[]=[];
+      for(const f of page.fragments){
+        if(scanned++%128===0)yield 'paginate-snapshot';
+        const saved=savedByLive.get(f);
+        if(saved){values.push(saved);shared++;continue;}
+        values.push({originKey:originKey(f.origin),rect:{...f.rect},unitStart:f.unitStart,unitEnd:f.unitEnd,continuationIndex:f.continuationIndex,breakReason:f.breakReason});
+      }
+      pages.push({index:page.index,fragments:values});
+    }
+    for(const d of result.diagnostics){
+      if(scanned++%128===0)yield 'paginate-snapshot';
+      diagnostics.push({code:d.code,severity:d.severity,message:d.message,originKey:d.origin?originKey(d.origin):undefined});
+    }
+    // Publish only after every private value is prepared. No public Origin,
+    // Rect or array is retained, and cancellation cannot advance a lease.
+    incremental.next={width,height,keys:eventKeys,checkpoints,plan:{pages,diagnostics}};
+    incremental.sharedSnapshotFragments=shared;
   }
   return result;
 }
