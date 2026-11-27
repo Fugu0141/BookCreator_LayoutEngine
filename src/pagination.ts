@@ -78,7 +78,7 @@ type IncrementalState={previous?:SavedPagination;next?:SavedPagination;reusedBlo
 const snapshots=new WeakMap<PaginationCheckpointSnapshot,SavedPagination>();
 const MAX_CHECKPOINT_EVENTS=10000,MAX_CHECKPOINT_UNITS=100000,MAX_CHECKPOINT_FRAGMENTS=50000;
 const originKey=(o:Origin)=>JSON.stringify([o.documentId,o.blockKey]);
-export type PaginationWorkStage='paginate-validate'|'paginate-key'|'paginate-place';
+export type PaginationWorkStage='paginate-validate'|'paginate-key'|'paginate-place'|'paginate-match'|'paginate-reuse';
 export type PaginationWorkCheckpoint=(stage:PaginationWorkStage)=>void|Promise<void>;
 function finishSynchronously(work:Generator<PaginationWorkStage,MeasuredPagePlan,void>):MeasuredPagePlan {
   let step=work.next();
@@ -164,6 +164,15 @@ function* runPagination(input:PaginationInput,incremental?:IncrementalState):Gen
   const currentOrigins=new Map<string,Origin>();
   let prefix=0,eventIndex=0,suffix=0;
   let compatible:SavedPagination|undefined;
+  let copied=0;
+  const copyFragment=(f:Fragment):Fragment=>({...f,rect:{...f.rect},origin:currentOrigins.get(originKey(f.origin))!});
+  const copyDiagnostic=(d:PaginationDiagnostic):PaginationDiagnostic=>({...d,origin:d.origin?currentOrigins.get(originKey(d.origin)):undefined});
+  function* copyFragments(source:readonly Fragment[],target:Fragment[],start=0,end=source.length):Generator<PaginationWorkStage,void,void>{
+    for(let i=start;i<end;i++){
+      if(copied++%128===0)yield 'paginate-reuse';
+      target.push(copyFragment(source[i]));
+    }
+  }
   if(retain){
     for(const section of input.sections){
       if(eventKeys.length%32===0)yield 'paginate-key';
@@ -186,23 +195,38 @@ function* runPagination(input:PaginationInput,incremental?:IncrementalState):Gen
     }
     const prev=incremental?.previous;
     if(prev&&prev.width===width&&prev.height===height){
-      while(prefix<eventKeys.length&&prefix<prev.keys.length&&eventKeys[prefix]===prev.keys[prefix])prefix++;
+      while(prefix<eventKeys.length&&prefix<prev.keys.length){
+        if(prefix%128===0)yield 'paginate-match';
+        if(eventKeys[prefix]!==prev.keys[prefix])break;
+        prefix++;
+      }
       compatible=prev;
-      while(suffix<eventKeys.length-prefix&&suffix<prev.keys.length-prefix&&eventKeys[eventKeys.length-1-suffix]===prev.keys[prev.keys.length-1-suffix])suffix++;
+      while(suffix<eventKeys.length-prefix&&suffix<prev.keys.length-prefix){
+        if(suffix%128===0)yield 'paginate-match';
+        if(eventKeys[eventKeys.length-1-suffix]!==prev.keys[prev.keys.length-1-suffix])break;
+        suffix++;
+      }
       if(prefix){
         const cp=prev.checkpoints[prefix];
         used=cp.used;reason=cp.reason;
         // Copy only the prefix fragments. Replace every retained source origin
         // with this revision's actual object; offsets are not placement keys.
-        result.pages=prev.plan.pages.slice(0,cp.pageCount).map((p,i)=>({
-          index:p.index,fragments:p.fragments.slice(0,i===cp.pageCount-1?cp.lastFragmentCount:undefined).map(f=>({
-            ...f,rect:{...f.rect},origin:currentOrigins.get(originKey(f.origin))!
-          }))
-        }));
-        result.diagnostics=prev.plan.diagnostics.slice(0,cp.diagnosticCount).map(d=>({
-          ...d,origin:d.origin?currentOrigins.get(originKey(d.origin)):undefined
-        }));
-        checkpoints.push(...prev.checkpoints.slice(0,prefix));
+        for(let i=0;i<cp.pageCount;i++){
+          if(copied++%128===0)yield 'paginate-reuse';
+          const p=prev.plan.pages[i],fragments:Fragment[]=[];
+          yield* copyFragments(p.fragments,fragments,0,i===cp.pageCount-1?cp.lastFragmentCount:p.fragments.length);
+          result.pages.push({index:p.index,fragments});
+        }
+        for(let i=0;i<cp.diagnosticCount;i++){
+          if(copied++%128===0)yield 'paginate-reuse';
+          result.diagnostics.push(copyDiagnostic(prev.plan.diagnostics[i]));
+        }
+        // Prefix checkpoint records are private immutable values; share them
+        // instead of building a temporary slice/spread array.
+        for(let i=0;i<prefix;i++){
+          if(copied++%128===0)yield 'paginate-reuse';
+          checkpoints.push(prev.checkpoints[i]);
+        }
       }
     }
   }
@@ -211,50 +235,60 @@ function* runPagination(input:PaginationInput,incremental?:IncrementalState):Gen
   // occupied height and break reason, so page indices, limits and subsequent
   // placement decisions cannot change. Earlier fragments and warnings may
   // differ: splice only the actual tail and adjust its checkpoint counters.
-  const reuseTail=(index:number):boolean=>{
+  function* reuseTail(index:number):Generator<PaginationWorkStage,boolean,void>{
     const prev=compatible;
     if(!prev||!incremental||!suffix||index<eventKeys.length-suffix)return false;
     const oldIndex=prev.keys.length-(eventKeys.length-index);
     const before=prev.checkpoints[oldIndex],now=capture();
     if(before.used!==now.used||before.reason!==now.reason||before.pageCount!==now.pageCount)return false;
-    const copyFragment=(f:Fragment):Fragment=>({...f,rect:{...f.rect},origin:currentOrigins.get(originKey(f.origin))!});
     const fragmentDelta=now.lastFragmentCount-before.lastFragmentCount;
     const diagnosticDelta=now.diagnosticCount-before.diagnosticCount;
     if(before.pageCount){
-      for(const f of prev.plan.pages[before.pageCount-1].fragments.slice(before.lastFragmentCount))
-        result.pages[before.pageCount-1].fragments.push(copyFragment(f));
+      yield* copyFragments(prev.plan.pages[before.pageCount-1].fragments,result.pages[before.pageCount-1].fragments,before.lastFragmentCount);
     }
-    for(const p of prev.plan.pages.slice(before.pageCount))
-      result.pages.push({index:p.index,fragments:p.fragments.map(copyFragment)});
-    for(const d of prev.plan.diagnostics.slice(before.diagnosticCount))
-      result.diagnostics.push({...d,origin:d.origin?currentOrigins.get(originKey(d.origin)):undefined});
-    for(const cp of prev.checkpoints.slice(oldIndex,-1))
+    for(let i=before.pageCount;i<prev.plan.pages.length;i++){
+      if(copied++%128===0)yield 'paginate-reuse';
+      const p=prev.plan.pages[i],fragments:Fragment[]=[];
+      yield* copyFragments(p.fragments,fragments);
+      result.pages.push({index:p.index,fragments});
+    }
+    for(let i=before.diagnosticCount;i<prev.plan.diagnostics.length;i++){
+      if(copied++%128===0)yield 'paginate-reuse';
+      result.diagnostics.push(copyDiagnostic(prev.plan.diagnostics[i]));
+    }
+    for(let i=oldIndex;i<prev.checkpoints.length-1;i++){
+      if(copied++%128===0)yield 'paginate-reuse';
+      const cp=prev.checkpoints[i];
       checkpoints.push({...cp,lastFragmentCount:cp.lastFragmentCount+(cp.pageCount===before.pageCount?fragmentDelta:0),diagnosticCount:cp.diagnosticCount+diagnosticDelta});
+    }
     const end=prev.checkpoints.at(-1)!;
     used=end.used;reason=end.reason;
-    for(let i=index;i<blockEvents.length;i++)if(blockEvents[i]){
-      incremental.reusedBlocks++;incremental.reusedSuffixBlocks++;
+    for(let i=index;i<blockEvents.length;i++){
+      if(copied++%128===0)yield 'paginate-reuse';
+      if(blockEvents[i]){
+        incremental.reusedBlocks++;incremental.reusedSuffixBlocks++;
+      }
     }
     return true;
-  };
-  const visit=(): 'skip'|'place'|'tail'=>{
+  }
+  function* visit():Generator<PaginationWorkStage,'skip'|'place'|'tail',void>{
     if(!retain)return 'place';
     const index=eventIndex++;
     if(index<prefix)return 'skip';
-    if(reuseTail(index))return 'tail';
+    if(yield* reuseTail(index))return 'tail';
     checkpoints.push(capture());return 'place';
-  };
+  }
   const newPage=(why:Fragment['breakReason'])=>{used=0;reason=why;};
   let placementEvents=0,placedUnits=0;
   placement: for(const section of input.sections){
     if(placementEvents++%32===0)yield 'paginate-place';
-    const entry=visit();
+    const entry=yield* visit();
     if(entry==='tail')break placement;
     if(entry==='place'&&section.startOn==='page'&&used>0)newPage('section');
     let first=true;
     for(const block of section.blocks){
       if(placementEvents++%32===0)yield 'paginate-place';
-      const action=visit();
+      const action=yield* visit();
       if(action==='tail')break placement;
       const skipped=action==='skip';
       if(block.kind==='pagebreak'){if(!skipped&&used>0)newPage('explicit');first=false;continue;}
