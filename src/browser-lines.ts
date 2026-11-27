@@ -2,6 +2,7 @@ import {measureDisplayMath,validateCompiledMath,createInlineMathAtom,measureInli
 import {validateImageCrop,type ImageCrop} from './image-crop.js';
 import {renderMeasuredPreview,pageRenderCacheEpoch,previousPageKeys,type PageRenderCache,type PageReuseSnapshot,type PageRenderDelta} from './browser-page-render.js';
 export {createPageRenderCache,type PageRenderCache,type PageReuseSnapshot,type PageRenderDelta} from './browser-page-render.js';
+import {snapshotPagePriority} from './preview-page-priority.js';
 import {measurePreviewSections,type BlockMeasurementSnapshot,type BlockMeasurementWork} from './browser-page-measure.js';
 export type {BlockMeasurementWork} from './browser-page-measure.js';
 import {measureWithTextCache,measureWithParagraphCache,type TextMeasurementCache,type ParagraphMeasurementCache} from './text-measurement-cache.js';
@@ -544,7 +545,7 @@ export interface RetainedPaginationWork {
  * return a task promise to yield to the event loop, or throw to abandon work.
  * It must not change fonts, the Document, or other measurement inputs. */
 export type PreviewCheckpointStage='validated'|'image'|'measure-block'|'paginate'|'render-page'|'complete';
-export type PreviewCheckpoint=(stage:PreviewCheckpointStage)=>void|Promise<void>;
+export type PreviewCheckpoint=(stage:PreviewCheckpointStage,pageIndex?:number)=>void|Promise<void>;
 export interface RetainedTextPagePreview extends IncrementalTextPagePreview {
   readonly paginationWork:Readonly<RetainedPaginationWork>;
   readonly measurementWork:Readonly<BlockMeasurementWork>;
@@ -556,16 +557,16 @@ const retainedMeasurementSnapshots=new WeakMap<PageReuseSnapshot,{snapshot:Block
 /** Opt-in combined placement and DOM reuse. Same complete plan/slices and
  * sparse output contract as createIncrementalTextPagePreview. A valid sparse
  * snapshot from the older API simply starts a new placement checkpoint. */
-export async function createRetainedTextPagePreview(document:Document,options:TextPagePreviewOptions,previous?:PageReuseSnapshot,checkpoint?:PreviewCheckpoint):Promise<RetainedTextPagePreview>{
+export async function createRetainedTextPagePreview(document:Document,options:TextPagePreviewOptions,previous?:PageReuseSnapshot,checkpoint?:PreviewCheckpoint,priorityPages?:readonly number[]):Promise<RetainedTextPagePreview>{
   if(options.pageCache!==undefined)throw RangeError('Retained page rendering and page template cache are mutually exclusive');
   const previousKeys=previousPageKeys(document,previous);
   const saved=previous?retainedMeasurementSnapshots.get(previous):undefined;
-  const result=await createTextPreview(document,options,{previousKeys},{previous:previous?retainedPaginationSnapshots.get(previous):undefined,measurement:saved?.inlineMathGeometry===!!options.inlineMathCache?saved.snapshot:undefined,checkpoint});
+  const result=await createTextPreview(document,options,{previousKeys},{previous:previous?retainedPaginationSnapshots.get(previous):undefined,measurement:saved?.inlineMathGeometry===!!options.inlineMathCache?saved.snapshot:undefined,checkpoint,priorityPages:snapshotPagePriority(priorityPages)});
   if(!result.pageDelta||!result.paginationWork||!result.measurementWork)throw Error('Missing retained preview data');
   const {element,pageDelta,paginationWork,measurementWork,...rest}=result;
   return {...rest,changedElement:element,pageDelta,paginationWork,measurementWork};
 }
-async function createTextPreview(document:Document,options:TextPagePreviewOptions,delta?:{previousKeys:ReadonlyMap<number,string>},retained?:{previous?:PaginationCheckpointSnapshot;measurement?:BlockMeasurementSnapshot;checkpoint?:PreviewCheckpoint}):Promise<TextPagePreview & {pageDelta?:PageRenderDelta;paginationWork?:Readonly<RetainedPaginationWork>;measurementWork?:Readonly<BlockMeasurementWork>}>{
+async function createTextPreview(document:Document,options:TextPagePreviewOptions,delta?:{previousKeys:ReadonlyMap<number,string>},retained?:{previous?:PaginationCheckpointSnapshot;measurement?:BlockMeasurementSnapshot;checkpoint?:PreviewCheckpoint;priorityPages?:readonly number[]}):Promise<TextPagePreview & {pageDelta?:PageRenderDelta;paginationWork?:Readonly<RetainedPaginationWork>;measurementWork?:Readonly<BlockMeasurementWork>}>{
   live(document);
   const pageCache=options.pageCache,pageCacheEpoch=pageCache?pageRenderCacheEpoch(document,pageCache):undefined;
   // Snapshot the opt-in before any asynchronous work. The clock is never read otherwise.
@@ -642,7 +643,7 @@ async function createTextPreview(document:Document,options:TextPagePreviewOption
   if(!plan.pages.length)throw Error('No drawable content');
   if(plan.completeness!=='full')throw Error('Cannot render partial preview: '+plan.diagnostics.map(d=>d.code).join(', '));
   const paginated=now();
-  const result=await renderMeasuredPreview(document,plan,{width,height,paper,byKey,images,pageCache,pageCacheEpoch,delta},{styleText,frozenText:(el,r,line)=>frozenText(el,r,line,mathCache),listInset},checkpoint);
+  const result=await renderMeasuredPreview(document,plan,{width,height,paper,byKey,images,pageCache,pageCacheEpoch,delta},{styleText,frozenText:(el,r,line)=>frozenText(el,r,line,mathCache),listInset},checkpoint,retained?.priorityPages);
   if(checkpoint)await checkpoint('complete');
   // Register only after successful rendering, and use the newly issued
   // page snapshot as the key. An unsuccessful job cannot advance a lease.
