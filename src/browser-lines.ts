@@ -546,7 +546,7 @@ export interface RetainedPaginationWork {
 /** Safe boundaries between completed units. The optional host callback may
  * return a task promise to yield to the event loop, or throw to abandon work.
  * It must not change fonts, the Document, or other measurement inputs. */
-export type PreviewCheckpointStage='validated'|'image'|'measure-block'|'paginate'|'render-page'|'complete';
+export type PreviewCheckpointStage='validated'|'image'|'measure-block'|'paginate'|'render-key-page'|'render-page'|'render-fragment'|'render-line'|'complete';
 export type PreviewCheckpoint=(stage:PreviewCheckpointStage,pageIndex?:number)=>void|Promise<void>;
 export interface RetainedTextPagePreview extends IncrementalTextPagePreview {
   readonly paginationWork:Readonly<RetainedPaginationWork>;

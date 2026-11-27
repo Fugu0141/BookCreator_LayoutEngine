@@ -1248,12 +1248,18 @@ try{
     assert(JSON.stringify(cooperative.plan)===JSON.stringify(oracle.plan)&&JSON.stringify(cooperative.slices)===JSON.stringify(oracle.slices),'cooperative plan and slices parity');
     assert(cooperative.changedElement.shadowRoot.firstElementChild.isEqualNode(changed.get(2)),'cooperative changed DOM parity');
     // Viewport priority changes execution order, never the canonical output.
-    const hinted=[6,2,6,99],order=[];
+    const hinted=[6,2,6,99],order=[],keyOrder=[],fragmentOrder=[],linePages=[];
     const prioritized=await createRetainedTextPagePreview(document,options,initial.pageDelta.snapshot,(stage,index)=>{
       if(stage==='validated')hinted.splice(0,hinted.length,0);
       if(stage==='render-page')order.push(index);
+      if(stage==='render-key-page')keyOrder.push(index);
+      if(stage==='render-fragment')fragmentOrder.push(index);
+      if(stage==='render-line')linePages.push(index);
     },hinted);
     assert(JSON.stringify(order)===JSON.stringify([6,2,0,1,3,4,5,7]),'priority order, duplicate and missing indices, input snapshot');
+    assert(JSON.stringify(keyOrder)===JSON.stringify([0,1,2,3,4,5,6,7]),'key preparation yields in canonical order');
+    assert(JSON.stringify(fragmentOrder)===JSON.stringify(order),'fragment checkpoints include reused pages');
+    assert(linePages.length>0&&linePages.every(i=>i===2),'line checkpoints only for regenerated DOM');
     assert(JSON.stringify(prioritized.plan)===JSON.stringify(oracle.plan)&&JSON.stringify(prioritized.slices)===JSON.stringify(oracle.slices),'priority preserves complete plan and slice order');
     assert(JSON.stringify(prioritized.pageDelta.reusedPageIndices)===JSON.stringify(edited.pageDelta.reusedPageIndices),'priority preserves canonical sparse lease');
     assert(prioritized.changedElement.shadowRoot.firstElementChild.isEqualNode(changed.get(2)),'priority sparse DOM parity');
@@ -1291,10 +1297,10 @@ try{
     });
     await rasterDelivery(rasterPage,0,1);
     assert(canvas.getContext('2d').getImageData(0,0,1,1).data[3]===255,'original raster unaffected by copy mutation');
-    for(const stop of ['validated','measure-block','paginate','render-page','complete']){
+    for(const stop of ['validated','measure-block','paginate','render-key-page','render-page','render-fragment','render-line','complete']){
       const reason=new Error('cancel '+stop);
       let caught;
-      try{await createRetainedTextPagePreview(document,options,initial.pageDelta.snapshot,stage=>{if(stage===stop)throw reason;});}catch(e){caught=e;}
+      try{await createRetainedTextPagePreview(document,options,initial.pageDelta.snapshot,stage=>{if(stage===stop)throw reason;},[2]);}catch(e){caught=e;}
       assert(caught===reason,'cancel propagates at '+stop);
       assert(document.body.children.length===beforeRetained,'cancel removes measurement hosts at '+stop);
     }

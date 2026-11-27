@@ -119,7 +119,11 @@ export async function renderMeasuredPreview(document:Document,plan:MeasuredPageP
   }
   // Preserve canonical admission under the bounded sparse-key budget even
   // when the viewport requests a different drawing order.
-  if(priorityPages)for(const p of plan.pages)admitKey(p);
+  if(priorityPages)for(const p of plan.pages){
+    // Preserve canonical key admission, but allow cancellation before each page.
+    const wait=checkpoint?.('render-key-page',p.index);if(wait)await wait;
+    admitKey(p);
+  }
   const ordered=prioritizePages(plan.pages,priorityPages);
   const drawn=new Map<number,HTMLElement>();
   const deliver=onPriorityPage?createProvisionalPageDelivery(priorityPages,onPriorityPage):undefined;
@@ -147,6 +151,8 @@ export async function renderMeasuredPreview(document:Document,plan:MeasuredPageP
       if(paper&&!cached){const guide=document.createElement('div');guide.dataset.contentGuide='true';guide.style.cssText='position:absolute;box-sizing:border-box;outline:1px dashed #ccc;pointer-events:none;';Object.assign(guide.style,{left:px(left)+'px',top:px(top)+'px',width:px(width)+'px',height:px(height)+'px'});page.append(guide);}
     }
     for(const f of p.fragments){
+      // Even omitted pages rebuild source slices, so both paths cooperate.
+      const wait=checkpoint?.('render-fragment',p.index);if(wait)await wait;
       const entry=byKey.get(previewBlockKey(f.origin));if(!entry)throw Error('Missing preview block');
       const {block,measurement,labels,slots,placement,marker,math}=entry, lineUnits=placement?measurement.lines:measurement.lines.slice(f.unitStart,f.unitEnd);
       if(!lineUnits.length)throw Error('Missing preview lines');
@@ -234,6 +240,8 @@ export async function renderMeasuredPreview(document:Document,plan:MeasuredPageP
         fragment.append(slot);textParent=slot;
       }
       for(const line of lineUnits){
+        // Await only when the host actually requests an asynchronous task.
+        const wait=checkpoint?.('render-line',p.index);if(wait)await wait;
         const item=document.createElement('div');styleText(item,measurement.request,false);item.style.height=px(line.height)+'px';
         item.dataset.start=String(line.start);item.dataset.end=String(line.end);
         frozenText(item,measurement.request,line);if(block.component)item.style.color=block.component.textColor;textParent.append(item);
