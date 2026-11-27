@@ -4,7 +4,7 @@ import {imageSourceRect} from './image-crop.js';
 import type {MeasuredDisplayMath} from './math-preview.js';
 import type {MeasuredPagePlan,MeasuredPage,Origin} from './pagination.js';
 import type {PlainTextMeasureRequest} from './browser-measurement.js';
-import type {MeasuredTextLine,MeasuredTextLines,PreviewTextBlock,PreviewTextSlice,PreviewComponentChild,PreviewListItem,TextPagePreview} from './browser-lines.js';
+import type {MeasuredTextLine,MeasuredTextLines,PreviewTextBlock,PreviewTextSlice,PreviewComponentChild,PreviewListItem,TextPagePreview,PreviewCheckpoint} from './browser-lines.js';
 type ComponentPlacement=import('./tree.js').PlacedNode;
 export interface MeasuredPreviewBlock {
   block:PreviewTextBlock;measurement:MeasuredTextLines;
@@ -98,8 +98,8 @@ function pageKey(p:MeasuredPage,width:number,height:number,paper:PreviewPaper|un
 const px=(um:number)=>um*96/25400;
 export const previewBlockKey=(o:Origin)=>JSON.stringify([o.documentId,o.blockKey]);
 // Internal ownership contract: math nodes are consumed by this render; bitmaps
-// are borrowed for this synchronous call, and closed by their owning orchestrator.
-export function renderMeasuredPreview(document:Document,plan:MeasuredPagePlan,{width,height,paper,byKey,images,pageCache,pageCacheEpoch,delta}:{width:number;height:number;paper?:PreviewPaper;byKey:ReadonlyMap<string,MeasuredPreviewBlock>;images:ReadonlyMap<string,ImageBitmap>;pageCache?:PageRenderCache;pageCacheEpoch?:number;delta?:{previousKeys:ReadonlyMap<number,string>}},{styleText,frozenText,listInset}:RenderServices):TextPagePreview & {pageDelta?:PageRenderDelta}{
+// are borrowed for this call (including optional cooperative waits), and closed by their owning orchestrator.
+export async function renderMeasuredPreview(document:Document,plan:MeasuredPagePlan,{width,height,paper,byKey,images,pageCache,pageCacheEpoch,delta}:{width:number;height:number;paper?:PreviewPaper;byKey:ReadonlyMap<string,MeasuredPreviewBlock>;images:ReadonlyMap<string,ImageBitmap>;pageCache?:PageRenderCache;pageCacheEpoch?:number;delta?:{previousKeys:ReadonlyMap<number,string>}},{styleText,frozenText,listInset}:RenderServices,checkpoint?:PreviewCheckpoint):Promise<TextPagePreview & {pageDelta?:PageRenderDelta}>{
   let renderedImagePixels=0;
   const element=document.createElement('div');element.style.cssText='all:initial;display:block;';
   const root=element.attachShadow({mode:'open'});
@@ -110,6 +110,7 @@ export function renderMeasuredPreview(document:Document,plan:MeasuredPagePlan,{w
   const nextKeys=new Map<number,string>(),reused:number[]=[];
   let keyCharacters=0;
   for(const p of plan.pages){
+    if(checkpoint)await checkpoint('render-page');
     const deltaKey=delta?pageKey(p,width,height,paper,byKey,true):undefined;
     if(deltaKey!==undefined&&nextKeys.size<pageLimits.entries&&keyCharacters+deltaKey.length<=pageLimits.characters){
       nextKeys.set(p.index,deltaKey);keyCharacters+=deltaKey.length;
