@@ -1,5 +1,6 @@
 // DOM rendering boundary. Receives already measured blocks and a completed
 // pagination plan. No measuring, font loading, pagination or resource decoding.
+import {prioritizePages} from './preview-page-priority.js';
 import {imageSourceRect} from './image-crop.js';
 import type {MeasuredDisplayMath} from './math-preview.js';
 import type {MeasuredPagePlan,MeasuredPage,Origin} from './pagination.js';
@@ -99,7 +100,7 @@ const px=(um:number)=>um*96/25400;
 export const previewBlockKey=(o:Origin)=>JSON.stringify([o.documentId,o.blockKey]);
 // Internal ownership contract: math nodes are consumed by this render; bitmaps
 // are borrowed for this call (including optional cooperative waits), and closed by their owning orchestrator.
-export async function renderMeasuredPreview(document:Document,plan:MeasuredPagePlan,{width,height,paper,byKey,images,pageCache,pageCacheEpoch,delta}:{width:number;height:number;paper?:PreviewPaper;byKey:ReadonlyMap<string,MeasuredPreviewBlock>;images:ReadonlyMap<string,ImageBitmap>;pageCache?:PageRenderCache;pageCacheEpoch?:number;delta?:{previousKeys:ReadonlyMap<number,string>}},{styleText,frozenText,listInset}:RenderServices,checkpoint?:PreviewCheckpoint):Promise<TextPagePreview & {pageDelta?:PageRenderDelta}>{
+export async function renderMeasuredPreview(document:Document,plan:MeasuredPagePlan,{width,height,paper,byKey,images,pageCache,pageCacheEpoch,delta}:{width:number;height:number;paper?:PreviewPaper;byKey:ReadonlyMap<string,MeasuredPreviewBlock>;images:ReadonlyMap<string,ImageBitmap>;pageCache?:PageRenderCache;pageCacheEpoch?:number;delta?:{previousKeys:ReadonlyMap<number,string>}},{styleText,frozenText,listInset}:RenderServices,checkpoint?:PreviewCheckpoint,priorityPages?:readonly number[]):Promise<TextPagePreview & {pageDelta?:PageRenderDelta}>{
   let renderedImagePixels=0;
   const element=document.createElement('div');element.style.cssText='all:initial;display:block;';
   const root=element.attachShadow({mode:'open'});
@@ -109,13 +110,22 @@ export async function renderMeasuredPreview(document:Document,plan:MeasuredPageP
   const state=candidateState&&candidateState.epoch===pageCacheEpoch?candidateState:undefined;
   const nextKeys=new Map<number,string>(),reused:number[]=[];
   let keyCharacters=0;
-  for(const p of plan.pages){
-    if(checkpoint)await checkpoint('render-page');
+  function admitKey(p:MeasuredPage){
     const deltaKey=delta?pageKey(p,width,height,paper,byKey,true):undefined;
     if(deltaKey!==undefined&&nextKeys.size<pageLimits.entries&&keyCharacters+deltaKey.length<=pageLimits.characters){
       nextKeys.set(p.index,deltaKey);keyCharacters+=deltaKey.length;
     }
-    const skip=delta!==undefined&&deltaKey!==undefined&&nextKeys.has(p.index)&&delta.previousKeys.get(p.index)===deltaKey;
+  }
+  // Preserve canonical admission under the bounded sparse-key budget even
+  // when the viewport requests a different drawing order.
+  if(priorityPages)for(const p of plan.pages)admitKey(p);
+  const ordered=prioritizePages(plan.pages,priorityPages);
+  const drawn=new Map<number,HTMLElement>();
+  for(const p of ordered){
+    if(checkpoint)await checkpoint('render-page',p.index);
+    if(!priorityPages)admitKey(p);
+    const deltaKey=nextKeys.get(p.index);
+    const skip=delta!==undefined&&deltaKey!==undefined&&delta.previousKeys.get(p.index)===deltaKey;
     if(skip)reused.push(p.index);
     const key=state?pageKey(p,width,height,paper,byKey):undefined;
     const cached=key!==undefined?state!.entries.get(key):undefined;
@@ -230,8 +240,13 @@ export async function renderMeasuredPreview(document:Document,plan:MeasuredPageP
     }
     if(page){
       if(state&&key!==undefined&&!cached)keepPage(state,key,page);
-      root.append(page);
+      if(priorityPages)drawn.set(p.index,page);else root.append(page);
     }
+  }
+  if(priorityPages){
+    for(const p of plan.pages){const page=drawn.get(p.index);if(page)root.append(page);}
+    slices.sort((a,b)=>a.pageIndex-b.pageIndex);
+    reused.sort((a,b)=>a-b);
   }
   return {element,plan,slices,publicationReady:false,...(delta?{pageDelta:makePageDelta(document,nextKeys,reused)}:{})};
 }
