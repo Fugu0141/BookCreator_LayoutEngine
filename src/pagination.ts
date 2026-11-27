@@ -78,15 +78,40 @@ type IncrementalState={previous?:SavedPagination;next?:SavedPagination;reusedBlo
 const snapshots=new WeakMap<PaginationCheckpointSnapshot,SavedPagination>();
 const MAX_CHECKPOINT_EVENTS=10000,MAX_CHECKPOINT_UNITS=100000,MAX_CHECKPOINT_FRAGMENTS=50000;
 const originKey=(o:Origin)=>JSON.stringify([o.documentId,o.blockKey]);
+export type PaginationWorkStage='paginate-validate'|'paginate-key'|'paginate-place';
+export type PaginationWorkCheckpoint=(stage:PaginationWorkStage)=>void|Promise<void>;
+function finishSynchronously(work:Generator<PaginationWorkStage,MeasuredPagePlan,void>):MeasuredPagePlan {
+  let step=work.next();
+  while(!step.done)step=work.next();
+  return step.value;
+}
 export function paginateMeasured(input:PaginationInput):MeasuredPagePlan {
-  return runPagination(input);
+  return finishSynchronously(runPagination(input));
 }
 /** Reuse the verified unchanged placement prefix and, after the same flow
  * state is reached, an identical suffix. Validation, copying and current-origin
  * rebinding still scan the input. No browser measurement reuse is implied. */
 export function paginateMeasuredIncremental(input:PaginationInput,previous?:PaginationCheckpointSnapshot):IncrementalPaginationResult {
   const state:IncrementalState={previous:previous?snapshots.get(previous):undefined,reusedBlocks:0,reusedSuffixBlocks:0,placedBlocks:0};
-  const plan=runPagination(input,state);
+  const plan=finishSynchronously(runPagination(input,state));
+  return finishIncremental(plan,state);
+}
+/** Cooperative variant of the same placement algorithm. The caller owns input
+ * and must keep it unchanged until completion. A rejected checkpoint aborts
+ * without publishing a new snapshot or changing the previous snapshot. */
+export async function paginateMeasuredIncrementalCooperative(input:PaginationInput,previous:PaginationCheckpointSnapshot|undefined,checkpoint:PaginationWorkCheckpoint):Promise<IncrementalPaginationResult>{
+  const state:IncrementalState={previous:previous?snapshots.get(previous):undefined,reusedBlocks:0,reusedSuffixBlocks:0,placedBlocks:0};
+  const work=runPagination(input,state);
+  try{
+    let step=work.next();
+    while(!step.done){
+      const wait=checkpoint(step.value);if(wait)await wait;
+      step=work.next();
+    }
+    return finishIncremental(step.value,state);
+  }finally{work.return(undefined as never);}
+}
+function finishIncremental(plan:MeasuredPagePlan,state:IncrementalState):IncrementalPaginationResult{
   let snapshot:PaginationCheckpointSnapshot|undefined;
   if(state.next){
     snapshot=Object.freeze({kind:'pagination-checkpoint-snapshot' as const});
@@ -94,18 +119,20 @@ export function paginateMeasuredIncremental(input:PaginationInput,previous?:Pagi
   }
   return {plan,snapshot,reusedBlocks:state.reusedBlocks,reusedSuffixBlocks:state.reusedSuffixBlocks,placedBlocks:state.placedBlocks};
 }
-function runPagination(input:PaginationInput,incremental?:IncrementalState):MeasuredPagePlan {
+function* runPagination(input:PaginationInput,incremental?:IncrementalState):Generator<PaginationWorkStage,MeasuredPagePlan,void> {
   const result:MeasuredPagePlan={schemaVersion:1,revision:input.revision,fingerprint:input.fingerprint,completeness:'partial',measurement:'premeasured',publicationReady:false,pages:[],diagnostics:[]};
   const fail=(code:PaginationDiagnostic['code'],message:string,origin?:Origin)=>{result.diagnostics.push({code,severity:'error',message,origin});return result;};
   const {width,height}=input.content;
   if(input.schemaVersion!==1||!input.revision||!input.fingerprint||!positive(width)||!positive(height))return fail('PG_INVALID','Invalid input or content size');
   const ids=new Set<string>(),keys=new Set<string>();
-  let unitCount=0, blockCount=0;
+  let unitCount=0, blockCount=0,validatedSections=0,validatedUnits=0;
   // Validate the entire input first; never place an invalid block silently.
   for(const section of input.sections){
+    if(validatedSections++%32===0)yield 'paginate-validate';
     if(!section.id||ids.has(section.id)||!['page','continuous'].includes(section.startOn))return fail('PG_INVALID','Invalid section');
     ids.add(section.id);
     for(const block of section.blocks){
+      if(blockCount%32===0)yield 'paginate-validate';
       const o=block.origin;
       const key=JSON.stringify([o.documentId,o.blockKey]);
       if(!o.documentId||!o.revision||!o.blockKey||keys.has(key)|| (o.range&&(!Number.isSafeInteger(o.range.start)||!Number.isSafeInteger(o.range.end)||o.range.start<0||o.range.end<=o.range.start)))return fail('PG_INVALID','Invalid or duplicate origin',o);
@@ -121,7 +148,10 @@ function runPagination(input:PaginationInput,incremental?:IncrementalState):Meas
       unitCount+=block.unitHeights.length;
       if(unitCount>1000000)return fail('PG_LIMIT','Unit limit exceeded',o);
       let total=0;
-      for(const h of block.unitHeights){total+=h;if(!positive(h)||!positive(total))return fail('PG_INVALID','Invalid unit height',o);}
+      for(const h of block.unitHeights){
+        if(validatedUnits++%256===0)yield 'paginate-validate';
+        total+=h;if(!positive(h)||!positive(total))return fail('PG_INVALID','Invalid unit height',o);
+      }
       if(!positive(total+(padding?padding.top+padding.bottom:0)))return fail('PG_INVALID','Invalid padded block height',o);
     }
   }
@@ -136,9 +166,11 @@ function runPagination(input:PaginationInput,incremental?:IncrementalState):Meas
   let compatible:SavedPagination|undefined;
   if(retain){
     for(const section of input.sections){
+      if(eventKeys.length%32===0)yield 'paginate-key';
       eventKeys.push(JSON.stringify(['section',section.id,section.startOn]));blockEvents.push(false);
       let first=true;
       for(const block of section.blocks){
+        if(eventKeys.length%32===0)yield 'paginate-key';
         const k=originKey(block.origin);
         currentOrigins.set(k,block.origin);
         // A suffix can begin inside a section: include the first-block
@@ -213,12 +245,15 @@ function runPagination(input:PaginationInput,incremental?:IncrementalState):Meas
     checkpoints.push(capture());return 'place';
   };
   const newPage=(why:Fragment['breakReason'])=>{used=0;reason=why;};
+  let placementEvents=0,placedUnits=0;
   placement: for(const section of input.sections){
+    if(placementEvents++%32===0)yield 'paginate-place';
     const entry=visit();
     if(entry==='tail')break placement;
     if(entry==='place'&&section.startOn==='page'&&used>0)newPage('section');
     let first=true;
     for(const block of section.blocks){
+      if(placementEvents++%32===0)yield 'paginate-place';
       const action=visit();
       if(action==='tail')break placement;
       const skipped=action==='skip';
@@ -240,7 +275,10 @@ function runPagination(input:PaginationInput,incremental?:IncrementalState):Meas
       while(cursor<block.unitHeights.length){
         if(block.unitHeights[cursor]+overhead>height-used)newPage(cursor?'continuation':'overflow');
         let end=cursor,h=overhead;
-        while(end<block.unitHeights.length&&block.unitHeights[end]<=height-used-h){h+=block.unitHeights[end];end++;}
+        while(end<block.unitHeights.length&&block.unitHeights[end]<=height-used-h){
+          if(placedUnits++%256===0)yield 'paginate-place';
+          h+=block.unitHeights[end];end++;
+        }
         if(end===cursor)return fail('PG_TOO_LARGE','No safe progress',block.origin);
         if(used===0){
           if(result.pages.length>=10000)return fail('PG_LIMIT','Page limit exceeded',block.origin);

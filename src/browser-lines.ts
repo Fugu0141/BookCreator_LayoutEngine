@@ -11,7 +11,7 @@ import {measureWithTextCache,measureWithParagraphCache,type TextMeasurementCache
 export {createTextMeasurementCache,createParagraphMeasurementCache,type TextMeasurementCache,type ParagraphMeasurementCache} from './text-measurement-cache.js';
 import {layoutTree} from './tree.js';
 import {applyPreviewFont,readyPreviewFont,isPreviewFontFamily,isPreviewFontWeight} from './preview-font.js';
-import {paginateMeasured,paginateMeasuredIncremental,type PaginationCheckpointSnapshot,type Origin,type MeasuredPagePlan,type SplitPolicy,type PageBreak} from './pagination.js';
+import {paginateMeasured,paginateMeasuredIncremental,paginateMeasuredIncrementalCooperative,type PaginationWorkStage,type PaginationCheckpointSnapshot,type Origin,type MeasuredPagePlan,type SplitPolicy,type PageBreak} from './pagination.js';
 import type {PlainTextMeasureRequest,InlineStyleRun,InlineMathAtom} from './browser-measurement.js';
 
 export interface MeasuredTextLine {
@@ -557,7 +557,7 @@ export interface RetainedPaginationWork {
 /** Safe boundaries between completed units. The optional host callback may
  * return a task promise to yield to the event loop, or throw to abandon work.
  * It must not change fonts, the Document, or other measurement inputs. */
-export type PreviewCheckpointStage='validated'|'image'|'measure-block'|'measure-graphemes'|'measure-hard-line'|'measure-frozen-line'|'measure-variable-graphemes'|'measure-variable-line'|'paginate'|'render-key-page'|'render-page'|'render-fragment'|'render-line'|'complete';
+export type PreviewCheckpointStage=PaginationWorkStage|'validated'|'image'|'measure-block'|'measure-graphemes'|'measure-hard-line'|'measure-frozen-line'|'measure-variable-graphemes'|'measure-variable-line'|'paginate'|'render-key-page'|'render-page'|'render-fragment'|'render-line'|'complete';
 export type PreviewCheckpoint=(stage:PreviewCheckpointStage,pageIndex?:number)=>void|Promise<void>;
 export interface RetainedTextPagePreview extends IncrementalTextPagePreview {
   readonly paginationWork:Readonly<RetainedPaginationWork>;
@@ -652,7 +652,7 @@ async function createTextPreview(document:Document,options:TextPagePreviewOption
   const measured=now();
   if(checkpoint)await checkpoint('paginate');
   const paginationInput={schemaVersion:1 as const,revision,fingerprint,content:{width,height},sections:measuredSections};
-  const incremental=retained?paginateMeasuredIncremental(paginationInput,retained.previous):undefined;
+  const incremental=retained?(checkpoint?await paginateMeasuredIncrementalCooperative(paginationInput,retained.previous,checkpoint):paginateMeasuredIncremental(paginationInput,retained.previous)):undefined;
   const plan=incremental?.plan??paginateMeasured(paginationInput);
   if(!plan.pages.length)throw Error('No drawable content');
   if(plan.completeness!=='full')throw Error('Cannot render partial preview: '+plan.diagnostics.map(d=>d.code).join(', '));
