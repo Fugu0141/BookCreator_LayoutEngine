@@ -216,15 +216,16 @@ function live(document:Document){
 export async function measurePlainTextLines(document:Document,request:PlainTextMeasureRequest,mathCache?:MathCompilationCache,displayMathCache?:DisplayMathGeometryCache,inlineMathCache?:InlineMathGeometryCache):Promise<MeasuredTextLines>{
   live(document);return measureValidatedTextLines(document,snapshotRequest(request,false,mathCache),mathCache,displayMathCache,inlineMathCache);
 }
-async function measureValidatedTextLines(document:Document,r:Readonly<PlainTextMeasureRequest>,mathCache?:MathCompilationCache,displayMathCache?:DisplayMathGeometryCache,inlineMathCache?:InlineMathGeometryCache):Promise<MeasuredTextLines>{
+async function measureValidatedTextLines(document:Document,r:Readonly<PlainTextMeasureRequest>,mathCache?:MathCompilationCache,displayMathCache?:DisplayMathGeometryCache,inlineMathCache?:InlineMathGeometryCache,checkpoint?:PreviewCheckpoint):Promise<MeasuredTextLines>{
   if(r.multiline&&r.text.includes('\n')){
     const lines:MeasuredTextLine[]=[];let start=0;
     // Measure hard lines independently, then attach each original separator to its preceding row.
     for(const match of r.text.matchAll(/[^\r\n]*(?:\r\n|\n|$)/g)){
       const raw=match[0];if(!raw)continue;
+      const wait=checkpoint?.('measure-hard-line');if(wait)await wait;
       const body=raw.replace(/(?:\r\n|\n)$/,'');
       if(body.length){
-        const measured=await measurePlainTextLines(document,{...r,text:body,multiline:false,paragraphGap:undefined,inlineStyles:slicedRuns(r,start,start+body.length),inlineMath:slicedMath(r,start,start+body.length)},mathCache,displayMathCache,inlineMathCache);
+        const measured=await measureValidatedTextLines(document,snapshotRequest({...r,text:body,multiline:false,paragraphGap:undefined,inlineStyles:slicedRuns(r,start,start+body.length),inlineMath:slicedMath(r,start,start+body.length)},false,mathCache),mathCache,displayMathCache,inlineMathCache,checkpoint);
         for(const [i,line] of measured.lines.entries())lines.push({start:start+line.start,end:start+(i===measured.lines.length-1?raw.length:line.end),height:line.height,...(line.displayMath?{displayMath:line.displayMath}:{})});
       }else lines.push({start,end:start+raw.length,height:Math.ceil(r.fontSize*r.lineHeight)+(r.paragraphGap??0)});
       start+=raw.length;
@@ -251,9 +252,9 @@ async function measureValidatedTextLines(document:Document,r:Readonly<PlainTextM
       recordInlineMathPlacement(document,inlineMathCache,false);
     }
   }
-  return measureSoftLines(document,r,mathCache);
+  return measureSoftLines(document,r,mathCache,undefined,checkpoint);
 }
-async function measureSoftLines(document:Document,r:PlainTextMeasureRequest,mathCache?:MathCompilationCache,candidates?:ReadonlyMap<number,InlineMathGeometry>):Promise<MeasuredTextLines>{
+async function measureSoftLines(document:Document,r:PlainTextMeasureRequest,mathCache?:MathCompilationCache,candidates?:ReadonlyMap<number,InlineMathGeometry>,checkpoint?:PreviewCheckpoint):Promise<MeasuredTextLines>{
   const host=document.createElement('div');
   host.style.cssText='all:initial;position:fixed;top:0;left:0;visibility:hidden;pointer-events:none;contain:layout style paint;display:block;';
   const root=host.attachShadow({mode:'closed'}), el=document.createElement('div');
@@ -273,8 +274,9 @@ async function measureSoftLines(document:Document,r:PlainTextMeasureRequest,math
       throw Error('Unsupported line box geometry');
     const groups:{start:number;end:number}[]=[];
     let firstCenter:number|undefined;
-    const range=document.createRange();let segmentIndex=0;
+    const range=document.createRange();let segmentIndex=0,graphemes=0;
     for(const g of new Intl.Segmenter(undefined,{granularity:'grapheme'}).segment(r.text)){
+      if(checkpoint&&graphemes++%32===0){const wait=checkpoint('measure-graphemes');if(wait)await wait;}
       while(segments[segmentIndex].end<=g.index)segmentIndex++;
       const seg=segments[segmentIndex];if(g.index+g.segment.length>seg.end)throw Error('Style crosses grapheme boundary');
       range.setStart(seg.node,g.index-seg.start);range.setEnd(seg.node,g.index-seg.start+g.segment.length);
@@ -291,13 +293,16 @@ async function measureSoftLines(document:Document,r:PlainTextMeasureRequest,math
     // Re-render all frozen rows in one write phase, then read their real
     // geometry without intervening DOM mutations. Reject overflow as before.
     const batch=document.createDocumentFragment();
-    const frozen=groups.map(group=>{
+    const frozen:{group:typeof groups[number];line:HTMLElement}[]=[];
+    for(const group of groups){
+      const wait=checkpoint?.('measure-frozen-line');if(wait)await wait;
       const line=document.createElement('div');styleText(line,r,false);appendStyled(line,r,group.start,group.end,mathCache);batch.append(line);
-      return {group,line};
-    });
+      frozen.push({group,line});
+    }
     root.append(batch);
     const lines:MeasuredTextLine[]=[];
     for(const {group,line} of frozen){
+      const wait=checkpoint?.('measure-frozen-line');if(wait)await wait;
       const rect=line.getBoundingClientRect();
       if(line.scrollWidth>line.clientWidth+1||Math.abs(rect.height-linePx)>1)throw Error('Frozen line does not fit measured geometry');
       lines.push({...group,height:um(Math.max(linePx,rect.height,height/count))});
@@ -546,7 +551,7 @@ export interface RetainedPaginationWork {
 /** Safe boundaries between completed units. The optional host callback may
  * return a task promise to yield to the event loop, or throw to abandon work.
  * It must not change fonts, the Document, or other measurement inputs. */
-export type PreviewCheckpointStage='validated'|'image'|'measure-block'|'paginate'|'render-key-page'|'render-page'|'render-fragment'|'render-line'|'complete';
+export type PreviewCheckpointStage='validated'|'image'|'measure-block'|'measure-graphemes'|'measure-hard-line'|'measure-frozen-line'|'paginate'|'render-key-page'|'render-page'|'render-fragment'|'render-line'|'complete';
 export type PreviewCheckpoint=(stage:PreviewCheckpointStage,pageIndex?:number)=>void|Promise<void>;
 export interface RetainedTextPagePreview extends IncrementalTextPagePreview {
   readonly paginationWork:Readonly<RetainedPaginationWork>;
@@ -636,8 +641,8 @@ async function createTextPreview(document:Document,options:TextPagePreviewOption
     images.set(id,bitmap);
   }
   const imagesReady=now();
-  const measure=(doc:Document,r:PlainTextMeasureRequest)=>measurePlainTextLines(doc,r,mathCache,displayMathCache,inlineMathCache);
-  const {byKey,measuredSections,measurementSnapshot,measurementWork}=await measurePreviewSections(document,sections,width,height,{measurePlainTextLines:paragraphCache?(doc,r)=>measureWithParagraphCache(doc,snapshotRequest(r,false,mathCache),paragraphCache,!!inlineMathCache,(d,validated)=>measureValidatedTextLines(d,validated,mathCache,displayMathCache,inlineMathCache)):measurementCache?(doc,r)=>measureWithTextCache(doc,r.inlineMath!==undefined||r.inlineStyles!==undefined?r:snapshotRequest(r),measurementCache,measure):measure,measureDisplayMath:(doc,source,w,size,number,family)=>measureDisplayMath(doc,source,w,size,number,family,mathCache,displayMathCache),resolveComponentWidths,placeComponent,listInset,listMarker},retained?{previous:retained.measurement,mathCache}:undefined,checkpoint);
+  const measure=(doc:Document,r:PlainTextMeasureRequest)=>measureValidatedTextLines(doc,snapshotRequest(r,false,mathCache),mathCache,displayMathCache,inlineMathCache,checkpoint);
+  const {byKey,measuredSections,measurementSnapshot,measurementWork}=await measurePreviewSections(document,sections,width,height,{measurePlainTextLines:paragraphCache?(doc,r)=>measureWithParagraphCache(doc,snapshotRequest(r,false,mathCache),paragraphCache,!!inlineMathCache,(d,validated)=>measureValidatedTextLines(d,validated,mathCache,displayMathCache,inlineMathCache,checkpoint)):measurementCache?(doc,r)=>measureWithTextCache(doc,r.inlineMath!==undefined||r.inlineStyles!==undefined?r:snapshotRequest(r),measurementCache,measure):measure,measureDisplayMath:(doc,source,w,size,number,family)=>measureDisplayMath(doc,source,w,size,number,family,mathCache,displayMathCache),resolveComponentWidths,placeComponent,listInset,listMarker},retained?{previous:retained.measurement,mathCache}:undefined,checkpoint);
   const measured=now();
   if(checkpoint)await checkpoint('paginate');
   const paginationInput={schemaVersion:1 as const,revision,fingerprint,content:{width,height},sections:measuredSections};

@@ -1244,6 +1244,7 @@ try{
       assert(taskRan,'real task ran before further preview work');
     });
     assert(stages[0]==='validated'&&stages.at(-1)==='complete','checkpoint endpoints');
+    assert(stages.filter(s=>s==='measure-hard-line').length===2&&stages.includes('measure-graphemes')&&stages.includes('measure-frozen-line'),'changed text cooperates inside measurement');
     assert(stages.filter(s=>s==='measure-block').length===8&&stages.filter(s=>s==='render-page').length===8&&stages.filter(s=>s==='paginate').length===1,'checkpoint per block/page');
     assert(JSON.stringify(cooperative.plan)===JSON.stringify(oracle.plan)&&JSON.stringify(cooperative.slices)===JSON.stringify(oracle.slices),'cooperative plan and slices parity');
     assert(cooperative.changedElement.shadowRoot.firstElementChild.isEqualNode(changed.get(2)),'cooperative changed DOM parity');
@@ -1297,13 +1298,18 @@ try{
     });
     await rasterDelivery(rasterPage,0,1);
     assert(canvas.getContext('2d').getImageData(0,0,1,1).data[3]===255,'original raster unaffected by copy mutation');
-    for(const stop of ['validated','measure-block','paginate','render-key-page','render-page','render-fragment','render-line','complete']){
+    for(const stop of ['validated','measure-block','measure-hard-line','measure-graphemes','measure-frozen-line','paginate','render-key-page','render-page','render-fragment','render-line','complete']){
       const reason=new Error('cancel '+stop);
       let caught;
       try{await createRetainedTextPagePreview(document,options,initial.pageDelta.snapshot,stage=>{if(stage===stop)throw reason;},[2]);}catch(e){caught=e;}
       assert(caught===reason,'cancel propagates at '+stop);
       assert(document.body.children.length===beforeRetained,'cancel removes measurement hosts at '+stop);
     }
+    const asyncReason=new Error('superseded during glyph measurement');let asyncCaught;
+    try{await createRetainedTextPagePreview(document,options,initial.pageDelta.snapshot,stage=>{
+      if(stage==='measure-graphemes')return new Promise((_,reject)=>setTimeout(()=>reject(asyncReason),0));
+    });}catch(e){asyncCaught=e;}
+    assert(asyncCaught===asyncReason&&document.body.children.length===beforeRetained,'async glyph cancellation removes live host');
     const resumed=await createRetainedTextPagePreview(document,options,initial.pageDelta.snapshot);
     assert(resumed.measurementWork.reusedBlocks===7&&resumed.paginationWork.reusedBlocks===7&&resumed.pageDelta.reusedPageIndices.length===7,'cancel leaves prior snapshot usable');
     assert(baseNodes.every((n,i)=>n===initial.changedElement.shadowRoot.children[i]),'cancel does not change previous DOM');
