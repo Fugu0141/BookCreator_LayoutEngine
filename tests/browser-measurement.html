@@ -1221,7 +1221,7 @@ try{
     assert(changed.size===1&&Array.from(oracle.element.shadowRoot.children).every((n,i)=>n.isEqualNode(i===2?changed.get(i):baseNodes[i])),'retained DOM reconstruction parity');
     assert(edited.slices[0].sourceSlice.start===200,'latest source revision for reused page');
     const repeated=await createRetainedTextPagePreview(document,make('3',true),edited.pageDelta.snapshot);
-    assert(repeated.paginationWork.placedBlocks===0&&repeated.pageDelta.reusedPageIndices.length===8&&repeated.changedElement.shadowRoot.children.length===0,'next retained snapshot reuses all placements and pages');
+    assert(repeated.paginationWork.sharedSnapshotFragments>=8&&repeated.paginationWork.placedBlocks===0&&repeated.pageDelta.reusedPageIndices.length===8&&repeated.changedElement.shadowRoot.children.length===0,'next retained snapshot reuses all placements and pages');
     assert(repeated.measurementWork.measuredBlocks===0&&repeated.measurementWork.reusedBlocks===8,'no new block measurement on identical input');
     assert(Number.isFinite(edited.timings.paginationMs)&&edited.timings.paginationMs>=0,'retained pagination timing included');
     const legacy=await createIncrementalTextPagePreview(document,make('1'));
@@ -1298,7 +1298,7 @@ try{
     });
     await rasterDelivery(rasterPage,0,1);
     assert(canvas.getContext('2d').getImageData(0,0,1,1).data[3]===255,'original raster unaffected by copy mutation');
-    for(const stop of ['validated','measure-block','measure-hard-line','measure-graphemes','measure-frozen-line','paginate','paginate-validate','paginate-key','paginate-match','paginate-reuse','paginate-place','render-key-page','render-page','render-fragment','render-line','complete']){
+    for(const stop of ['validated','measure-block','measure-hard-line','measure-graphemes','measure-frozen-line','paginate','paginate-validate','paginate-key','paginate-match','paginate-reuse','paginate-place','paginate-snapshot','render-key-page','render-page','render-fragment','render-line','complete']){
       const reason=new Error('cancel '+stop);
       let caught;
       try{await createRetainedTextPagePreview(document,options,initial.pageDelta.snapshot,stage=>{if(stage===stop)throw reason;},[2]);}catch(e){caught=e;}
