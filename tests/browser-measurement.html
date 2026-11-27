@@ -1318,7 +1318,7 @@ try{
   await phase("retained component and inline math measurements");
   {
     const width=100000,height=100000;
-    const make=(revision,color='#ffffff',label='例題')=>{
+    const make=(revision,color='#ffffff',label='例題',formula='x^2')=>{
       const origin=i=>({documentId:'retained-mixed',revision,blockKey:'mixed-'+i});
       const body={...request,width,text:'本文。'};
       const text='数式 \uFFFC を求める。';
@@ -1326,7 +1326,7 @@ try{
         {origin:origin(0),request:body,splitPolicy:'strict',component:{direction:'column',padding:1000,gap:1000,background:color,textColor:'#111111',children:[
           {type:'label',id:'label',width:'fill',text:label,fontFamily:body.fontFamily,fontWeight:400,fontSize:4000,lineHeight:1.5,color:'#111111'},
           {type:'content',id:'content'}]}},
-        {origin:origin(1),request:{...body,text,inlineMath:[{start:text.indexOf('\uFFFC'),formula:'x^2'}]},splitPolicy:'strict'},
+        {origin:origin(1),request:{...body,text,inlineMath:[{start:text.indexOf('\uFFFC'),formula}]},splitPolicy:'strict'},
         {origin:origin(2),request:{...body,text:'x^2'},displayMath:true,splitPolicy:'strict'}
       ];
       return {revision,fingerprint:'mixed-'+revision,width,height,sections:blocks.map((b,i)=>({id:'mixed-'+i,startOn:'page',blocks:[b]}))};
@@ -1359,6 +1359,26 @@ try{
     }
     const changed=await createRetainedTextPagePreview(document,make('3','#eeeeee','変更した例題'),next.pageDelta.snapshot);
     assert(changed.measurementWork.measuredBlocks===1&&changed.measurementWork.reusedBlocks===2,'component label invalidates only its measurement');
+    const before=document.body.children.length,formulaEdit=make('4','#eeeeee','変更した例題','x^3'),stages=[];
+    const cooperative=await createRetainedTextPagePreview(document,formulaEdit,changed.pageDelta.snapshot,stage=>{
+      stages.push(stage);
+      if(stage==='measure-variable-graphemes'||stage==='measure-variable-line')return new Promise(resolve=>setTimeout(resolve,0));
+    });
+    const oracle=await createPlainTextPagePreview(document,formulaEdit);
+    assert(stages.includes('measure-variable-graphemes')&&stages.includes('measure-variable-line'),'native inline math measurement yields within glyphs and rows');
+    assert(cooperative.measurementWork.measuredBlocks===1&&cooperative.measurementWork.reusedBlocks===2,'cooperative inline edit retains unchanged measurements');
+    assert(JSON.stringify(cooperative.plan)===JSON.stringify(oracle.plan)&&JSON.stringify(cooperative.slices)===JSON.stringify(oracle.slices),'cooperative inline edit plan/slice parity');
+    assert(Array.from(oracle.element.shadowRoot.children).every((node,i)=>node.isEqualNode(cooperative.changedElement.shadowRoot.children[i])),'cooperative inline edit DOM parity');
+    for(const stop of ['measure-variable-graphemes','measure-variable-line']){
+      const reason=new Error('cancel '+stop);let caught;
+      try{await createRetainedTextPagePreview(document,formulaEdit,changed.pageDelta.snapshot,stage=>{
+        if(stage===stop)return new Promise((_,reject)=>setTimeout(()=>reject(reason),0));
+      });}catch(e){caught=e;}
+      assert(caught===reason&&document.body.children.length===before,'native measurement cancellation releases host at '+stop);
+    }
+    const resumed=await createRetainedTextPagePreview(document,formulaEdit,changed.pageDelta.snapshot);
+    assert(resumed.measurementWork.reusedBlocks===2&&Array.from(oracle.element.shadowRoot.children).every((node,i)=>node.isEqualNode(resumed.changedElement.shadowRoot.children[i])),'prior lease usable after native measurement cancellation');
+
   }
   await phase("node-free display math artifact");
   {
