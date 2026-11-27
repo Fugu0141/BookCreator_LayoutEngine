@@ -1298,7 +1298,7 @@ try{
     });
     await rasterDelivery(rasterPage,0,1);
     assert(canvas.getContext('2d').getImageData(0,0,1,1).data[3]===255,'original raster unaffected by copy mutation');
-    for(const stop of ['validated','measure-block','measure-hard-line','measure-graphemes','measure-frozen-line','paginate','paginate-validate','paginate-key','paginate-place','render-key-page','render-page','render-fragment','render-line','complete']){
+    for(const stop of ['validated','measure-block','measure-hard-line','measure-graphemes','measure-frozen-line','paginate','paginate-validate','paginate-key','paginate-match','paginate-reuse','paginate-place','render-key-page','render-page','render-fragment','render-line','complete']){
       const reason=new Error('cancel '+stop);
       let caught;
       try{await createRetainedTextPagePreview(document,options,initial.pageDelta.snapshot,stage=>{if(stage===stop)throw reason;},[2]);}catch(e){caught=e;}

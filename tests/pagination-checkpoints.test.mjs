@@ -175,3 +175,30 @@ test('cooperative pagination yields inside a large block and aborts without chan
   assert.ok(stages.filter(s=>s==='paginate-validate').length>=4);
   assert.ok(stages.filter(s=>s==='paginate-place').length>=4);
 });
+
+test('cooperative prefix and converged tail copying can be cancelled without mutating old snapshots',async()=>{
+  const blocks=Array.from({length:512},(_,i)=>block('reuse-'+i,[10]));
+  const original=input([section('s',blocks)]);
+  const first=check(original);
+  const edited=input([section('s',blocks.map((b,i)=>({...b,origin:origin(b.origin.blockKey,'2',i*3),unitHeights:i===260?[15]:i===261?[5]:b.unitHeights})))],'2');
+  const expected=check(edited,first.snapshot);
+  assert.equal(expected.reusedBlocks,510);assert.equal(expected.reusedSuffixBlocks,250);
+  for(const [stop,afterPlacement] of [['paginate-match',false],['paginate-reuse',false],['paginate-reuse',true]]){
+    const reason=new Error(stop);let placement=false,calls=0;
+    await assert.rejects(paginateMeasuredIncrementalCooperative(edited,first.snapshot,stage=>{
+      if(stage==='paginate-place')placement=true;
+      if(stage===stop&&placement===afterPlacement&&++calls===2)return new Promise((_,reject)=>setTimeout(()=>reject(reason),0));
+    }),e=>e===reason);
+    assert.equal(calls,2);
+    assert.deepEqual(check(original,first.snapshot).plan,paginateMeasured(original));
+  }
+  const stages=[];
+  const result=await paginateMeasuredIncrementalCooperative(edited,first.snapshot,stage=>{stages.push(stage);});
+  assert.deepEqual(result.plan,expected.plan);
+  assert.equal(result.reusedSuffixBlocks,expected.reusedSuffixBlocks);
+  assert.ok(stages.filter(s=>s==='paginate-match').length>=4);
+  assert.ok(stages.filter(s=>s==='paginate-reuse').length>=4);
+  assert.equal(check(edited,result.snapshot).placedBlocks,0);
+  result.plan.pages[0].fragments[0].rect.height=999;
+  assert.deepEqual(check(edited,result.snapshot).plan,paginateMeasured(edited));
+});
