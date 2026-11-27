@@ -142,9 +142,10 @@ type GlyphBox={start:number;end:number;left:number;right:number;top:number;botto
 /** Variable line boxes cannot be inferred from a single fixed pitch or glyph center.
  * Recover candidate LTR rows using advance resets, then independently verify every
  * frozen row against the actual wrapped DOM, including its natural height. */
-function glyphBoxes(document:Document,r:PlainTextMeasureRequest,segments:StyledSegment[],start:number,end:number,rect:DOMRect):GlyphBox[]{
-  const range=document.createRange(),boxes:GlyphBox[]=[];let i=0;
+async function glyphBoxes(document:Document,r:PlainTextMeasureRequest,segments:StyledSegment[],start:number,end:number,rect:DOMRect,checkpoint?:PreviewCheckpoint):Promise<GlyphBox[]>{
+  const range=document.createRange(),boxes:GlyphBox[]=[];let i=0,graphemes=0;
   for(const g of new Intl.Segmenter(undefined,{granularity:'grapheme'}).segment(r.text.slice(start,end))){
+    if(checkpoint&&graphemes++%32===0){const wait=checkpoint('measure-variable-graphemes');if(wait)await wait;}
     const a=start+g.index,b=a+g.segment.length;
     while(i<segments.length&&segments[i].end<=a)i++;
     const seg=segments[i];if(!seg||a<seg.start||b>seg.end)throw Error('Style crosses grapheme boundary');
@@ -168,11 +169,13 @@ function glyphBoxes(document:Document,r:PlainTextMeasureRequest,segments:StyledS
   }
   return boxes;
 }
-async function measureVariableLines(document:Document,root:ShadowRoot,el:HTMLElement,r:PlainTextMeasureRequest,segments:StyledSegment[],mathCache?:MathCompilationCache,fixed=false):Promise<MeasuredTextLine[]>{
-  const rect=el.getBoundingClientRect(),glyphs=glyphBoxes(document,r,segments,0,r.text.length,rect);
+async function measureVariableLines(document:Document,root:ShadowRoot,el:HTMLElement,r:PlainTextMeasureRequest,segments:StyledSegment[],mathCache?:MathCompilationCache,fixed=false,checkpoint?:PreviewCheckpoint):Promise<MeasuredTextLine[]>{
+  const rect=el.getBoundingClientRect(),glyphs=await glyphBoxes(document,r,segments,0,r.text.length,rect,checkpoint);
   if(!glyphs.length||rect.height<=0||el.scrollWidth>el.clientWidth+1)throw Error('Invalid variable line geometry');
   const groups:GlyphBox[][]=[];
+  let grouped=0;
   for(const glyph of glyphs){
+    if(checkpoint&&grouped++%32===0){const wait=checkpoint('measure-variable-graphemes');if(wait)await wait;}
     const group=groups.at(-1),prev=group?.at(-1);
     // This experimental path supports simple left-to-right advances only.
     if(glyph.right-glyph.left<=0||glyph.left< -1||glyph.right>rect.width+1)throw Error('Unsupported variable-height glyph advance');
@@ -184,12 +187,14 @@ async function measureVariableLines(document:Document,root:ShadowRoot,el:HTMLEle
   // Build every frozen row before reading any geometry. Alternating writes
   // and reads here forced synchronous browser layout for each row.
   const batch=document.createDocumentFragment();
-  const frozen=groups.map(group=>{
+  const frozen:{group:GlyphBox[];start:number;end:number;line:HTMLElement;rowSegments:StyledSegment[]}[]=[];
+  for(const group of groups){
+    const wait=checkpoint?.('measure-variable-line');if(wait)await wait;
     const start=group[0].start,end=group.at(-1)!.end;
     const line=document.createElement('div');styleText(line,r,false);
     const rowSegments=appendStyled(line,r,start,end,mathCache);batch.append(line);
-    return {group,start,end,line,rowSegments};
-  });
+    frozen.push({group,start,end,line,rowSegments});
+  }
   root.append(batch);
   // The wrapped fixed boxes contain no MathML. Wait for the actual native
   // frozen rows to load their fonts and pass the original native capability probe.
@@ -199,7 +204,8 @@ async function measureVariableLines(document:Document,root:ShadowRoot,el:HTMLEle
   // than the legacy wrapped-to-frozen tolerance, or retry the native path.
   const tolerance=fixed ? 0.125 : 1;
   for(const {group,start,end,line,rowSegments} of frozen){
-    const q=line.getBoundingClientRect(),row=glyphBoxes(document,r,rowSegments,start,end,q);
+    const wait=checkpoint?.('measure-variable-line');if(wait)await wait;
+    const q=line.getBoundingClientRect(),row=await glyphBoxes(document,r,rowSegments,start,end,q,checkpoint);
     if(q.height<=0||line.scrollWidth>line.clientWidth+1||row.length!==group.length||
       row.some((g,i)=>Math.abs(g.left-group[i].left)>tolerance||Math.abs(g.right-group[i].right)>tolerance||
         Math.abs(g.top+top-group[i].top)>tolerance||Math.abs(g.bottom+top-group[i].bottom)>tolerance||
@@ -264,7 +270,7 @@ async function measureSoftLines(document:Document,r:PlainTextMeasureRequest,math
     for(const run of r.inlineStyles??[])await readyPreviewFont(document,run.fontFamily??r.fontFamily,run.fontWeight??r.fontWeight,r.text.slice(run.start,run.end));
     if(r.inlineMath?.length&&!candidates)await readyPreviewMathFont(document,root,r.mathFontFamily);
     if(r.inlineMath?.length||r.inlineStyles?.some(s=>s.fontSize!==undefined||(s.baseline&&s.baseline!=='normal')||(s.fontFamily!==undefined&&s.fontFamily!==r.fontFamily))){
-      const lines=await measureVariableLines(document,root,el,r,segments,mathCache,!!candidates);
+      const lines=await measureVariableLines(document,root,el,r,segments,mathCache,!!candidates,checkpoint);
       return {request:r,lines,measurement:'browser-dom-lines',publicationReady:false};
     }
     const height=el.getBoundingClientRect().height;
@@ -551,7 +557,7 @@ export interface RetainedPaginationWork {
 /** Safe boundaries between completed units. The optional host callback may
  * return a task promise to yield to the event loop, or throw to abandon work.
  * It must not change fonts, the Document, or other measurement inputs. */
-export type PreviewCheckpointStage='validated'|'image'|'measure-block'|'measure-graphemes'|'measure-hard-line'|'measure-frozen-line'|'paginate'|'render-key-page'|'render-page'|'render-fragment'|'render-line'|'complete';
+export type PreviewCheckpointStage='validated'|'image'|'measure-block'|'measure-graphemes'|'measure-hard-line'|'measure-frozen-line'|'measure-variable-graphemes'|'measure-variable-line'|'paginate'|'render-key-page'|'render-page'|'render-fragment'|'render-line'|'complete';
 export type PreviewCheckpoint=(stage:PreviewCheckpointStage,pageIndex?:number)=>void|Promise<void>;
 export interface RetainedTextPagePreview extends IncrementalTextPagePreview {
   readonly paginationWork:Readonly<RetainedPaginationWork>;
