@@ -114,3 +114,32 @@ test('balance explanation reports physical depth improvement and retains page co
  assert.equal(r.causalAttribution,false);
  assert.ok(r.changes.some(c=>c.blockKey==='c'&&c.beforePage===0&&c.afterPage===1));
 });
+
+test('scoped improvement preserves an unrelated chapter and rejects a protected destination',()=>{
+ const i=input([...['a','b','c','d'].map(id=>b(id,80,30)),b('unrelated',80,20)]);
+ const o={gap:5,intents:[intent('unrelated',{startNewPage:true})]},approved=plan(i,o);
+ assert.deepEqual(approved.fragments.map(f=>f.placement.page),[0,0,0,1,2]);
+ const scope={firstPage:0,lastPage:1};
+ const p=propose(i,approved,o,'balance',scope);
+ assert.equal(p.status,'proposed');assert.deepEqual(p.scope,scope);
+ assert.deepEqual(p.result.fragments.at(-1),approved.fragments.at(-1));
+ assert.deepEqual(p.result.fragments.map(f=>f.placement.page),[0,0,1,1,2]);
+ assert.deepEqual(propose(i,approved,o,'balance',{firstPage:0,lastPage:0}),{status:'rejected',reason:'outside-scope'});
+ assert.deepEqual(propose(i,approved,o,'balance',{firstPage:1,lastPage:2}),{status:'rejected',reason:'outside-scope'});
+ assert.deepEqual(propose(i,approved,o,'balance',{...scope,maxMovedFragments:1}),{status:'rejected',reason:'movement-budget'});
+ const bounded=propose(i,approved,o,'balance',{...scope,maxMovedFragments:2});
+ assert.equal(bounded.status,'proposed');assert.equal(bounded.impact.movedFragments,2);
+});
+test('scoped review validates page range and retains the independently checked candidate',()=>{
+ const {current}=reviewFixture();
+ const {input:i,approved,options,lease}=current;
+ for(const scope of [null,{},[],{firstPage:-1,lastPage:1},{firstPage:1,lastPage:0},{firstPage:0,lastPage:2},{firstPage:0,lastPage:1,maxMovedFragments:-1},{firstPage:0,lastPage:1,typo:1}]){
+  assert.deepEqual(propose(i,approved,options,'compact',scope),{status:'rejected',reason:'invalid-scope'});
+ }
+ const scope={firstPage:0,lastPage:1},r=prepare(i,approved,options,'compact',lease,scope);
+ assert.equal(r.status,'review');assert.deepEqual(r.proposal.scope,scope);
+ scope.lastPage=0;assert.equal(r.proposal.scope.lastPage,1);
+ const preview={options:r.proposal.options,result:plan(i,r.proposal.options)};
+ assert.equal(confirm(r.handle,current,preview).status,'confirmed');
+ assert.deepEqual(prepare(i,approved,options,'compact',lease,{firstPage:0,lastPage:0}),{status:'rejected',reason:'outside-scope'});
+});
