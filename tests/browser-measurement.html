@@ -2,7 +2,7 @@
 <html lang="en"><meta charset="utf-8"><title>Browser measurement smoke test</title>
 <body><pre id="result">RUNNING</pre>
 <script type="module">
-import {proposeIntelligentGroup,proposeIntelligentGroupEdit,compareIntelligentPlacementImpact,IntelligentPreviewConflictError,findIntelligentFixedConflictTarget,describeIntelligentPreferredPlacement,createFullRetainedTextPagePreview,createTrialPrintPreviewForLayout,createIntelligentPrintTicket,createVerifiedIntelligentPrintPreview,measurePlainText,paginateMeasured,measurePlainTextLines,createPlainTextPagePreview,createIncrementalTextPagePreview,createRetainedTextPagePreview,measureDisplayMath,displayMathArtifact,restoreDisplayMathArtifact,createPreviewMath,createTextMeasurementCache,createParagraphMeasurementCache,createPageRenderCache,parsePreviewMath,parseDisplayMath,readyPreviewMathFont,createMathCompilationCache,createDisplayMathGeometryCache,createInlineMathGeometryCache,measureInlineMathGeometry,createInlineMathAtom} from '/dist/index.js';
+import {createIntelligentGeometryDraft,proposeIntelligentGroup,proposeIntelligentGroupEdit,compareIntelligentPlacementImpact,IntelligentPreviewConflictError,findIntelligentFixedConflictTarget,describeIntelligentPreferredPlacement,createFullRetainedTextPagePreview,createTrialPrintPreviewForLayout,createIntelligentPrintTicket,createVerifiedIntelligentPrintPreview,measurePlainText,paginateMeasured,measurePlainTextLines,createPlainTextPagePreview,createIncrementalTextPagePreview,createRetainedTextPagePreview,measureDisplayMath,displayMathArtifact,restoreDisplayMathArtifact,createPreviewMath,createTextMeasurementCache,createParagraphMeasurementCache,createPageRenderCache,parsePreviewMath,parseDisplayMath,readyPreviewMathFont,createMathCompilationCache,createDisplayMathGeometryCache,createInlineMathGeometryCache,measureInlineMathGeometry,createInlineMathAtom} from '/dist/index.js';
 const result=document.querySelector('#result');
 const assert=(condition,message)=>{if(!condition)throw Error(message);};
 const phase=async name=>{await fetch('/test-progress',{method:'POST',body:name});};
@@ -187,6 +187,48 @@ try{
       assert(rejected,'unconfirmed layout cannot use approved ticket');
     }finally{frame.remove();}
     assert(original.element.shadowRoot.querySelectorAll('[data-page]').length===2&&JSON.stringify(base.intelligentLayout)===JSON.stringify(history[0]),'original source and options unchanged');
+  }
+  await phase("IL geometry-only draft from approved measurement");
+  {
+    const blocks=['a','b','c'].map(blockKey=>({origin:{documentId:'geometry',revision:'source',blockKey},request:{text:blockKey,width:22000,fontSize:3000,fontFamily:'sans-serif',lineHeight:1.4},splitPolicy:'strict'}));
+    const base={revision:'geometry-book',fingerprint:'geometry-fp',width:80000,height:80000,blocks,
+      intelligentLayout:{gap:2000,intents:[{documentId:'geometry',blockKey:'c',placement:{fixed:{page:2,x:5000,y:10000}}}]}};
+    const approved=await createFullRetainedTextPagePreview(document,base);
+    const original=approved.element.shadowRoot.innerHTML;
+    const make=(x,y)=>({...base.intelligentLayout,intents:[...base.intelligentLayout.intents,
+      {documentId:'geometry',blockKey:'b',placement:{preferred:{page:0,x,y},preferredTolerance:{x:10000,y:0}}}]});
+    const stages=[];
+    const draft=await createIntelligentGeometryDraft(document,approved.snapshot,make(20000,25000),undefined,s=>{stages.push(s);});
+    assert(draft.kind==='intelligent-geometry-draft'&&draft.pageCount===3&&!('element' in draft)&&!('plan' in draft),'draft contains only advisory geometry');
+    assert(stages.includes('complete')&&stages.every(s=>!s.startsWith('measure')&&!s.startsWith('render')&&s!=='image'),'no measurement or rendering checkpoints');
+    const measured=await createFullRetainedTextPagePreview(document,{...base,intelligentLayout:make(20000,25000)},approved.snapshot);
+    assert(JSON.stringify(draft.layout)===JSON.stringify(measured.intelligentLayout),'draft agrees with independently drawn paper');
+    const next=make(30000,30000);
+    const moved=await createIntelligentGeometryDraft(document,approved.snapshot,next,draft.snapshot);
+    assert(moved.placementWork.reusedBlocks>=1&&moved.paginationWork.reusedBlocks===3,'drag reuses measured pagination and placement prefix');
+    assert(JSON.stringify(moved.layout)===JSON.stringify((await createPlainTextPagePreview(document,{...base,intelligentLayout:next})).intelligentLayout),'second drag agrees with cold');
+    const originalX=moved.layout.fragments[1].placement.rect.x;
+    moved.layout.fragments[1].placement.rect.x=999;
+    const repeat=await createIntelligentGeometryDraft(document,approved.snapshot,next,moved.snapshot);
+    assert(repeat.layout.fragments[1].placement.rect.x===originalX&&repeat.placementWork.reusedBlocks===3,'draft geometry cannot poison private snapshots');
+    let cancelled=false;
+    try{await createIntelligentGeometryDraft(document,approved.snapshot,next,repeat.snapshot,s=>{if(s==='complete')throw Error('cancel geometry');});}catch(e){cancelled=e.message==='cancel geometry';}
+    assert(cancelled,'geometry checkpoint cancellation');
+    const broken={...base.intelligentLayout,intents:[{documentId:'geometry',blockKey:'c',placement:{fixed:{page:0,x:0,y:0}}}]};
+    let conflict;
+    try{await createIntelligentGeometryDraft(document,approved.snapshot,broken,repeat.snapshot);}catch(e){conflict=e;}
+    assert(conflict instanceof IntelligentPreviewConflictError,'geometry conflict is typed');
+    const restored=await createIntelligentGeometryDraft(document,approved.snapshot,next,repeat.snapshot);
+    assert(restored.placementWork.reusedBlocks===3&&restored.layout.fragments[1].placement.rect.x===originalX,'cancel and conflict leave draft reusable');
+    const reject=async(fn)=>{let failed=false;try{await fn();}catch{failed=true;}assert(failed,'invalid geometry lease rejected');};
+    await reject(()=>createIntelligentGeometryDraft(document,measured.snapshot,next,repeat.snapshot));
+    await reject(()=>createIntelligentGeometryDraft(document,approved.snapshot,next,JSON.parse(JSON.stringify(repeat.snapshot))));
+    await reject(()=>createFullRetainedTextPagePreview(document,base,repeat.snapshot));
+    const legacy=await createFullRetainedTextPagePreview(document,{...base,intelligentLayout:undefined});
+    await reject(()=>createIntelligentGeometryDraft(document,legacy.snapshot,next));
+    const frame=document.createElement('iframe');document.body.append(frame);
+    try{await reject(()=>createIntelligentGeometryDraft(frame.contentDocument,approved.snapshot,next));}finally{frame.remove();}
+    assert(approved.element.shadowRoot.innerHTML===original,'drafts do not mutate approved paper');
   }
   await phase("IL verified print preview");
   {
