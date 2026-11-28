@@ -297,6 +297,8 @@ try{
     text.request.multiline=true;
     const formula=block('formula','\\frac{-b+\\sqrt{b^2-4ac}}{2a}',60000,{displayMath:true,equationNumber:'1.1'});
     const box={direction:'column',gap:1000,padding:1000,background:'#eeeeee',textColor:'#224466',children:[{id:'content',type:'content'}]};
+  const imageId='a'.repeat(64),png=new Blob([Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAAAQAAAACCAIAAADwyuo0AAAAGUlEQVR4nGP4z8DA8J+BgeH/////mRiQAABryAX9SqklXwAAAABJRU5ErkJggg=='),c=>c.charCodeAt(0))],{type:'image/png'});
+    const imageNode={id:'art',type:'image',assetId:imageId,width:20000,height:10000,fit:'contain',alt:'Sample illustration'};
     const figure=block('figure','図 1',30000,{component:{...box,children:[{...imageNode,width:20000,height:10000},{id:'content',type:'content'}]}});
     const blocks=[block('heading','二次方程式'),text,formula,block('example','例題：方程式を解く。',60000,{component:box}),
       block('explanation','解説：公式を適用する。'),figure,block('caption','図の説明',30000),
