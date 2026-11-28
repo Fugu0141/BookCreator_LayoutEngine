@@ -1,5 +1,5 @@
 import {planMeasuredIntelligentLayout,compareIntelligentPlacementImpact,type IntelligentMeasuredOptions,type IntelligentMeasuredResult,type IntelligentPlacementImpact} from './intelligent-measured.js';
-import {inspectIntelligentLayoutQuality,type IntelligentQualityReport} from './intelligent-quality.js';
+import {inspectIntelligentLayoutQuality,type IntelligentQualityReport,type IntelligentPageQuality} from './intelligent-quality.js';
 import type {PaginationInput} from './pagination.js';
 
 export type IntelligentOptimizationGoal='compact'|'balance';
@@ -183,4 +183,55 @@ export function describeIntelligentOptimizationProposal(proposal:IntelligentOpti
       placementId:c.before.id,unitStart:c.unitStart,unitEnd:c.unitEnd,beforePage:c.before.page,afterPage:c.after.page,
       deltaX:c.after.rect.x-c.before.rect.x,deltaY:c.after.rect.y-c.before.rect.y,
       preferenceRestored:c.before.preference==='fallback'&&c.after.preference==='honored'}))};
+}
+
+export interface IntelligentOptimizationPageComparison {
+  /** Zero-based physical page index. Missing side means page does not exist. */
+  page:number;
+  before?:IntelligentPageQuality;
+  after?:IntelligentPageQuality;
+  /** Placement IDs, including changes that do not alter aggregate quality. */
+  changedBefore:string[];
+  changedAfter:string[];
+}
+export interface IntelligentOptimizationReviewComparison {
+  explanation:IntelligentOptimizationExplanation;
+  scope?:Readonly<IntelligentOptimizationScope>;
+  beforePageCount:number;
+  afterPageCount:number;
+  movedFragments:number;
+  pageChangedFragments:number;
+  /** Only affected pages, sorted by physical index. */
+  pages:IntelligentOptimizationPageComparison[];
+  /** Absolute body-relative rectangles, source identity and change flags. */
+  changes:IntelligentPlacementImpact['changed'];
+}
+/** Read the privately captured review without consuming it, recomputing the
+ * layout, or trusting a public mutable proposal. The caller owns lease
+ * currentness. The result is advisory, not a rendered-preview confirmation. */
+export function inspectIntelligentOptimizationReview(
+  handle:IntelligentOptimizationReviewHandle,lease:string,
+):IntelligentOptimizationReviewComparison|undefined{
+  const state=reviews.get(handle);
+  if(!state||state.lease!==lease)return undefined;
+  const c=state.candidate;
+  const outgoing=new Map<number,string[]>(),incoming=new Map<number,string[]>();
+  const add=(map:Map<number,string[]>,page:number,id:string)=>{
+    const ids=map.get(page);
+    if(ids)ids.push(id);else map.set(page,[id]);
+  };
+  for(const change of c.impact.changed){
+    add(outgoing,change.before.page,change.before.id);
+    add(incoming,change.after.page,change.after.id);
+  }
+  const pages:IntelligentOptimizationPageComparison[]=[];
+  for(let page=0;page<Math.max(c.before.pageCount,c.after.pageCount);page++){
+    const before=c.before.pages[page],after=c.after.pages[page];
+    const changedBefore=outgoing.get(page)??[],changedAfter=incoming.get(page)??[];
+    if(!changedBefore.length&&!changedAfter.length&&JSON.stringify(before)===JSON.stringify(after))continue;
+    pages.push({page,...(before?{before}:{}),...(after?{after}:{}),changedBefore,changedAfter});
+  }
+  return structuredClone({explanation:describeIntelligentOptimizationProposal(c)!,
+    ...(c.scope?{scope:c.scope}:{}),beforePageCount:c.before.pageCount,afterPageCount:c.after.pageCount,
+    movedFragments:c.impact.movedFragments,pageChangedFragments:c.impact.pageChangedFragments,pages,changes:c.impact.changed});
 }
