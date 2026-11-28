@@ -236,6 +236,35 @@ try{
   const inCanvas={...canvas,children:[{...canvas.children[0],children:[{...imageNode,x:1000,y:1000},...canvas.children[0].children.slice(1)]}]};
   const imageCanvas=await createPlainTextPagePreview(document,{...imageOptions,blocks:[makeText('sample','head','Heading',{component:inCanvas})]});
   assert(imageCanvas.element.shadowRoot.querySelector('[data-component-canvas] > [data-component-image] canvas')!==null,'image in Canvas');
+  await phase("retained image page identity");
+  const retainedImage=(revision,design=picture,blob=png)=>({...imageOptions,revision,blocks:[makeText('sample','head','Heading',{component:design})],resolveImage:async()=>blob});
+  const imageFirst=await createRetainedTextPagePreview(document,retainedImage('image-1'));
+  const imagePrior=imageFirst.changedElement.shadowRoot.firstElementChild;
+  const imageNext=await createRetainedTextPagePreview(document,retainedImage('image-2'),imageFirst.pageDelta.snapshot);
+  assert(JSON.stringify(imageNext.pageDelta.reusedPageIndices)===JSON.stringify([0])&&imageNext.changedElement.shadowRoot.children.length===0,'unchanged PNG page omitted');
+  const replacement=document.createElement('canvas');replacement.width=4;replacement.height=2;
+  const replacementContext=replacement.getContext('2d');replacementContext.fillStyle='#ff00ff';replacementContext.fillRect(0,0,4,2);
+  const changedPng=await new Promise(resolve=>replacement.toBlob(resolve,'image/png'));
+  const imageCases=[
+    retainedImage('image-3',picture,changedPng),
+    retainedImage('image-4',{...picture,children:[cropped,...picture.children.slice(1)]}),
+    retainedImage('image-5',{...picture,children:[{...imageNode,alt:'Updated illustration'},...picture.children.slice(1)]}),
+    retainedImage('image-6',{...picture,children:[{...imageNode,fit:'cover'},...picture.children.slice(1)]})
+  ];
+  for(const opts of imageCases){
+    const changed=await createRetainedTextPagePreview(document,opts,imageNext.pageDelta.snapshot),exact=await createPlainTextPagePreview(document,opts);
+    assert(changed.pageDelta.reusedPageIndices.length===0,'changed image bytes or presentation invalidates page');
+    const page=changed.changedElement.shadowRoot.firstElementChild,oracle=exact.element.shadowRoot.firstElementChild;
+    assert(page.isEqualNode(oracle)&&JSON.stringify(changed.plan)===JSON.stringify(exact.plan)&&JSON.stringify(changed.slices)===JSON.stringify(exact.slices),'image DOM/plan/slices parity');
+    const canvases=Array.from(page.querySelectorAll('canvas')),expected=Array.from(oracle.querySelectorAll('canvas'));
+    assert(canvases.every((cv,i)=>cv.getContext('2d').getImageData(0,0,cv.width,cv.height).data.every((v,j)=>v===expected[i].getContext('2d').getImageData(0,0,cv.width,cv.height).data[j])),'image raster parity');
+  }
+  assert(imagePrior.querySelector('[data-component-node=art] canvas').getContext('2d').getImageData(0,0,1,1).data[1]===0,'prior raster remains unchanged');
+  const nestedFirst=await createRetainedTextPagePreview(document,retainedImage('nested-1',inCanvas));
+  const nestedNext=await createRetainedTextPagePreview(document,retainedImage('nested-2',inCanvas),nestedFirst.pageDelta.snapshot);
+  assert(nestedNext.pageDelta.reusedPageIndices.length===1,'nested image page omitted');
+  const nestedChanged=await createRetainedTextPagePreview(document,retainedImage('nested-3',inCanvas,changedPng),nestedNext.pageDelta.snapshot);
+  assert(nestedChanged.pageDelta.reusedPageIndices.length===0,'nested image bytes invalidate page');
   for(const invalid of [
     {...imageOptions,resolveImage:undefined},
     {...imageOptions,resolveImage:async()=>new Blob(['bad'],{type:'image/png'})},
