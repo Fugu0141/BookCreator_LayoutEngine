@@ -154,7 +154,7 @@ export async function measurePreviewSections(document:Document,sections:readonly
     }
     byKey.set(k,{block:b,...value});
     const heights=value.placement?[value.placement.rect.height]:value.measurement.lines.map(l=>l.height);
-    blocks.push({kind:'block' as const,origin:b.origin,width:value.placement?.rect.width??b.request.width,unitHeights:heights,splitPolicy:b.splitPolicy,minUnitsBefore:b.minUnitsBefore,minUnitsAfter:b.minUnitsAfter,...(fragmentable?{fragmentPadding:{top:b.component!.padding,bottom:b.component!.padding}}:{}),startPosition:b.startPosition,startPositionSource:b.startPositionSource});
+    blocks.push({kind:'block' as const,origin:b.origin,width:value.placement?.rect.width??b.request.width,unitHeights:heights,splitPolicy:b.splitPolicy,minUnitsBefore:b.minUnitsBefore,minUnitsAfter:b.minUnitsAfter,optimizeSplit:b.optimizeSplit,...(fragmentable?{fragmentPadding:{top:b.component!.padding,bottom:b.component!.padding}}:{}),startPosition:b.startPosition,startPositionSource:b.startPositionSource});
   }
     measuredSections.push({id:section.id,startOn:section.startOn,blocks});
   }
