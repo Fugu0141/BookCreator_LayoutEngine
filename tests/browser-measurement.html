@@ -2,7 +2,7 @@
 <html lang="en"><meta charset="utf-8"><title>Browser measurement smoke test</title>
 <body><pre id="result">RUNNING</pre>
 <script type="module">
-import {createTrialPrintPreviewForLayout,createIntelligentPrintTicket,createVerifiedIntelligentPrintPreview,measurePlainText,paginateMeasured,measurePlainTextLines,createPlainTextPagePreview,createIncrementalTextPagePreview,createRetainedTextPagePreview,measureDisplayMath,displayMathArtifact,restoreDisplayMathArtifact,createPreviewMath,createTextMeasurementCache,createParagraphMeasurementCache,createPageRenderCache,parsePreviewMath,parseDisplayMath,readyPreviewMathFont,createMathCompilationCache,createDisplayMathGeometryCache,createInlineMathGeometryCache,measureInlineMathGeometry,createInlineMathAtom} from '/dist/index.js';
+import {createFullRetainedTextPagePreview,createTrialPrintPreviewForLayout,createIntelligentPrintTicket,createVerifiedIntelligentPrintPreview,measurePlainText,paginateMeasured,measurePlainTextLines,createPlainTextPagePreview,createIncrementalTextPagePreview,createRetainedTextPagePreview,measureDisplayMath,displayMathArtifact,restoreDisplayMathArtifact,createPreviewMath,createTextMeasurementCache,createParagraphMeasurementCache,createPageRenderCache,parsePreviewMath,parseDisplayMath,readyPreviewMathFont,createMathCompilationCache,createDisplayMathGeometryCache,createInlineMathGeometryCache,measureInlineMathGeometry,createInlineMathAtom} from '/dist/index.js';
 const result=document.querySelector('#result');
 const assert=(condition,message)=>{if(!condition)throw Error(message);};
 const phase=async name=>{await fetch('/test-progress',{method:'POST',body:name});};
@@ -138,6 +138,36 @@ try{
       const widthPreview=await createPlainTextPagePreview(document,widthOnly);
       assert(JSON.stringify(widthPreview.plan)===JSON.stringify(same.plan),'width-only footprint does not alter content geometry');
       await rejects(widthOnly,ticket);
+    }finally{frame.remove();}
+  }
+  await phase("full retained IL proposal preview");
+  {
+    const blocks=['before','area','after','pinned'].map(blockKey=>({origin:{documentId:'proposal',revision:'r',blockKey,persistentId:'id-'+blockKey},request:{text:blockKey,width:20000,fontSize:3000,fontFamily:'sans-serif',lineHeight:1.4},splitPolicy:'strict'}));
+    const make=percent=>({revision:'r',fingerprint:'proposal-'+percent,width:80000,height:80000,blocks,
+      intelligentLayout:{intents:[{documentId:'proposal',blockKey:'area',placement:{sizeConstraints:{minHeightPercent:percent}}},
+        {documentId:'proposal',blockKey:'pinned',placement:{fixed:{page:2,x:5000,y:10000}}}]}});
+    const initial=await createFullRetainedTextPagePreview(document,make(30));
+    assert(initial.measurementWork.measuredBlocks===4&&initial.element.shadowRoot.children.length===3,'full retained cold paper');
+    const changed=await createFullRetainedTextPagePreview(document,make(60),initial.snapshot);
+    const oracle=await createPlainTextPagePreview(document,make(60));
+    assert(changed.measurementWork.measuredBlocks===0&&changed.measurementWork.reusedBlocks===4,'occupancy-only edit reuses all measured blocks');
+    assert(changed.intelligentPlacementWork.reusedBlocks>0,'IL prefix reused');
+    assert(JSON.stringify(changed.plan)===JSON.stringify(oracle.plan),'full retained proposal matches cold plan');
+    assert(changed.element.shadowRoot.children.length===3&&!changed.element.isConnected,'complete independent detached paper');
+    assert(Array.from(changed.element.shadowRoot.children).every((node,i)=>node.isEqualNode(oracle.element.shadowRoot.children[i])),'complete DOM matches cold paper');
+    assert(initial.element.shadowRoot.children.length===3&&initial.element!==changed.element,'prior paper not consumed');
+    const repeat=await createFullRetainedTextPagePreview(document,make(60),changed.snapshot);
+    assert(repeat.element.shadowRoot.children.length===3&&repeat.measurementWork.reusedBlocks===4,'unchanged proposal still returns all pages');
+    let cancelled=false;
+    try{await createFullRetainedTextPagePreview(document,make(50),changed.snapshot,stage=>{if(stage==='render-page')throw Error('cancel proposal');});}
+    catch(e){cancelled=e.message==='cancel proposal';}
+    assert(cancelled,'cooperative cancellation rejects proposal');
+    const resumed=await createFullRetainedTextPagePreview(document,make(60),changed.snapshot);
+    assert(resumed.measurementWork.reusedBlocks===4&&JSON.stringify(resumed.plan)===JSON.stringify(changed.plan),'prior successful proposal remains reusable');
+    const frame=document.createElement('iframe');document.body.append(frame);
+    try{
+      let rejected=false;try{await createFullRetainedTextPagePreview(frame.contentDocument,make(60),changed.snapshot);}catch{rejected=true;}
+      assert(rejected,'cross-document proposal snapshot rejected');
     }finally{frame.remove();}
   }
   await phase("text measurement cache");
