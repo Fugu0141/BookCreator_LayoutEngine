@@ -466,6 +466,8 @@ export interface PreviewTextBlock {
   namedSlots?:readonly PreviewNamedSlot[];
   component?:PreviewComponent; // strict tree or splittable single-slot column frame
   origin:Origin; request:PlainTextMeasureRequest; splitPolicy:SplitPolicy;
+  /** Soft minimum measured units on either side of a page split. */
+  minUnitsBefore?:number; minUnitsAfter?:number;
   startPosition?:'page-top'; startPositionSource?:'component'|'explicit';
   // The host must verify the logical text is an exact raw source substring before setting this.
   sourceTextStart?:number;
