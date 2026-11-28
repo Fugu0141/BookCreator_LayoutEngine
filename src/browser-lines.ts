@@ -13,7 +13,7 @@ import {layoutTree} from './tree.js';
 import {applyPreviewFont,readyPreviewFont,isPreviewFontFamily,isPreviewFontWeight} from './preview-font.js';
 import {planMeasuredIntelligentLayout,planMeasuredIntelligentLayoutIncremental,planMeasuredIntelligentLayoutIncrementalCooperative,projectIntelligentMeasuredPlan,type IntelligentMeasuredResult,type IntelligentMeasuredOptions,type IntelligentMeasuredSnapshot,type IntelligentMeasuredWorkStage,type IncrementalIntelligentMeasuredResult} from './intelligent-measured.js';
 import {inspectIntelligentLayoutQuality,type IntelligentQualityReport} from './intelligent-quality.js';
-import {prepareIntelligentOptimizationReview,confirmIntelligentOptimizationReview,cancelIntelligentOptimizationReview,type IntelligentOptimizationGoal,type IntelligentOptimizationScope,type IntelligentOptimizationReview,type IntelligentOptimizationReviewHandle,type IntelligentOptimizationConfirmation} from './intelligent-optimization-proposal.js';
+import {inspectIntelligentOptimizationReview,type IntelligentOptimizationReviewComparison,prepareIntelligentOptimizationReview,confirmIntelligentOptimizationReview,cancelIntelligentOptimizationReview,type IntelligentOptimizationGoal,type IntelligentOptimizationScope,type IntelligentOptimizationReview,type IntelligentOptimizationReviewHandle,type IntelligentOptimizationConfirmation} from './intelligent-optimization-proposal.js';
 import {paginateMeasured,paginateMeasuredIncremental,paginateMeasuredIncrementalCooperative,type PaginationWorkStage,type PaginationCheckpointSnapshot,type PaginationInput,type Origin,type MeasuredPagePlan,type SplitPolicy,type PageBreak} from './pagination.js';
 import type {PlainTextMeasureRequest,InlineStyleRun,InlineMathAtom} from './browser-measurement.js';
 
@@ -686,6 +686,17 @@ export function prepareRetainedIntelligentOptimizationReview(
   const review=prepareIntelligentOptimizationReview(input,context.approved,context.options,goal,lease,scope);
   if(review.status==='review')retainedReviewHandles.set(review.handle,base);
   return review;
+}
+/** Display-only comparison from the exact retained base and review lease.
+ * A failed inspection does not consume the review. Host must discard stale
+ * display generations and independently render/confirm before saving. */
+export function inspectRetainedIntelligentOptimizationReview(
+  document:Document,handle:IntelligentOptimizationReviewHandle,base:PageReuseSnapshot,lease:string,
+):IntelligentOptimizationReviewComparison|undefined{
+  if(retainedReviewHandles.get(handle)!==base)return undefined;
+  try{live(document);previousPageKeys(document,base);}
+  catch{return undefined;}
+  return inspectIntelligentOptimizationReview(handle,lease);
 }
 /** Discard a retained review without publishing a new paper. */
 export function cancelRetainedIntelligentOptimizationReview(handle:IntelligentOptimizationReviewHandle):boolean{
