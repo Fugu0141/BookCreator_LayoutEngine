@@ -16,6 +16,9 @@ export interface MeasuredBlock {
   // Each positive unit is indivisible; boundaries between units are safe splits.
   unitHeights: readonly number[];
   splitPolicy: SplitPolicy;
+  /** Soft minimum indivisible units before and after a split, respectively. */
+  minUnitsBefore?:number;
+  minUnitsAfter?:number;
   // Repeated overhead reserved once per fragment, not once per line.
   fragmentPadding?:{top:number;bottom:number};
   startPosition?: 'flow'|'page-top';
@@ -43,7 +46,7 @@ export interface Fragment {
   breakReason:'flow'|'page-top'|'section'|'explicit'|'overflow'|'continuation';
 }
 export interface PaginationDiagnostic {
-  code:'PG_INVALID'|'PG_TOO_LARGE'|'PG_AVOID_SPLIT'|'PG_LIMIT';
+  code:'PG_INVALID'|'PG_TOO_LARGE'|'PG_AVOID_SPLIT'|'PG_LIMIT'|'PG_SPLIT_MINIMUM';
   severity:'error'|'warning';
   message:string;
   origin?:Origin;
@@ -150,6 +153,8 @@ function* runPagination(input:PaginationInput,incremental?:IncrementalState):Gen
         (block.startPosition!==undefined&&!['flow','page-top'].includes(block.startPosition))||
         (block.startPositionSource!==undefined&&!['component','explicit'].includes(block.startPositionSource))||
         (block.startPosition==='page-top'&&!block.startPositionSource))return fail('PG_INVALID','Invalid measured block',o);
+      if([block.minUnitsBefore,block.minUnitsAfter].some(n=>n!==undefined&&(!positive(n)||n>1000000)))
+        return fail('PG_INVALID','Invalid split minimum',o);
       const padding=block.fragmentPadding;
       if(padding!==undefined&&(!padding||!Number.isSafeInteger(padding.top)||padding.top<0||!Number.isSafeInteger(padding.bottom)||padding.bottom<0||!Number.isSafeInteger(padding.top+padding.bottom)))return fail('PG_INVALID','Invalid fragment padding',o);
       unitCount+=block.unitHeights.length;
@@ -204,7 +209,7 @@ function* runPagination(input:PaginationInput,incremental?:IncrementalState):Gen
         eventKeys.push(JSON.stringify(block.kind==='pagebreak'?['break',k]:[
           'block',k,suppress,block.width,block.unitHeights,block.splitPolicy,
           block.fragmentPadding?.top??0,block.fragmentPadding?.bottom??0,
-          block.startPosition??'flow',block.startPositionSource??null
+          block.startPosition??'flow',block.startPositionSource??null,block.minUnitsBefore??1,block.minUnitsAfter??1
         ]));
       }
     }
@@ -320,7 +325,8 @@ function* runPagination(input:PaginationInput,incremental?:IncrementalState):Gen
       }else if(block.splitPolicy==='avoid'){
         result.diagnostics.push({code:'PG_AVOID_SPLIT',severity:'warning',message:'Block exceeds an empty page; safe splitting required',origin:block.origin});
       }
-      let cursor=0, continuationIndex=0;
+      const minBefore=block.minUnitsBefore??1,minAfter=block.minUnitsAfter??1;
+      let cursor=0, continuationIndex=0, minimumWarned=false;
       while(cursor<block.unitHeights.length){
         if(block.unitHeights[cursor]+overhead>height-used)newPage(cursor?'continuation':'overflow');
         let end=cursor,h=overhead;
@@ -329,6 +335,28 @@ function* runPagination(input:PaginationInput,incremental?:IncrementalState):Gen
           h+=block.unitHeights[end];end++;
         }
         if(end===cursor)return fail('PG_TOO_LARGE','No safe progress',block.origin);
+        // Only actual splits are constrained. Preserve the greedy maximal
+        // fragment as a fallback on an empty page if minima are infeasible.
+        // Moving from a partially filled page can happen at most once per
+        // cursor; it cannot introduce an empty physical page.
+        const required=end<block.unitHeights.length?Math.max(minBefore,cursor>0?minAfter:1):cursor>0?minAfter:1;
+        const remaining=block.unitHeights.length-end;
+        if(remaining>0&&remaining<minAfter){
+          const adjusted=block.unitHeights.length-minAfter;
+          if(adjusted-cursor>=required){
+            while(end>adjusted){
+              if(placedUnits++%256===0)yield 'paginate-place';
+              h-=block.unitHeights[--end];
+            }
+          }
+        }
+        if(end-cursor<required||(end<block.unitHeights.length&&block.unitHeights.length-end<minAfter)){
+          if(used>0&&cursor===0){newPage('overflow');continue;}
+          if(!minimumWarned){
+            result.diagnostics.push({code:'PG_SPLIT_MINIMUM',severity:'warning',message:'Split minimum could not be satisfied without changing indivisible content',origin:block.origin});
+            minimumWarned=true;
+          }
+        }
         if(used===0){
           if(result.pages.length>=10000)return fail('PG_LIMIT','Page limit exceeded',block.origin);
           result.pages.push({index:result.pages.length,fragments:[]});
