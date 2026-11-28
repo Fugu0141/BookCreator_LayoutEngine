@@ -118,7 +118,7 @@ const px=(um:number)=>um*96/25400;
 export const previewBlockKey=(o:Origin)=>JSON.stringify([o.documentId,o.blockKey]);
 // Internal ownership contract: math nodes are consumed by this render; bitmaps
 // are borrowed for this call (including optional cooperative waits), and closed by their owning orchestrator.
-export async function renderMeasuredPreview(document:Document,plan:MeasuredPagePlan,{width,height,paper,byKey,images,imageKeys,imageDimensions,decodeImage,pageCache,pageCacheEpoch,delta}:{width:number;height:number;paper?:PreviewPaper;byKey:ReadonlyMap<string,MeasuredPreviewBlock>;images:ReadonlyMap<string,ImageBitmap>;imageKeys?:ReadonlyMap<string,string>;imageDimensions:ReadonlyMap<string,{width:number;height:number}>;decodeImage:(id:string)=>Promise<void>;pageCache?:PageRenderCache;pageCacheEpoch?:number;delta?:{previousKeys:ReadonlyMap<number,string>;allowInlineMath?:boolean}},{styleText,frozenText,listInset}:RenderServices,checkpoint?:PreviewCheckpoint,priorityPages?:readonly number[],onPriorityPage?:ProvisionalPageReceiver):Promise<TextPagePreview & {pageDelta?:PageRenderDelta}>{
+export async function renderMeasuredPreview(document:Document,plan:MeasuredPagePlan,{width,height,paper,byKey,images,imageKeys,imageDimensions,decodeImage,pageCache,pageCacheEpoch,delta}:{width:number;height:number;paper?:PreviewPaper;byKey:ReadonlyMap<string,MeasuredPreviewBlock>;images:ReadonlyMap<string,ImageBitmap>;imageKeys?:ReadonlyMap<string,string>;imageDimensions:ReadonlyMap<string,{width:number;height:number}>;decodeImage:(id:string)=>Promise<void>;pageCache?:PageRenderCache;pageCacheEpoch?:number;delta?:{previousKeys:ReadonlyMap<number,string>;allowInlineMath?:boolean}},{styleText,frozenText,listInset}:RenderServices,checkpoint?:PreviewCheckpoint,priorityPages?:readonly number[],onPriorityPage?:ProvisionalPageReceiver,skipSinglePageProvisional=false):Promise<TextPagePreview & {pageDelta?:PageRenderDelta}>{
   let renderedImagePixels=0;
   function rasterGeometry(child:Extract<PreviewComponentChild,{type:'image'}>,rect:ComponentPlacement['rect']){
     const dimensions=imageDimensions.get(child.assetId)!;
@@ -166,12 +166,20 @@ export async function renderMeasuredPreview(document:Document,plan:MeasuredPageP
   }
   const ordered=prioritizePages(plan.pages,priorityPages);
   const drawn=new Map<number,HTMLElement>();
-  const deliver=onPriorityPage?createProvisionalPageDelivery(priorityPages,onPriorityPage):undefined;
+  function isRetained(index:number){const key=nextKeys.get(index);return delta!==undefined&&key!==undefined&&delta.previousKeys.get(index)===key;}
+  // Canonical keys have already been admitted when priority hints exist.
+  // Stop counting at two: more than one generated page can benefit from streaming.
+  let enoughChanged=true;
+  if(skipSinglePageProvisional&&onPriorityPage&&priorityPages){
+    let changed=0;
+    for(const p of plan.pages){if(!isRetained(p.index)&&++changed===2)break;}
+    enoughChanged=changed>=2;
+  }
+  const deliver=onPriorityPage&&enoughChanged?createProvisionalPageDelivery(priorityPages,onPriorityPage):undefined;
   for(const p of ordered){
     if(checkpoint)await checkpoint('render-page',p.index);
     if(!priorityPages)admitKey(p);
-    const deltaKey=nextKeys.get(p.index);
-    const skip=delta!==undefined&&deltaKey!==undefined&&delta.previousKeys.get(p.index)===deltaKey;
+    const skip=isRetained(p.index);
     if(skip)reused.push(p.index);
     const key=state?pageKey(p,width,height,paper,byKey):undefined;
     const cached=key!==undefined?state!.entries.get(key):undefined;
