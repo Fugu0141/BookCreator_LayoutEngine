@@ -162,3 +162,49 @@ test('keep-next respects page budget and does not silently create hard groups',(
  assert.equal(same.optimization.score.keptWithNext,1);
  assert.equal(same.optimization.evaluatedCandidates,2);
 });
+
+test('page-depth balancing moves an independent tail without increasing page count',async()=>{
+ const i=input(['a','b','c','d'].map(id=>b(id,80,30)));
+ const before=JSON.stringify(i),old=plan(i,{}),options={balancePageDepths:true};
+ assert.deepEqual(old.placements.map(p=>p.page),[0,0,0,1]);
+ const r=plan(i,options);
+ assert.equal(r.status,'placed');assert.equal(r.optimization.selected,'page-balance');
+ assert.equal(r.optimization.score.pageCount,2);assert.equal(r.optimization.score.pageDepthImbalance,0);
+ assert.deepEqual(r.placements.map(p=>[p.id,p.page,p.rect.y]),[['a',0,0],['b',0,35],['c',1,0],['d',1,35]]);
+ assert.equal(r.optimization.evaluatedCandidates,3);assert.equal(JSON.stringify(i),before);
+ assert.deepEqual(plan(i,{balancePageDepths:false}),old);
+ assert.deepEqual(incremental(i,undefined,options).layout,r);
+ assert.deepEqual((await cooperative(i,undefined,()=>{},options)).layout,r);
+});
+test('page balance preserves user whitespace and measured occupied geometry',()=>{
+ const i=input([b('a',80,30),b('b',80,30),b('c',60,20,{sizeConstraints:{minWidth:80,minHeight:25},spaceAfter:5}),b('d',80,30)]);
+ const r=plan(i,{balancePageDepths:true});
+ assert.equal(r.optimization.selected,'page-balance');
+ assert.deepEqual(r.placements[2].rect,{x:0,y:0,width:60,height:20});
+ assert.deepEqual(r.placements[2].occupiedRect,{x:0,y:0,width:80,height:30});
+ assert.equal(r.placements[3].rect.y,35);
+});
+test('page balance does not override explicit boundaries, reservations or stability',()=>{
+ const plain=['a','b','c','d'].map(id=>b(id,80,30));
+ for(const i of [
+  input(plain.map(v=>v.id==='d'?{...v,startNewPage:true}:v)),
+  input(plain,{reservedRegions:[{id:'edge',page:1,rect:{x:90,y:0,width:10,height:100}}]}),
+  input(plain.map(v=>v.id==='d'?{...v,fixed:{page:1,x:0,y:0}}:v)),
+  input(plain.map(v=>v.id==='d'?{...v,preferred:{page:1,x:0,y:0}}:v)),
+  input(plain.map(v=>v.id==='c'||v.id==='b'?{...v,keepTogetherGroup:'pair'}:v)),
+  input(plain.map(v=>v.id==='c'?{...v,sideBySide:true}:v))
+ ]){
+  const old=plan(i,{}),r=plan(i,{balancePageDepths:true});
+  assert.equal(r.status,'placed');assert.deepEqual(r.placements,old.placements);
+ }
+ const i=input(plain),old=plan(i,{});
+ const previousPositions=old.placements.map(p=>({id:p.id,page:p.page,x:p.rect.x,y:p.rect.y}));
+ assert.deepEqual(plan(i,{balancePageDepths:true,previousPositions}).placements,old.placements);
+ assert.equal(plan(i,{balancePageDepths:'yes'}).diagnostic.code,'IL_INVALID');
+});
+test('page balance cannot reduce the higher-priority semantic keep score',()=>{
+ const i=input(['a','b','c','d'].map(id=>b(id,80,30)));
+ const r=plan(i,{balancePageDepths:true,keepWithNextIds:['b']});
+ assert.equal(r.optimization.score.keptWithNext,1);
+ assert.deepEqual(r.placements.map(p=>p.page),[0,0,0,1]);
+});
