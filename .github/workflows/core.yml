@@ -20,3 +20,6 @@ jobs:
         run: node benchmarks/intelligent-layout.mjs
       - name: IL repeated editing and retained heap benchmark (informational memory, required equivalence)
         run: node --expose-gc benchmarks/intelligent-session.mjs
+
+      - name: IL targeted balance benchmark (informational timing, required equivalence)
+        run: node benchmarks/intelligent-targeted-balance.mjs

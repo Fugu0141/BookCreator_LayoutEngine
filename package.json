@@ -22,6 +22,7 @@
     "layout-inspector": "node cli/layout-inspector.mjs",
     "test:browser": "node tests/browser-measurement.mjs",
     "benchmark:il": "npm run build && node benchmarks/intelligent-layout.mjs",
+    "benchmark:il:targeted": "npm run build && node benchmarks/intelligent-targeted-balance.mjs",
     "benchmark:il:session": "npm run build && node --expose-gc benchmarks/intelligent-session.mjs",
     "test:il:pdf": "node tests/intelligent-pdf.mjs"
   },
