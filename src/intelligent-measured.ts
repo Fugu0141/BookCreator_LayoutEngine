@@ -58,6 +58,37 @@ const sourceKey=(o:Pick<Origin,'documentId'|'blockKey'>)=>JSON.stringify([o.docu
 export function intelligentMeasuredId(origin:Pick<Origin,'documentId'|'blockKey'>,units?:Readonly<{start:number;end:number}>):string {
   return JSON.stringify(units?[origin.documentId,origin.blockKey,units.start,units.end]:[origin.documentId,origin.blockKey]);
 }
+/**
+ * Identify a unique explicitly fixed intent implicated by a measured conflict.
+ * This is a recovery target, not proof that unlocking it will solve the layout.
+ * Callers must still verify their saved revision/lease and ask for explicit
+ * confirmation before changing intent. No input is edited and no plan produced.
+ */
+export function findIntelligentFixedConflictTarget(
+  result:IntelligentMeasuredResult,
+  options:IntelligentMeasuredOptions,
+  expected:Readonly<Pick<PaginationInput,'revision'|'fingerprint'>>,
+):Pick<IntelligentMeasuredIntent,'documentId'|'blockKey'>|undefined {
+  if(result.status!=='conflict'||result.revision!==expected.revision||
+    result.fingerprint!==expected.fingerprint||!result.diagnostic.blockId)return undefined;
+  const code=result.diagnostic.code;
+  if(!(result.stage==='layout'&&
+    (code==='IL_FIXED_CONFLICT'||code==='IL_RESERVED_CONFLICT'||code==='IL_SIZE_CONFLICT'||code==='IL_TOO_LARGE')||
+    result.stage==='intent'&&code==='IL_MEASURED_INTENT'))return undefined;
+  const list=options.intents;
+  if(!Array.isArray(list)||list.length>10000)return undefined;
+  let target:Pick<IntelligentMeasuredIntent,'documentId'|'blockKey'>|undefined;
+  let matches=0;
+  for(const i of list){
+    if(!i||typeof i.documentId!=='string'||!i.documentId||
+      typeof i.blockKey!=='string'||!i.blockKey||sourceKey(i)!==result.diagnostic.blockId)continue;
+    if(++matches>1)return undefined;
+    if(validIntentShape(i)&&i.placement.fixed!==undefined&&i.placement.fixed!==null)
+      target={documentId:i.documentId,blockKey:i.blockKey};
+  }
+  return target;
+}
+
 const copyOrigin=(o:Origin):Origin=>({...o,...(o.range?{range:{...o.range}}:{})});
 
 /**
