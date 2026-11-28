@@ -17,3 +17,9 @@ prepareIntelligentOptimizationReview は既存提案APIを使い、成功した�
 cancelIntelligentOptimizationReview はhandleを無効化する。confirmIntelligentOptimizationReview は現在のhost lease・元入力・元計画・元設定、および独立した完全実測プレビューの候補設定・計画がすべて一致する場合のみ、確認済み設定/計画のコピーを返す。不一致を含めて一度の確認でhandleを消費する。JSONコピーや別handleでは確認できない。host leaseの正しさは呼出元が保証し、保存直前の独立検証を省略しない。
 
 hostは確認成功後にのみ、既存の保存・Undo/Redo履歴へ設定を取り込み、印刷ticketを確定紙面から新規発行する。取消時は候補を破棄する。履歴・保存・印刷そのものはこのAPIでは行わない。分割範囲や意味情報の変更時は新しい入力とleaseで再提案する。単回利用・取消・古いlease・入力/計画/設定変更・候補改変・プレビュー不一致の回帰を追加。CI・本体接続未確認。
+
+## IL-15E: 配置改善案の説明
+
+describeIntelligentOptimizationProposal は成功提案の目的、選択候補名、ページ削減・希望実現数増加・占有下端偏り削減の正の改善値と、移動した原稿ID/部品ID/断片範囲、前後ページ、本文相対X/Y差、希望回復フラグを返す。失敗提案は undefined。ページ番号は0始まり、距離は整数µm。戻り値の変更は元提案に影響しない。
+
+候補の評価は紙面全体を比較するため、個別の移動が特定の改善を引き起こしたとは断定しない（causalAttribution:false）。GUIは全体の改善目的と観測された部品ごとの差分を分けて提示する。元提案の表示専用で、承認handle・host lease・保存時検証を置き換えない。compact/balanceの改善値、正確な移動差分、表示の独立性、拒否結果の試験を追加。CI・GUI接続未確認。
