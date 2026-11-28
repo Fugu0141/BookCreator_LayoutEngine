@@ -105,6 +105,23 @@ createVerifiedIntelligentPrintPreview(document, options, ticket) は専用印刷
 
 ここではEngineの接続APIとChromiumでの紙面再生成試験を追加する。別Document・Electron実PDFの実測、文字や描画の忠実性、正式出版は未検証。BookCreator本体のGUI/保存/IPC変更は本体担当との連携で行う。
 
+## IL-09C: BookCreator担当への統合契約
+
+本体側の PAPER-GUI 系の原稿編集・永続ID・保存正本は本体担当が管理する。Engine の変更を固定参照で取り込んだ後、現行原稿の documentId/blockKey に解決した明示意図だけを intelligentLayout に渡す。既存部品が実測寸法に適用済みの占有率を二重に適用しない。原稿編集、意図編集、用紙変更、フォント/画像変更は同じ要求世代を無効化し、計測環境を含む fingerprint を更新する。旧revisionや分割済み原稿ブロックへの曖昧な意図は適用しない。
+
+- 画面: createRetainedTextPagePreview の plan/slices は全体、changedElement は差分のみ。現在の要求IDとrevisionが一致した成功結果のみ採用する。conflict では前の表示を保持し、古い表示で編集/出力を許可しない。文書・フォント環境を変える場合は前回 PageReuseSnapshot を破棄する。
+- 保存: snapshot や最適化スコア、計算済み座標は原稿の正本ではない。明示意図は本体スキーマで検証し、削除や重複・ID不明・未保存の状態を拒否する。
+- 試しPDF: 承認済み全冊の options.intelligentLayout、paper、plan、IntelligentPrintTicket を同じ不変入力として保持する。print-renderer.mjs は IL が有効な場合 createVerifiedIntelligentPrintPreview を選び、続いて既存 assertMatchingPrintPlan / prepareTrialPrint を使用する。ticketなしのIL出力やILなしのticketは拒否。旧APIの出力は維持する。別Documentにキャッシュを共有しない。
+- 本体の保存照合: 現行 trial-pdf-export.mjs の保存済み原稿・テーマ・設定・フォント確認に、保存済みIL意図とそのrevisionも含める。出力処理中の意図変更は旧版として明示するか中止し、無断で確定しない。最終的なPDF構造・位置・内容・フォント検査は本体の責務。
+
+Engine はこの契約と別DocumentでのDOM再生成試験までを提供する。本体の画面、保存、IPC、実Electron PDF出力はこのPRでは変更しない。publicationReady=false のまま維持する。
+
+## IL-10A: 総合品質・性能の自動検証
+
+決定的な擬似乱数で混合ブロックを生成し、固定位置、予約領域、占有率、明示余白、改ページ、読み順、重複/欠落、寸法保存を独立した不変条件で検証する。追加/削除/寸法・制約変更後の増分・協調計算をコールド計算と比較する。計測済み分割の単位範囲を再構成し、断片の欠落や重複がないことを検査する。競合は空結果とsnapshot未発行を確認する。
+
+Core checks に 100/1000/10000 ブロックの benchmark を追加する。配置一致の失敗はCI失敗、実行時間は環境に依存するため情報として記録し、固定ms閾値を設けない。増分計算は全入力検証・キー・出力コピーを含むため、再利用数が多くても必ず高速になるとは限らない。ブラウザの実測・描画・Windows上での入力応答を含む全冊性能は別途検証する。
+
 ## 組版への統合（正式出版経路は未実装）
 
 既存測定・分割・増分組版を活用し、ロックや手動余白、明示改ページを制約として扱う。ユーザーが許可した範囲のみ再計測・配置し、不要な全冊再組版を避ける。異なるページへ移動する提案や競合解消はプレビューで明示する。最終的にGUIとPDFは同じ検証済みPagePlanを使用する。
