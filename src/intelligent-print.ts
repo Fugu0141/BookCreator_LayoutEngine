@@ -80,3 +80,15 @@ export async function createVerifiedIntelligentPrintPreview(document:Document,op
     throw Error('IL print layout differs from the confirmed preview');
   return preview;
 }
+
+/** Single entry for a host's trial print adapter. Never silently fall back
+ * from an IL-enabled request to the legacy planner or ignore an IL ticket.
+ * Host must still validate the saved input and its expected full PagePlan,
+ * keep options immutable, and inspect the generated PDF before saving. */
+export async function createTrialPrintPreviewForLayout(document:Document,options:TextPagePreviewOptions,
+  ticket?:IntelligentPrintTicket):Promise<TextPagePreview>{
+  const enabled=options.intelligentLayout!==undefined;
+  if(enabled!==(ticket!==undefined))throw Error('IL trial print mode and ticket must match');
+  if(enabled)return createVerifiedIntelligentPrintPreview(document,options,ticket!);
+  return createPlainTextPagePreview(document,options);
+}
