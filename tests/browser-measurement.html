@@ -170,6 +170,46 @@ try{
       assert(rejected,'cross-document proposal snapshot rejected');
     }finally{frame.remove();}
   }
+  await phase("IL draft paired performance");
+  const ilDraftPairs=[];
+  {
+    // Both arms use private caches, matching the host's current proposal path.
+    // No wall-clock threshold: correctness and actual work counters are gates.
+    const caches=()=>({paragraphCache:createParagraphMeasurementCache(document),mathCache:createMathCompilationCache(),displayMathCache:createDisplayMathGeometryCache(document)});
+    const nativeCaches=caches(),retainedCaches=caches();
+    const blocks=Array.from({length:16},(_,i)=>{
+      const math=i%4===3,blockKey='draft-'+i;
+      return {origin:{documentId:'draft-bench',revision:'saved',blockKey,persistentId:'id-'+blockKey},
+        request:{text:math?'\\frac{x^2+1}{2}':'この段落は紙面配置の変更を確認します。 Layout sample '+i+'。',width:72000,fontSize:3500,fontFamily:'sans-serif',lineHeight:1.4},
+        splitPolicy:'strict',...(math?{displayMath:true}:{})};
+    });
+    const options=(percent,gap)=>({revision:'saved',fingerprint:'draft-'+percent+'-'+gap,width:80000,height:100000,blocks,collectTimings:true,
+      intelligentLayout:{intents:[{documentId:'draft-bench',blockKey:'draft-6',placement:{sizeConstraints:{minWidthPercent:90,minHeightPercent:percent},spaceAfter:gap}}]}});
+    await createPlainTextPagePreview(document,{...options(20,1000),...nativeCaches});
+    let snapshot=(await createFullRetainedTextPagePreview(document,{...options(20,1000),...retainedCaches})).snapshot;
+    for(const [index,[percent,gap]] of [[30,1000],[30,6000],[45,6000],[20,2000]].entries()){
+      const input=options(percent,gap);
+      const measure=async retained=>{
+        const start=performance.now();
+        const paper=retained?await createFullRetainedTextPagePreview(document,{...input,...retainedCaches},snapshot):await createPlainTextPagePreview(document,{...input,...nativeCaches});
+        return {paper,elapsedMs:performance.now()-start};
+      };
+      let native,warm;
+      if(index%2===0){native=await measure(false);warm=await measure(true);}
+      else{warm=await measure(true);native=await measure(false);}
+      const a=native.paper,b=warm.paper;
+      assert(JSON.stringify(a.plan)===JSON.stringify(b.plan)&&JSON.stringify(a.slices)===JSON.stringify(b.slices),'paired draft plan and slices parity');
+      assert(JSON.stringify(a.intelligentLayout)===JSON.stringify(b.intelligentLayout),'paired draft occupied layout parity');
+      assert(a.element.shadowRoot.children.length===b.element.shadowRoot.children.length&&Array.from(a.element.shadowRoot.children).every((p,i)=>p.isEqualNode(b.element.shadowRoot.children[i])),'paired draft complete DOM parity');
+      assert(b.measurementWork.measuredBlocks===0&&b.measurementWork.reusedBlocks===blocks.length,'occupancy/spacing-only proposals reuse all measured blocks');
+      assert(b.intelligentPlacementWork.reusedBlocks>=6,'unchanged prefix reused');
+      snapshot=b.snapshot;
+      ilDraftPairs.push({percent,gap,pages:b.plan.pages.length,order:index%2===0?'cached-first':'retained-first',
+        cachedMs:native.elapsedMs,retainedMs:warm.elapsedMs,cachedTimings:a.timings,retainedTimings:b.timings,
+        measurement:b.measurementWork,placement:b.intelligentPlacementWork});
+    }
+    assert(document.body.children.length===before,'paired draft detached DOM cleanup');
+  }
   await phase("text measurement cache");
   {
   const cache=createTextMeasurementCache(document);
@@ -1729,7 +1769,7 @@ try{
       pairedDeltaMedianMs:median(pairs.map(p=>p.deltaMs)),incrementalWins:pairs.filter(p=>p.deltaMs<0).length,
       hits:pairs.reduce((n,p)=>n+p.incremental.delta.hits,0),misses:pairs.reduce((n,p)=>n+p.incremental.delta.misses,0)};
   });
-  result.textContent='PASS '+JSON.stringify({lineCount:lines.lines.length,previewPages:preview.plan.pages.length,lineRanges:preview.slices.map(s=>[s.textStart,s.textEnd])})+' '+JSON.stringify({wide,narrow,pages:plan.pages.length})+' MATH_BENCH '+JSON.stringify({version:2,mathBenchmark,mathCacheComparisons,mathCacheSummary})+' PARAGRAPH_BENCH '+JSON.stringify({version:1,paragraphComparisons,paragraphSummary});
+  result.textContent='PASS '+JSON.stringify({lineCount:lines.lines.length,previewPages:preview.plan.pages.length,lineRanges:preview.slices.map(s=>[s.textStart,s.textEnd])})+' '+JSON.stringify({wide,narrow,pages:plan.pages.length})+' MATH_BENCH '+JSON.stringify({version:2,mathBenchmark,mathCacheComparisons,mathCacheSummary})+' PARAGRAPH_BENCH '+JSON.stringify({version:1,paragraphComparisons,paragraphSummary})+' IL_DRAFT_BENCH '+JSON.stringify({version:1,pairs:ilDraftPairs,cachedMedianMs:median(ilDraftPairs.map(p=>p.cachedMs)),retainedMedianMs:median(ilDraftPairs.map(p=>p.retainedMs)),cachedMeasurementMedianMs:median(ilDraftPairs.map(p=>p.cachedTimings.measurementMs)),retainedMeasurementMedianMs:median(ilDraftPairs.map(p=>p.retainedTimings.measurementMs))});
 }catch(error){result.textContent='FAIL '+String(error);}
 await fetch('/test-result',{method:'POST',body:result.textContent});
 </script></body></html>
