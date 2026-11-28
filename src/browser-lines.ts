@@ -703,6 +703,91 @@ export function cancelRetainedIntelligentOptimizationReview(handle:IntelligentOp
   if(!retainedReviewHandles.delete(handle))return false;
   return cancelIntelligentOptimizationReview(handle);
 }
+export type RetainedIntelligentOptimizationTarget=
+  | {kind:'book'}
+  | {kind:'pages';scope:Readonly<IntelligentOptimizationScope>}
+  | {kind:'document';documentId:string;maxMovedFragments?:number};
+export interface RetainedIntelligentOptimizationChoicesHandle {
+  readonly kind:'retained-intelligent-optimization-choices';
+}
+type AvailableOptimizationReview=Extract<IntelligentOptimizationReview,{status:'review'}>;
+export type RetainedIntelligentOptimizationChoice=
+  | {goal:IntelligentOptimizationGoal;status:'available';comparison:IntelligentOptimizationReviewComparison}
+  | {goal:IntelligentOptimizationGoal;status:'rejected';reason:Extract<RetainedIntelligentDocumentOptimizationReview,{status:'rejected'}>['reason']};
+export type RetainedIntelligentOptimizationChoices=
+  | {status:'ready';handle:RetainedIntelligentOptimizationChoicesHandle;choices:RetainedIntelligentOptimizationChoice[]}
+  | {status:'empty';choices:RetainedIntelligentOptimizationChoice[]}
+  | {status:'rejected';reason:'invalid-target'};
+type RetainedChoicesState={
+  base:PageReuseSnapshot;
+  lease:string;
+  reviews:Map<IntelligentOptimizationGoal,AvailableOptimizationReview>;
+};
+const retainedOptimizationChoices=new WeakMap<RetainedIntelligentOptimizationChoicesHandle,RetainedChoicesState>();
+/** Prepare at most two existing, independently validated goals. No ranking,
+ * automatic selection, rendering or saving. Explicit target prevents a
+ * missing manuscript or page range from becoming a whole-book request. */
+export function prepareRetainedIntelligentOptimizationChoices(
+  document:Document,base:PageReuseSnapshot,target:Readonly<RetainedIntelligentOptimizationTarget>,lease:string,
+):RetainedIntelligentOptimizationChoices{
+  if(!target||typeof target!=='object'||Array.isArray(target)||
+    (target.kind!=='book'&&target.kind!=='pages'&&target.kind!=='document')||
+    (target.kind==='pages'&&!target.scope)||
+    (target.kind==='document'&&(typeof target.documentId!=='string'||!target.documentId)))
+    return {status:'rejected',reason:'invalid-target'};
+  const allowed=target.kind==='book'?['kind']:target.kind==='pages'?['kind','scope']:['kind','documentId','maxMovedFragments'];
+  if(Object.keys(target).some(k=>!allowed.includes(k)))return {status:'rejected',reason:'invalid-target'};
+  live(document);previousPageKeys(document,base);
+  const reviews=new Map<IntelligentOptimizationGoal,AvailableOptimizationReview>();
+  const choices:RetainedIntelligentOptimizationChoice[]=[];
+  try{
+    for(const goal of ['compact','balance'] as const){
+      const review=target.kind==='document'?
+        prepareRetainedIntelligentDocumentOptimizationReview(document,base,target.documentId,goal,lease,target.maxMovedFragments):
+        prepareRetainedIntelligentOptimizationReview(document,base,goal,lease,target.kind==='pages'?target.scope:undefined);
+      if(review.status==='rejected'){choices.push({goal,...review});continue;}
+      reviews.set(goal,review);
+      const comparison=inspectRetainedIntelligentOptimizationReview(document,review.handle,base,lease);
+      if(!comparison)throw Error('Missing retained optimization comparison');
+      choices.push({goal,status:'available',comparison});
+    }
+  }catch(error){
+    for(const review of reviews.values())cancelRetainedIntelligentOptimizationReview(review.handle);
+    throw error;
+  }
+  if(!reviews.size)return {status:'empty',choices};
+  const handle=Object.freeze({kind:'retained-intelligent-optimization-choices' as const});
+  retainedOptimizationChoices.set(handle,{base,lease,reviews});
+  return {status:'ready',handle,choices};
+}
+/** Selecting transfers exactly one ordinary review to the host. It does not
+ * confirm or publish it. All other reviews from this choice set are cancelled.
+ * Invalid/stale selections do not consume the set; the host can cancel it. */
+export function selectRetainedIntelligentOptimizationChoice(
+  document:Document,handle:RetainedIntelligentOptimizationChoicesHandle,base:PageReuseSnapshot,
+  lease:string,goal:IntelligentOptimizationGoal,
+):AvailableOptimizationReview|{status:'rejected';reason:'invalid-handle'|'stale'|'unavailable-goal'}{
+  const state=retainedOptimizationChoices.get(handle);
+  if(!state)return {status:'rejected',reason:'invalid-handle'};
+  if(state.base!==base||state.lease!==lease)return {status:'rejected',reason:'stale'};
+  try{live(document);previousPageKeys(document,base);}
+  catch{return {status:'rejected',reason:'stale'};}
+  const selected=state.reviews.get(goal);
+  if(!selected)return {status:'rejected',reason:'unavailable-goal'};
+  retainedOptimizationChoices.delete(handle);
+  for(const review of state.reviews.values())
+    if(review!==selected)cancelRetainedIntelligentOptimizationReview(review.handle);
+  return selected;
+}
+/** Discard every unselected review. After selection the ordinary single
+ * review cancellation API owns the transferred handle. */
+export function cancelRetainedIntelligentOptimizationChoices(handle:RetainedIntelligentOptimizationChoicesHandle):boolean{
+  const state=retainedOptimizationChoices.get(handle);
+  if(!state)return false;
+  retainedOptimizationChoices.delete(handle);
+  for(const review of state.reviews.values())cancelRetainedIntelligentOptimizationReview(review.handle);
+  return true;
+}
 /** Compare the real rendered candidate snapshot, not the public proposal
  * result. Both snapshots must belong to the same live Document, and the
  * current base must be the exact snapshot from which review was prepared.
