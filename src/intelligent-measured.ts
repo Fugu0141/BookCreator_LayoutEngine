@@ -5,7 +5,7 @@ import {planIntelligentLayout,planIntelligentLayoutIncremental,planIntelligentLa
 export interface IntelligentMeasuredIntent {
   documentId:string;
   blockKey:string;
-  placement:Readonly<Pick<IntelligentBlock,'mode'|'fixed'|'fixedPositionOnly'|'fixedRowShare'|'preferred'|'preferredTolerance'|'sideBySide'|'sizeConstraints'|'spaceBefore'|'spaceAfter'|'startNewPage'|'keepTogetherGroup'>>;
+  placement:Readonly<Pick<IntelligentBlock,'mode'|'fixed'|'fixedPositionOnly'|'fixedRowShare'|'preferred'|'preferredTolerance'|'sideBySide'|'sizeConstraints'|'spaceBefore'|'spaceAfter'|'startNewPage'|'keepTogetherGroup'|'keepTogetherLayout'>>;
 }
 export interface IntelligentMeasuredOptions {
   gap?:number;
@@ -38,7 +38,7 @@ export type IntelligentMeasuredResult =
 // rejected rather than silently treating a misspelled constraint as automatic.
 const optionKeys=['gap','intents','reservedRegions','optimization'];
 const intentKeys=['documentId','blockKey','placement'];
-const placementKeys=['mode','fixed','fixedPositionOnly','fixedRowShare','preferred','preferredTolerance','sideBySide','sizeConstraints','spaceBefore','spaceAfter','startNewPage','keepTogetherGroup'];
+const placementKeys=['mode','fixed','fixedPositionOnly','fixedRowShare','preferred','preferredTolerance','sideBySide','sizeConstraints','spaceBefore','spaceAfter','startNewPage','keepTogetherGroup','keepTogetherLayout'];
 const positionKeys=['page','x','y'];
 const constraintKeys=['minWidth','minHeight','maxWidth','maxHeight','minWidthPercent','minHeightPercent'];
 function hasOnlyKeys(value:unknown,keys:readonly string[]):boolean{
@@ -182,7 +182,7 @@ function* placeMeasuredWork(input:PaginationInput,options:IntelligentMeasuredOpt
     const hardBreak=f.breakReason==='explicit'||f.breakReason==='section'||f.breakReason==='page-top'||f.breakReason==='continuation';
     blocks.push({id,size:{width:f.rect.width,height:f.rect.height},
       mode:i?.mode,fixed:i?.fixed,fixedPositionOnly:i?.fixedPositionOnly,fixedRowShare:i?.fixedRowShare,preferred:i?.preferred,preferredTolerance:i?.preferredTolerance,sideBySide:i?.sideBySide,sizeConstraints:i?.sizeConstraints,
-      spaceBefore:i?.spaceBefore,spaceAfter:i?.spaceAfter,keepTogetherGroup:i?.keepTogetherGroup,
+      spaceBefore:i?.spaceBefore,spaceAfter:i?.spaceAfter,keepTogetherGroup:i?.keepTogetherGroup,keepTogetherLayout:i?.keepTogetherLayout,
       startNewPage:hardBreak||i?.startNewPage===true});
   }
   const layout=(yield {input:{revision:input.revision,content:input.content,gap:options.gap===undefined?0:options.gap,
