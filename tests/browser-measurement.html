@@ -226,6 +226,35 @@ try{
     let rejected=false;try{await autoPreview(group,'Heading',cap);}catch{rejected=true;}
     assert(rejected,'automatic canvas rejects invalid mode or page/coordinate overflow');
   }
+  // Occupied page percentage is a minimum, not a text scaling factor.
+  const percentageDesign={...labelComponent,minHeightPercent:50};
+  const percentOptions=(revision,component,height=150000,splitPolicy='strict')=>({revision,fingerprint:revision,width:65000,height,blocks:[{...makeText('sample','head','Heading',{component}),splitPolicy},makeText('sample','after','After')]});
+  const baseArea=await createPlainTextPagePreview(document,percentOptions('area-base',labelComponent));
+  const halfArea=await createPlainTextPagePreview(document,percentOptions('area-half',percentageDesign));
+  assert(halfArea.plan.pages[0].fragments[0].rect.height===75000,'half body reserved');
+  const areaText=(p)=>p.element.shadowRoot.querySelector('[data-content-slot]');
+  assert(areaText(baseArea).style.top===areaText(halfArea).style.top&&areaText(baseArea).style.height===areaText(halfArea).style.height&&areaText(baseArea).style.width===areaText(halfArea).style.width,'occupancy does not scale or move text');
+  assert(halfArea.plan.pages[0].fragments[1].rect.y>=halfArea.plan.pages[0].fragments[0].rect.y+75000,'next paragraph follows reserved blank area');
+  const largerPage=await createPlainTextPagePreview(document,percentOptions('area-page',percentageDesign,240000));
+  assert(largerPage.plan.pages[0].fragments[0].rect.height===120000,'page percentage supports more than 100mm without changing child size limit');
+  const smallArea=await createPlainTextPagePreview(document,percentOptions('area-small',{...labelComponent,minHeightPercent:1}));
+  assert(smallArea.plan.pages[0].fragments[0].rect.height===baseArea.plan.pages[0].fragments[0].rect.height,'content exceeding minimum expands naturally');
+  for(const percent of [0,101,-1,12.5,NaN]){
+    let rejected=false;try{await createPlainTextPagePreview(document,percentOptions('bad-area',{...labelComponent,minHeightPercent:percent}));}catch{rejected=true;}
+    assert(rejected,'invalid minimum percentage rejected');
+  }
+  const fragmentableArea={...component,direction:'column',gap:0,children:[{id:'content',type:'content'}],minHeightPercent:50};
+  let areaSplitRejected=false;try{await createPlainTextPagePreview(document,percentOptions('area-split',fragmentableArea,150000,'allow'));}catch{areaSplitRejected=true;}
+  assert(areaSplitRejected,'fragmentable components cannot silently ignore minimum percentage');
+  const retainedArea=await createRetainedTextPagePreview(document,percentOptions('area-retained-1',labelComponent));
+  const retainedAreaNext=await createRetainedTextPagePreview(document,percentOptions('area-retained-2',percentageDesign),retainedArea.pageDelta.snapshot);
+  assert(retainedAreaNext.plan.pages[0].fragments[0].rect.height===75000,'retained plan invalidates occupied percentage changes');
+  const fixedModeArea={...canvas,children:[{...autoGroup,height:50000,heightMode:undefined}]};
+  const retainedModeStart={...fixedModeArea,children:[{...fixedModeArea.children[0],height:60000}]};
+  const retainedModeEnd={...retainedModeStart,children:[{...retainedModeStart.children[0],heightMode:'auto'}]};
+  const retainedMode=await createRetainedTextPagePreview(document,percentOptions('mode-retained-1',retainedModeStart));
+  const retainedModeNext=await createRetainedTextPagePreview(document,percentOptions('mode-retained-2',retainedModeEnd),retainedMode.pageDelta.snapshot);
+  assert(retainedModeNext.plan.pages[0].fragments[0].rect.height===retainedMode.plan.pages[0].fragments[0].rect.height,'mode conversion preserves height floor');
   // Four distinct source columns, two rows. Cover crops the central two columns.
   const imageId='a'.repeat(64),png=new Blob([Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAAAQAAAACCAIAAADwyuo0AAAAGUlEQVR4nGP4z8DA8J+BgeH/////mRiQAABryAX9SqklXwAAAABJRU5ErkJggg=='),c=>c.charCodeAt(0))],{type:'image/png'});
   const imageNode={id:'art',type:'image',assetId:imageId,width:20000,height:20000,fit:'contain',alt:'Sample illustration'};
