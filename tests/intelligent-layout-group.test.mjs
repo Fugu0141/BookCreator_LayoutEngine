@@ -31,7 +31,8 @@ test('invalid or impossible groups fail atomically, no silent ungrouping',()=>{
 test('groups preserve parity on synchronous, incremental, cooperative and optimized paths',async()=>{
  const i=input([b('prior',20,65),group('a',30,20),group('b',20,20),b('after',20,15)]);
  const plain=plan(i),inc=incremental(i),coop=await cooperative(i,undefined,()=>{});
- assert.deepEqual(inc.layout,plain);assert.deepEqual(coop.layout,plain);assert.equal(inc.fullRecompute,true);assert.equal(inc.snapshot,undefined);
+ assert.deepEqual(inc.layout,plain);assert.deepEqual(coop.layout,plain);assert.equal(inc.fullRecompute,false);assert.ok(inc.snapshot);assert.equal(inc.placedBlocks,4);
+ const warm=incremental(i,inc.snapshot);assert.deepEqual(warm.layout,plain);assert.equal(warm.reusedBlocks,4);assert.equal(warm.placedBlocks,0);
  assert.deepEqual(plan(i,{}).placements,plain.placements);
  await assert.rejects(cooperative(i,undefined,s=>{if(s==='il-place')throw Error('cancel');}),/cancel/);
 });
@@ -80,4 +81,51 @@ test('adaptive group cannot move fixed blocks or silently split an oversized gro
  const bad=plan(input(blocks));assert.equal(bad.status,'conflict');assert.equal(bad.diagnostic.code,'IL_TOO_LARGE');assert.deepEqual(bad.placements,[]);
  const i=input([adaptive('a',25,20),adaptive('b',25,20),b('pin',20,20,{fixed:{page:0,x:0,y:15}})]);
  const conflict=plan(i);assert.equal(conflict.status,'conflict');assert.equal(conflict.diagnostic.code,'IL_FIXED_CONFLICT');assert.deepEqual(conflict.placements,[]);
+});
+
+test('editing last group member invalidates entire group, not unaffected prefix or suffix',async()=>{
+ const make=(w,layout='adaptiveRows')=>input([b('prior',20,10),...['a','b','c'].map((id,j)=>group(id,j===2?w:25,20,{keepTogetherLayout:layout,sideBySide:true})),b('break',20,10,{startNewPage:true}),b('after',20,10),b('end',20,10)]);
+ const start=make(25),seed=incremental(start);
+ const next=make(50),r=incremental(next,seed.snapshot);
+ assert.deepEqual(r.layout,plan(next));assert.ok(r.snapshot);
+ assert.equal(r.reusedBlocks,3);assert.equal(r.reusedSuffixBlocks,2);assert.equal(r.placedBlocks,4);
+ const rows=make(50,'rows'),s=incremental(rows,r.snapshot);
+ assert.deepEqual(s.layout,plan(rows));assert.ok(s.snapshot);
+ assert.ok(s.reusedBlocks>=1);assert.ok(s.placedBlocks>=3);
+ const warm=await cooperative(rows,s.snapshot,()=>{});
+ assert.deepEqual(warm.layout,plan(rows));assert.equal(warm.reusedBlocks,7);
+});
+test('group membership extension, shrink, creation and dissolution are atomic',()=>{
+ const start=input([b('before',20,10),adaptive('a',25,20),adaptive('b',25,20),b('c',25,20),b('after',20,10,{startNewPage:true}),b('tail',20,10)]);
+ const extended={...start,blocks:start.blocks.map(v=>v.id==='c'?adaptive('c',25,20):v)};
+ const seed=incremental(start),r=incremental(extended,seed.snapshot);
+ assert.deepEqual(r.layout,plan(extended));assert.ok(r.snapshot);assert.ok(r.placedBlocks>=3);
+ const shrunk=incremental(start,r.snapshot);assert.deepEqual(shrunk.layout,plan(start));assert.ok(shrunk.snapshot);
+ const dissolved={...start,blocks:start.blocks.map(v=>{const {keepTogetherGroup,keepTogetherLayout,...rest}=v;return rest;})};
+ const d=incremental(dissolved,shrunk.snapshot);assert.deepEqual(d.layout,plan(dissolved));
+ assert.deepEqual(incremental(start,d.snapshot).layout,plan(start));
+ const inserted={...extended,blocks:[...extended.blocks.slice(0,3),adaptive('new',25,20),...extended.blocks.slice(3)]};
+ const i=incremental(inserted,r.snapshot);assert.deepEqual(i.layout,plan(inserted));
+ assert.deepEqual(incremental(extended,i.snapshot).layout,plan(extended));
+});
+test('group snapshots retain no caller-owned geometry and survive conflicts and cancellation',async()=>{
+ const start=input([b('before',20,10),adaptive('a',25,20),adaptive('b',25,20),b('tail',20,10)]);
+ const seed=incremental(start);seed.layout.placements[1].rect.x=999;
+ const bad={...start,blocks:start.blocks.map(v=>v.keepTogetherGroup?{...v,size:{width:100,height:80}}:v)};
+ const failed=incremental(bad,seed.snapshot);
+ assert.deepEqual(failed.layout,plan(bad));assert.equal(failed.snapshot,undefined);
+ const changed={...start,blocks:start.blocks.map(v=>v.id==='b'?{...v,size:{width:40,height:20}}:v)};
+ await assert.rejects(cooperative(changed,seed.snapshot,s=>{if(s==='il-place')throw Error('cancel group');}),/cancel group/);
+ const warm=incremental(start,seed.snapshot);
+ assert.deepEqual(warm.layout,plan(start));assert.equal(warm.reusedBlocks,4);
+});
+test('long mixed book reuses at least 800 placements during group edits',()=>{
+ const blocks=Array.from({length:1000},(_,i)=>b('m'+i,25,10,{startNewPage:i%8===0}));
+ const make=w=>input(blocks.map((v,i)=>i>=800&&i<804?adaptive(v.id,i===803?w:25,10,{startNewPage:i===800}):v));
+ let seed=incremental(make(25));
+ for(let i=0;i<12;i++){
+  const next=make(25+i*3),r=incremental(next,seed.snapshot);
+  assert.deepEqual(r.layout,plan(next));assert.ok(r.snapshot);assert.ok(r.reusedBlocks>=800);assert.ok(r.placedBlocks<=200);
+  seed=r;
+ }
 });
