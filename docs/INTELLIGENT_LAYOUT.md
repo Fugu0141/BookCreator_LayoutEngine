@@ -87,7 +87,15 @@ createIntelligentPreviewSession は文書ごとに1個作る。request(input, op
 
 既定は約8msの目標スライスと setTimeout(0) によるホストへの譲渡。sliceMs・yieldToHost・now を注入できる。実際の割込み点間の処理時間、JS実行環境、タイマーの遅延に依存するため8msの保証ではない。Workerへの実際の配置、ブラウザ再計測、描画、ドラッグ中の軽量仮表示はGUI側で別途実装する。ドラッグ中の描画はローカルで行い、確定時にrequestを呼ぶこと。性能比較は npm run benchmark:il で100/1000/10000件の中央値と再利用件数を出す（速度閾値は設けない）。
 
-## 組版への統合（未実装）
+## IL-09A: 既存の実測ブラウザ描画への接続（実験的）
+
+TextPagePreviewOptions.intelligentLayout を明示指定した場合に限り、既存の実測ブロックからILを実行し、projectIntelligentMeasuredPlan で既存 MeasuredPagePlan へ投影する。本文の描画矩形と実測寸法、断片の単位範囲、継続番号、origin、警告を保持。占有矩形・元の分割理由は intelligentLayout の詳細結果に残す。空の中間ページも明示固定ページの指定に合わせて保持し、ブラウザ経路では512ページを上限として超過を拒否する。描画は従来の renderMeasuredPreview のみを使い、追加の折返し・再計測・独立したページ分割を行わない。ILを指定しない従来経路は変更しない。
+
+ILの競合は IntelligentPreviewConflictError（conflict に診断・revision・fingerprint）として返し、描画も新規キャッシュの登録も行わない。createRetainedTextPagePreview は既存のDOM/実測キャッシュとILの増分snapshotを同じページ再利用ハンドルに紐付け、成功時のみ更新する。intelligentPlacementWork はIL側の作業件数、paginationWork は既存分割側の作業件数。配置指定は初回await前に複製する。GUIは最新revisionと要求IDを検証して紙面を採用する。
+
+この投影は実験的な MeasuredPagePlan であり、publicationReady=false を維持する。projectIntelligentMeasuredPlan はエンジンが生成した成功結果専用で、外部JSONの検証器ではない。正式な出版PagePlan、ページ番号・面付け、PDF生成を担うBookCreator側の接続は別作業。固定ページの空白・本文位置をPDFでも同じように扱うには、ホストが同一確定計画を使うことを検証する必要がある。
+
+## 組版への統合（正式出版経路は未実装）
 
 既存測定・分割・増分組版を活用し、ロックや手動余白、明示改ページを制約として扱う。ユーザーが許可した範囲のみ再計測・配置し、不要な全冊再組版を避ける。異なるページへ移動する提案や競合解消はプレビューで明示する。最終的にGUIとPDFは同じ検証済みPagePlanを使用する。
 
