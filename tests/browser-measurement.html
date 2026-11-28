@@ -2,7 +2,7 @@
 <html lang="en"><meta charset="utf-8"><title>Browser measurement smoke test</title>
 <body><pre id="result">RUNNING</pre>
 <script type="module">
-import {createIntelligentGeometryDraft,proposeIntelligentGroup,proposeIntelligentGroupEdit,compareIntelligentPlacementImpact,IntelligentPreviewConflictError,findIntelligentFixedConflictTarget,describeIntelligentPreferredPlacement,createFullRetainedTextPagePreview,createTrialPrintPreviewForLayout,createIntelligentPrintTicket,createVerifiedIntelligentPrintPreview,measurePlainText,paginateMeasured,measurePlainTextLines,createPlainTextPagePreview,createIncrementalTextPagePreview,createRetainedTextPagePreview,measureDisplayMath,displayMathArtifact,restoreDisplayMathArtifact,createPreviewMath,createTextMeasurementCache,createParagraphMeasurementCache,createPageRenderCache,parsePreviewMath,parseDisplayMath,readyPreviewMathFont,createMathCompilationCache,createDisplayMathGeometryCache,createInlineMathGeometryCache,measureInlineMathGeometry,createInlineMathAtom} from '/dist/index.js';
+import {createIntelligentGeometryDraftSession,createIntelligentGeometryDraft,proposeIntelligentGroup,proposeIntelligentGroupEdit,compareIntelligentPlacementImpact,IntelligentPreviewConflictError,findIntelligentFixedConflictTarget,describeIntelligentPreferredPlacement,createFullRetainedTextPagePreview,createTrialPrintPreviewForLayout,createIntelligentPrintTicket,createVerifiedIntelligentPrintPreview,measurePlainText,paginateMeasured,measurePlainTextLines,createPlainTextPagePreview,createIncrementalTextPagePreview,createRetainedTextPagePreview,measureDisplayMath,displayMathArtifact,restoreDisplayMathArtifact,createPreviewMath,createTextMeasurementCache,createParagraphMeasurementCache,createPageRenderCache,parsePreviewMath,parseDisplayMath,readyPreviewMathFont,createMathCompilationCache,createDisplayMathGeometryCache,createInlineMathGeometryCache,measureInlineMathGeometry,createInlineMathAtom} from '/dist/index.js';
 const result=document.querySelector('#result');
 const assert=(condition,message)=>{if(!condition)throw Error(message);};
 const phase=async name=>{await fetch('/test-progress',{method:'POST',body:name});};
@@ -229,6 +229,61 @@ try{
     const frame=document.createElement('iframe');document.body.append(frame);
     try{await reject(()=>createIntelligentGeometryDraft(frame.contentDocument,approved.snapshot,next));}finally{frame.remove();}
     assert(approved.element.shadowRoot.innerHTML===original,'drafts do not mutate approved paper');
+  }
+  await phase("IL latest-only geometry session and paired timing");
+  const geometryDraftPairs=[];
+  {
+    const blocks=Array.from({length:24},(_,i)=>({origin:{documentId:'live',revision:'source',blockKey:'b'+i},request:{text:'Block '+i+' — measured preview content',width:40000,fontSize:3000,fontFamily:'sans-serif',lineHeight:1.4},splitPolicy:'strict'}));
+    const base={revision:'live-book',fingerprint:'live-fp',width:80000,height:80000,blocks,intelligentLayout:{gap:2000}};
+    const approved=await createFullRetainedTextPagePreview(document,base);
+    const original=approved.element.shadowRoot.innerHTML;
+    const make=(x,y)=>({gap:2000,intents:[{documentId:'live',blockKey:'b0',placement:{preferred:{page:0,x,y},preferredTolerance:{x:0,y:0}}}]});
+    let release,entered;
+    const gate=new Promise(r=>{release=r;});
+    const started=new Promise(r=>{entered=r;});
+    let hold=true;
+    const session=createIntelligentGeometryDraftSession(document,approved.snapshot,async()=>{
+      if(hold){hold=false;entered();await gate;}
+    });
+    const old=session.request(make(0,1000));await started;
+    const fresh=await session.request(make(10000,2000));
+    assert(fresh.status==='ready'&&session.isCurrent(fresh.generation),'latest request can finish before blocked old request');
+    release();
+    assert((await old).status==='superseded','superseded request discarded at checkpoint');
+    assert(fresh.draft.layout.fragments[0].placement.rect.x===10000,'latest geometry matches requested position');
+    const next=await session.request(make(20000,3000));
+    assert(next.status==='ready'&&!session.isCurrent(fresh.generation)&&session.isCurrent(next.generation),'returned older result cannot remain current');
+    const invalid={gap:2000,intents:[{documentId:'live',blockKey:'b0',placement:{fixed:{page:0,x:79000,y:0}}}]};
+    let conflict;
+    try{await session.request(invalid);}catch(e){conflict=e;}
+    assert(conflict instanceof IntelligentPreviewConflictError&&!session.isCurrent(next.generation),'latest conflict propagates and invalidates previous display');
+    const recovered=await session.request(make(20000,3000));
+    assert(recovered.status==='ready'&&recovered.draft.placementWork.reusedBlocks===24,'latest conflict keeps last successful private cache');
+    const pending=session.request(make(0,4000));session.cancel();
+    assert((await pending).status==='superseded'&&!session.isCurrent(recovered.generation),'cancel invalidates pending and returned draft');
+    const restarted=await session.request(make(0,5000));
+    assert(restarted.status==='ready','cancel allows a new request');
+    const closing=session.request(make(0,6000));session.close();
+    assert((await closing).status==='superseded'&&!session.isCurrent(restarted.generation),'close invalidates outstanding work');
+    let closed=false;try{await session.request(make(0,7000));}catch{closed=true;}
+    assert(closed,'closed session rejects new requests');
+    const bench=createIntelligentGeometryDraftSession(document,approved.snapshot);
+    let paper=approved.snapshot;
+    // Warm both lanes with the same intent. Alternate order to reduce bias.
+    const warm=make(0,1000);await bench.request(warm);
+    paper=(await createFullRetainedTextPagePreview(document,{...base,intelligentLayout:warm},paper)).snapshot;
+    for(let i=0;i<6;i++){
+      const options=make((i%3)*10000,2000+i*1000);
+      let geometry,drawn,geometryMs,paperMs;
+      const light=async()=>{const t=performance.now();geometry=await bench.request(options);geometryMs=performance.now()-t;};
+      const full=async()=>{const t=performance.now();drawn=await createFullRetainedTextPagePreview(document,{...base,intelligentLayout:options},paper);paperMs=performance.now()-t;};
+      if(i%2){await full();await light();}else{await light();await full();}
+      assert(geometry.status==='ready'&&JSON.stringify(geometry.draft.layout)===JSON.stringify(drawn.intelligentLayout),'geometry benchmark parity');
+      paper=drawn.snapshot;
+      geometryDraftPairs.push({geometryMs,paperMs,pages:geometry.draft.pageCount,blocks:blocks.length});
+    }
+    bench.close();
+    assert(approved.element.shadowRoot.innerHTML===original,'session leaves approved DOM untouched');
   }
   await phase("IL verified print preview");
   {
@@ -1936,7 +1991,7 @@ try{
       pairedDeltaMedianMs:median(pairs.map(p=>p.deltaMs)),incrementalWins:pairs.filter(p=>p.deltaMs<0).length,
       hits:pairs.reduce((n,p)=>n+p.incremental.delta.hits,0),misses:pairs.reduce((n,p)=>n+p.incremental.delta.misses,0)};
   });
-  result.textContent='PASS '+JSON.stringify({lineCount:lines.lines.length,previewPages:preview.plan.pages.length,lineRanges:preview.slices.map(s=>[s.textStart,s.textEnd])})+' '+JSON.stringify({wide,narrow,pages:plan.pages.length})+' MATH_BENCH '+JSON.stringify({version:2,mathBenchmark,mathCacheComparisons,mathCacheSummary})+' PARAGRAPH_BENCH '+JSON.stringify({version:1,paragraphComparisons,paragraphSummary})+' IL_DRAFT_BENCH '+JSON.stringify({version:1,pairs:ilDraftPairs,cachedMedianMs:median(ilDraftPairs.map(p=>p.cachedMs)),retainedMedianMs:median(ilDraftPairs.map(p=>p.retainedMs)),cachedMeasurementMedianMs:median(ilDraftPairs.map(p=>p.cachedTimings.measurementMs)),retainedMeasurementMedianMs:median(ilDraftPairs.map(p=>p.retainedTimings.measurementMs))});
+  result.textContent='PASS '+JSON.stringify({lineCount:lines.lines.length,previewPages:preview.plan.pages.length,lineRanges:preview.slices.map(s=>[s.textStart,s.textEnd])})+' '+JSON.stringify({wide,narrow,pages:plan.pages.length})+' MATH_BENCH '+JSON.stringify({version:2,mathBenchmark,mathCacheComparisons,mathCacheSummary})+' PARAGRAPH_BENCH '+JSON.stringify({version:1,paragraphComparisons,paragraphSummary})+' IL_GEOMETRY_BENCH '+JSON.stringify({version:1,pairs:geometryDraftPairs,geometryMedianMs:median(geometryDraftPairs.map(p=>p.geometryMs)),paperMedianMs:median(geometryDraftPairs.map(p=>p.paperMs))})+' IL_DRAFT_BENCH '+JSON.stringify({version:1,pairs:ilDraftPairs,cachedMedianMs:median(ilDraftPairs.map(p=>p.cachedMs)),retainedMedianMs:median(ilDraftPairs.map(p=>p.retainedMs)),cachedMeasurementMedianMs:median(ilDraftPairs.map(p=>p.cachedTimings.measurementMs)),retainedMeasurementMedianMs:median(ilDraftPairs.map(p=>p.retainedTimings.measurementMs))});
 }catch(error){result.textContent='FAIL '+String(error);}
 await fetch('/test-result',{method:'POST',body:result.textContent});
 </script></body></html>

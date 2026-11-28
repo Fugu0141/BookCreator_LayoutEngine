@@ -637,6 +637,59 @@ export async function createIntelligentGeometryDraft(
   return {kind:'intelligent-geometry-draft',layout,pageCount,snapshot,
     paginationWork:planned.pagination,placementWork:planned.placement};
 }
+export type IntelligentGeometryDraftOutcome =
+  | {status:'ready';generation:number;draft:IntelligentGeometryDraft}
+  | {status:'superseded';generation:number};
+export interface IntelligentGeometryDraftSession {
+  request(options:IntelligentMeasuredOptions):Promise<IntelligentGeometryDraftOutcome>;
+  isCurrent(generation:number):boolean;
+  /** Invalidate outstanding work and drop the last successful draft. */
+  cancel():void;
+  /** Permanently invalidate the session. */
+  close():void;
+}
+/**
+ * Latest-only geometry lane for one immutable approved paper. Hosts still
+ * own environment invalidation and must check isCurrent immediately before
+ * displaying a result (including after any subsequent await).
+ * The optional checkpoint can yield to a host scheduler; no timer is created
+ * here and no paper, source or saved intent is changed.
+ */
+export function createIntelligentGeometryDraftSession(
+  document:Document,base:PageReuseSnapshot,
+  checkpoint?:(stage:IntelligentMeasuredWorkStage|'complete')=>void|Promise<void>,
+):IntelligentGeometryDraftSession {
+  live(document);previousPageKeys(document,base);
+  if(!retainedDraftInputs.has(base))throw Error('Geometry draft requires a successful retained IL preview');
+  if(checkpoint!==undefined&&typeof checkpoint!=='function')throw TypeError('Invalid geometry checkpoint');
+  let generation=0,closed=false,last:IntelligentGeometryDraftSnapshot|undefined;
+  const obsolete=Symbol('superseded geometry draft');
+  const isCurrent=(value:number)=>!closed&&value===generation;
+  const invalidate=()=>{generation++;last=undefined;};
+  return {
+    isCurrent,
+    cancel:invalidate,
+    close(){closed=true;invalidate();},
+    async request(options){
+      if(closed)throw Error('Geometry draft session is closed');
+      const current=++generation;
+      const check=()=>{if(!isCurrent(current))throw obsolete;};
+      try{
+        const draft=await createIntelligentGeometryDraft(document,base,options,last,async stage=>{
+          check();
+          if(checkpoint)await checkpoint(stage);
+          check();
+        });
+        check();
+        last=draft.snapshot;
+        return {status:'ready',generation:current,draft};
+      }catch(error){
+        if(error===obsolete||!isCurrent(current))return {status:'superseded',generation:current};
+        throw error;
+      }
+    }
+  };
+}
 const retainedImageSnapshots=new WeakMap<PageReuseSnapshot,ReadonlyMap<string,string>>();
 const retainedMeasurementSnapshots=new WeakMap<PageReuseSnapshot,{snapshot:BlockMeasurementSnapshot;inlineMathGeometry:boolean}>();
 /** Opt-in combined placement and DOM reuse. Same complete plan/slices and
