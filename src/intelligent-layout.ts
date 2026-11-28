@@ -149,7 +149,7 @@ function solve(input:IntelligentLayoutInput,honorPreferences:boolean):Intelligen
         return conflict('IL_INVALID','Invalid fixed position',b.id);
       if(f.x+b.size.width>width||f.y+b.size.height>height)
         return conflict('IL_FIXED_CONFLICT','Fixed block exceeds content area',b.id);
-      const hit=regionsAt(f.page).find(r=>overlaps(r.rect,{x:f.x,y:f.y,...b.size}));
+      const hit=regionsAt(f.page).find(r=>overlaps(r.rect,{x:f.x,y:f.y,width:b.size.width,height:b.size.height}));
       if(hit) return conflict('IL_RESERVED_CONFLICT','Fixed block intersects reserved region',b.id,hit.id);
     }
   }
