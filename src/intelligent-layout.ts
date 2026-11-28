@@ -75,6 +75,8 @@ export interface IntelligentOptimizationOptions {
   keepWithNextIds?:readonly string[];
   /** Prefer less uneven occupied depths on adjacent natural-flow pages. */
   balancePageDepths?:boolean;
+  /** Restrict balance scoring and candidate boundaries to this inclusive page range. */
+  balancePageRange?:Readonly<{firstPage:number;lastPage:number}>;
 }
 export interface IntelligentCandidateScore {
   honoredPreferences:number;
@@ -307,7 +309,7 @@ function* incrementalWork(input:IntelligentLayoutInput,previous?:IntelligentLayo
   return {layout,snapshot,reusedBlocks:state.reusedBlocks,reusedSuffixBlocks:state.reusedSuffixBlocks,placedBlocks:state.placedBlocks,sharedSnapshotPlacements:state.sharedSnapshotPlacements,fullRecompute:false};
 }
 
-function* scoreCandidate(result:Placed,previous:ReadonlyMap<string,IntelligentPreviousPosition>,keep?:ReadonlySet<string>,balanceInput?:IntelligentLayoutInput):Generator<IntelligentWorkStage,IntelligentCandidateScore,void> {
+function* scoreCandidate(result:Placed,previous:ReadonlyMap<string,IntelligentPreviousPosition>,keep?:ReadonlySet<string>,balanceInput?:IntelligentLayoutInput,balanceRange?:IntelligentOptimizationOptions['balancePageRange']):Generator<IntelligentWorkStage,IntelligentCandidateScore,void> {
   let honoredPreferences=0,pageCount=0,previousPageDistance=0,previousPositionDistance=0;
   const depths=new Map<number,number>();
   let scanned=0;
@@ -340,7 +342,8 @@ function* scoreCandidate(result:Placed,previous:ReadonlyMap<string,IntelligentPr
       if(b.startNewPage)hardStarts.add(p.page);
     }
     for(const [page,depth] of depths){
-      if(!excluded.has(page)&&!excluded.has(page+1)&&!hardStarts.has(page+1)&&depths.has(page+1))
+      if((!balanceRange||(page>=balanceRange.firstPage&&page+1<=balanceRange.lastPage))&&
+        !excluded.has(page)&&!excluded.has(page+1)&&!hardStarts.has(page+1)&&depths.has(page+1))
         pageDepthImbalance+=Math.abs(depth-depths.get(page+1)!);
     }
   }
@@ -365,6 +368,11 @@ function* optimize(input:IntelligentLayoutInput,options:IntelligentOptimizationO
   if(options.selectivePreferenceFallback!==undefined&&typeof options.selectivePreferenceFallback!=='boolean')
     return invalid('Invalid selective preference fallback option');
   if(options.balancePageDepths!==undefined&&typeof options.balancePageDepths!=='boolean')return invalid('Invalid page balance option');
+  const balanceRange=options.balancePageRange;
+  if(balanceRange!==undefined&&(!balanceRange||typeof balanceRange!=='object'||Array.isArray(balanceRange)||
+    Object.keys(balanceRange).some(k=>k!=='firstPage'&&k!=='lastPage')||
+    !natural(balanceRange.firstPage)||!natural(balanceRange.lastPage)||balanceRange.firstPage>balanceRange.lastPage||
+    balanceRange.lastPage>=MAX_PAGES||options.balancePageDepths!==true))return invalid('Invalid balance page range');
   const balanceInput=options.balancePageDepths===true?input:undefined;
   const hints=options.previousPositions===undefined?[]:options.previousPositions;
   if(!Array.isArray(hints)||hints.length>10000) return invalid('Invalid previous positions');
@@ -421,7 +429,7 @@ function* optimize(input:IntelligentLayoutInput,options:IntelligentOptimizationO
   for(const {name,result} of candidates){
     if(result.status!=='placed') continue;
     feasibleCandidates++;
-    const score=yield* scoreCandidate(result,previous,keep,balanceInput);
+    const score=yield* scoreCandidate(result,previous,keep,balanceInput,balanceRange);
     if(!best||better(score,best.score)) best={name,result,score};
   }
   if(!best) return first;
@@ -445,7 +453,7 @@ function* optimize(input:IntelligentLayoutInput,options:IntelligentOptimizationO
       candidates.push({name:'keep-next',result:alternate});
       if(alternate.status==='placed'){
         feasibleCandidates++;
-        const score=yield* scoreCandidate(alternate,previous,keep,balanceInput);
+        const score=yield* scoreCandidate(alternate,previous,keep,balanceInput,balanceRange);
         if(better(score,best.score))best={name:'keep-next',result:alternate,score};
       }
     }
@@ -467,6 +475,7 @@ function* optimize(input:IntelligentLayoutInput,options:IntelligentOptimizationO
     }
     let chosen:string|undefined,gain=0;
     for(const [page,a] of pages){
+      if(balanceRange&&(page<balanceRange.firstPage||page+1>balanceRange.lastPage))continue;
       const b=pages.get(page+1),last=input.blocks[a.last];
       if(!b||!a.simple||!b.simple||a.first===a.last||excluded.has(page)||excluded.has(page+1)||
         last.startNewPage||input.blocks[b.first].startNewPage||a.depth<=b.depth)continue;
@@ -482,7 +491,7 @@ function* optimize(input:IntelligentLayoutInput,options:IntelligentOptimizationO
       candidates.push({name:'page-balance',result:alternate});
       if(alternate.status==='placed'){
         feasibleCandidates++;
-        const score=yield* scoreCandidate(alternate,previous,keep,balanceInput);
+        const score=yield* scoreCandidate(alternate,previous,keep,balanceInput,balanceRange);
         if(better(score,best.score))best={name:'page-balance',result:alternate,score};
       }
     }
