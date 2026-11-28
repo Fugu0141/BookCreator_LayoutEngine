@@ -126,3 +126,36 @@ export function confirmIntelligentOptimizationReview(
     return {status:'rejected',reason:'preview-mismatch'};
   return {status:'confirmed',options:structuredClone(c.options),result:structuredClone(c.result)};
 }
+
+export type IntelligentOptimizationBenefit =
+  | {kind:'pages-saved';count:number}
+  | {kind:'preferences-restored';count:number}
+  | {kind:'depth-imbalance-reduced';micrometres:number};
+export interface IntelligentOptimizationExplanation {
+  goal:IntelligentOptimizationGoal;
+  selectedCandidate:NonNullable<Proposed['result']['layout']['optimization']>['selected']|undefined;
+  benefits:IntelligentOptimizationBenefit[];
+  changes:{documentId:string;blockKey:string;placementId:string;unitStart:number;unitEnd:number;
+    beforePage:number;afterPage:number;deltaX:number;deltaY:number;preferenceRestored:boolean}[];
+  /** These are observed differences, not causal claims for individual moves. */
+  causalAttribution:false;
+}
+/**
+ * Explain the actual candidate and observed differences for GUI review.
+ * The optimizer scores complete layouts; a moved block need not individually
+ * cause a benefit. Do not infer intent, or claim a particular constraint
+ * forced a move. The review handle and host lease remain authoritative.
+ */
+export function describeIntelligentOptimizationProposal(proposal:IntelligentOptimizationProposal):IntelligentOptimizationExplanation|undefined{
+  if(proposal.status!=='proposed')return undefined;
+  const {improvement,impact,result,goal}=proposal;
+  const benefits:IntelligentOptimizationBenefit[]=[];
+  if(improvement.pagesSaved>0)benefits.push({kind:'pages-saved',count:improvement.pagesSaved});
+  if(improvement.additionalHonoredPreferences>0)benefits.push({kind:'preferences-restored',count:improvement.additionalHonoredPreferences});
+  if(improvement.depthImbalanceReduction>0)benefits.push({kind:'depth-imbalance-reduced',micrometres:improvement.depthImbalanceReduction});
+  return {goal,selectedCandidate:result.layout.optimization?.selected,benefits,causalAttribution:false,
+    changes:impact.changed.map(c=>({documentId:c.origin.documentId,blockKey:c.origin.blockKey,
+      placementId:c.before.id,unitStart:c.unitStart,unitEnd:c.unitEnd,beforePage:c.before.page,afterPage:c.after.page,
+      deltaX:c.after.rect.x-c.before.rect.x,deltaY:c.after.rect.y-c.before.rect.y,
+      preferenceRestored:c.before.preference==='fallback'&&c.after.preference==='honored'}))};
+}
