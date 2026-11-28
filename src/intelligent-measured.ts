@@ -5,7 +5,7 @@ import {planIntelligentLayout,planIntelligentLayoutIncremental,planIntelligentLa
 export interface IntelligentMeasuredIntent {
   documentId:string;
   blockKey:string;
-  placement:Readonly<Pick<IntelligentBlock,'mode'|'fixed'|'fixedPositionOnly'|'preferred'|'sideBySide'|'sizeConstraints'|'spaceBefore'|'spaceAfter'|'startNewPage'>>;
+  placement:Readonly<Pick<IntelligentBlock,'mode'|'fixed'|'fixedPositionOnly'|'preferred'|'preferredTolerance'|'sideBySide'|'sizeConstraints'|'spaceBefore'|'spaceAfter'|'startNewPage'>>;
 }
 export interface IntelligentMeasuredOptions {
   gap?:number;
@@ -38,7 +38,7 @@ export type IntelligentMeasuredResult =
 // rejected rather than silently treating a misspelled constraint as automatic.
 const optionKeys=['gap','intents','reservedRegions','optimization'];
 const intentKeys=['documentId','blockKey','placement'];
-const placementKeys=['mode','fixed','fixedPositionOnly','preferred','sideBySide','sizeConstraints','spaceBefore','spaceAfter','startNewPage'];
+const placementKeys=['mode','fixed','fixedPositionOnly','preferred','preferredTolerance','sideBySide','sizeConstraints','spaceBefore','spaceAfter','startNewPage'];
 const positionKeys=['page','x','y'];
 const constraintKeys=['minWidth','minHeight','maxWidth','maxHeight','minWidthPercent','minHeightPercent'];
 function hasOnlyKeys(value:unknown,keys:readonly string[]):boolean{
@@ -49,6 +49,7 @@ function validIntentShape(i:IntelligentMeasuredIntent):boolean{
   const p=i.placement;
   return (p.fixed===undefined||hasOnlyKeys(p.fixed,positionKeys))&&
     (p.preferred===undefined||hasOnlyKeys(p.preferred,positionKeys))&&
+    (p.preferredTolerance===undefined||hasOnlyKeys(p.preferredTolerance,['x','y']))&&
     (p.sizeConstraints===undefined||hasOnlyKeys(p.sizeConstraints,constraintKeys));
 }
 
@@ -180,7 +181,7 @@ function* placeMeasuredWork(input:PaginationInput,options:IntelligentMeasuredOpt
     // Redundant breaks are suppressed by IL, as in measured pagination.
     const hardBreak=f.breakReason==='explicit'||f.breakReason==='section'||f.breakReason==='page-top'||f.breakReason==='continuation';
     blocks.push({id,size:{width:f.rect.width,height:f.rect.height},
-      mode:i?.mode,fixed:i?.fixed,fixedPositionOnly:i?.fixedPositionOnly,preferred:i?.preferred,sideBySide:i?.sideBySide,sizeConstraints:i?.sizeConstraints,
+      mode:i?.mode,fixed:i?.fixed,fixedPositionOnly:i?.fixedPositionOnly,preferred:i?.preferred,preferredTolerance:i?.preferredTolerance,sideBySide:i?.sideBySide,sizeConstraints:i?.sizeConstraints,
       spaceBefore:i?.spaceBefore,spaceAfter:i?.spaceAfter,
       startNewPage:hardBreak||i?.startNewPage===true});
   }

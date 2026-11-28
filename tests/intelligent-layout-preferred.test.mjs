@@ -42,3 +42,23 @@ test('contradictory and malformed modes fail; legacy output shape remains',()=>{
  }
  assert.deepEqual(run([b('a',20,20)]).placements,[{id:'a',page:0,rect:{x:0,y:0,width:20,height:20},fixed:false}]);
 });
+
+test('explicit preference tolerance selects nearest feasible same-page origin',()=>{
+ const r=run([b('a',20,20),b('b',30,20,{preferred:p(0,90,20),preferredTolerance:{x:25,y:10}})]);
+ assert.equal(r.status,'placed');assert.deepEqual(r.placements[1].rect,{x:70,y:25,width:30,height:20});assert.equal(r.placements[1].preference,'honored');
+ const strict=run([b('a',20,20),b('b',30,20,{preferred:p(0,90,20),preferredTolerance:{x:19,y:10}})]);
+ assert.equal(strict.placements[1].preference,'fallback');assert.equal(strict.placements[1].rect.x,0);
+ const page=run([b('a',20,20,{preferred:p(2,0,0),preferredTolerance:{x:100,y:100}})]);
+ assert.equal(page.placements[0].page,0);assert.equal(page.placements[0].preference,'fallback');
+});
+test('tolerance respects reserved rectangles and chooses deterministic nearest edge',()=>{
+ const input={revision:'tol',content:{width:100,height:100},gap:0,blocks:[b('a',20,20,{preferred:p(0,40,40),preferredTolerance:{x:30,y:30}})],reservedRegions:[{id:'obstacle',page:0,rect:{x:40,y:40,width:20,height:20}}]};
+ const r=plan(input);assert.equal(r.status,'placed');assert.deepEqual(r.placements[0].rect,{x:40,y:20,width:20,height:20});assert.equal(r.placements[0].preference,'honored');assert.deepEqual(plan(input),r);
+});
+test('preference tolerance cannot override a subsequent fixed position',()=>{
+ const r=run([b('a',20,20,{preferred:p(0,0,70),preferredTolerance:{x:5,y:5}}),b('pin',20,20,{fixed:p(0,0,30)})]);
+ assert.equal(r.status,'placed');assert.equal(r.placements[0].preference,'fallback');assert.equal(r.placements[1].rect.y,30);
+ for(const extra of [{preferredTolerance:{x:1,y:1}},{preferred:p(0,0,0),preferredTolerance:{x:-1,y:0}},{preferred:p(0,0,0),preferredTolerance:{x:1}},{preferred:p(0,0,0),preferredTolerance:{x:1,y:1,page:1}}]){
+  const bad=run([b('a',20,20,extra)]);assert.equal(bad.status,'conflict');assert.equal(bad.diagnostic.code,'IL_INVALID');
+ }
+});

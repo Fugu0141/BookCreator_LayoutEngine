@@ -29,6 +29,8 @@ export interface IntelligentBlock {
   // Omitted mode is inferred from position fields for legacy callers.
   mode?: IntelligentPlacementMode;
   preferred?: Readonly<IntelligentPosition>;
+  /** Explicit same-page tolerance in µm around preferred. Omitted means exact. */
+  preferredTolerance?: Readonly<{x:number;y:number}>;
   // Preserve intentionally reserved whitespace.
   spaceBefore?: number;
   // Explicit trailing row space; cannot be reused by later blocks.
@@ -141,6 +143,44 @@ function* findRow(regions:readonly IntelligentReservedRegion[],minY:number,w:num
     y=next;
   }
   return undefined;
+}
+
+// Find the closest permitted independent-row origin on the natural page.
+// For each candidate y, free x intervals are exact because obstacles are
+// half-open. Feasible bands change only at obstacle top-h and bottom edges.
+// Integer coordinates immediately inside each band are included as well.
+function* preferredSlot(regions:readonly IntelligentReservedRegion[],target:IntelligentPosition,
+  tolerance:{x:number;y:number},minY:number,w:number,h:number,width:number,height:number):
+  Generator<IntelligentWorkStage,{x:number;y:number}|undefined,void>{
+  const x0=Math.max(0,target.x-tolerance.x),x1=Math.min(width-w,target.x+tolerance.x);
+  const y0=Math.max(minY,target.y-tolerance.y),y1=Math.min(height-h,target.y+tolerance.y);
+  if(x0>x1||y0>y1)return undefined;
+  const clamp=(v:number,lo:number,hi:number)=>Math.max(lo,Math.min(hi,v));
+  const ys=new Set<number>([y0,y1,clamp(target.y,y0,y1)]);
+  for(const {rect:r} of regions)for(const y of [r.y-h,r.y-h+1,r.y+r.height-1,r.y+r.height])
+    if(y>=y0&&y<=y1)ys.add(y);
+  let best:{x:number;y:number;distance:number}|undefined,scanned=0;
+  for(const y of ys){
+    if(scanned++%16===0)yield 'il-place';
+    let start=x0;
+    const consider=(lo:number,hi:number)=>{
+      if(lo>hi)return;
+      const x=clamp(target.x,lo,hi),distance=Math.abs(x-target.x)+Math.abs(y-target.y);
+      if(!best||distance<best.distance||(distance===best.distance&&(y<best.y||(y===best.y&&x<best.x))))best={x,y,distance};
+    };
+    for(const {rect:r} of regions){
+      if(r.y>=y+h||r.y+r.height<=y||r.x+r.width<=start)continue;
+      consider(start,Math.min(x1,r.x-w));
+      start=Math.max(start,r.x+r.width);
+      if(start>x1)break;
+    }
+    consider(start,x1);
+  }
+  return best?{x:best.x,y:best.y}:undefined;
+}
+function preferenceMatches(b:IntelligentBlock,page:number,x:number,y:number):boolean{
+  const target=b.preferred,t=b.preferredTolerance;
+  return !!target&&page===target.page&&Math.abs(x-target.x)<=(t?.x??0)&&Math.abs(y-target.y)<=(t?.y??0);
 }
 
 /**
@@ -351,7 +391,11 @@ function* solve(input:IntelligentLayoutInput,honorPreferences:boolean,lookahead=
       (mode!=='auto'&&mode!=='fixed'&&mode!=='preferred') ||
       (mode==='fixed')!==(b.fixed!==undefined) ||
       (mode==='preferred')!==(b.preferred!==undefined) ||
-      (b.preferred!==undefined&&!validPosition(b.preferred)))
+      (b.preferred!==undefined&&!validPosition(b.preferred)) ||
+      (b.preferredTolerance!==undefined&&(!b.preferred||!b.preferredTolerance||
+        typeof b.preferredTolerance!=='object'||Array.isArray(b.preferredTolerance)||
+        !natural(b.preferredTolerance.x)||!natural(b.preferredTolerance.y)||
+        Object.keys(b.preferredTolerance).some(key=>key!=='x'&&key!=='y'))))
       return conflict('IL_INVALID','Invalid or contradictory placement mode',b.id);
     ids.add(b.id);
     const footprint=resolveFootprint(b,input.content);
@@ -473,12 +517,12 @@ function* solve(input:IntelligentLayoutInput,honorPreferences:boolean,lookahead=
       }
       if(!slot || naturalPage>=MAX_PAGES) return conflict('IL_LIMIT','Page limit exceeded',b.id);
       const targetMinY=target?.page===page?minY:before;
-      const canHonor=honorPreferences && target && target.page===naturalPage &&
-        target.x+w<=width && target.y>=targetMinY && target.y+h<=height &&
-        !regionsAt(target.page).some(r=>overlaps(r.rect,{x:target.x,y:target.y,width:w,height:h}));
-      if(canHonor && target){
+      const chosen=honorPreferences&&target&&target.page===naturalPage
+        ?yield* preferredSlot(regionsAt(target.page),target,b.preferredTolerance??{x:0,y:0},targetMinY,w,h,width,height)
+        :undefined;
+      if(chosen && target){
         if(target.page!==page) nextPage(target.page);
-        x=target.x;y=target.y;preference='honored';
+        x=chosen.x;y=chosen.y;preference='honored';
         rowY=y;bottom=y+h;right=x+w;rowOpen=true;rowShare=false;
       }else if(shareX!==undefined){
         x=shareX;y=rowY;right=x+w;bottom=Math.max(bottom,y+h);
@@ -488,7 +532,7 @@ function* solve(input:IntelligentLayoutInput,honorPreferences:boolean,lookahead=
         rowY=y;bottom=y+h;right=x+w;rowOpen=true;rowShare=!!b.sideBySide&&before===0&&after===0;
       }
     }
-    if(target && page===target.page && x===target.x && y===target.y) preference='honored';
+    if(preferenceMatches(b,page,x,y)) preference='honored';
     const placement:IntelligentPlacement={id:b.id,page,rect:{x,y,width:b.size.width,height:b.size.height},fixed:!!b.fixed,
       ...(w!==b.size.width||h!==b.size.height?{occupiedRect:{x,y,width:w,height:h}}:{}),
       ...(preference!==undefined?{preference}:{})};
