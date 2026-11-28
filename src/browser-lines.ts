@@ -339,6 +339,8 @@ export type PreviewComponentChild = (
   | {id:string;type:'group';width:number|'fill';direction:'row'|'column'|'canvas';height?:number;heightMode?:'auto';gap:number;padding:number;background:string;children:readonly PreviewComponentChild[]}) & {x?:number;y?:number};
 export interface PreviewComponent {
   direction:'row'|'column'; gap:number; padding:number; background:string; textColor:string;
+  /** Minimum occupied height as a percentage of the page's usable body height. */
+  minHeightPercent?:number;
   children:readonly PreviewComponentChild[];
 }
 type ComponentPlacement=import('./tree.js').PlacedNode;
@@ -377,6 +379,7 @@ function snapshotComponent(c:PreviewComponent):PreviewComponent{
     });
   }
   if(!c||!['row','column'].includes(c.direction)||!isColor(c.textColor))throw RangeError('Invalid component color');
+  if(c.minHeightPercent!==undefined&&(!Number.isSafeInteger(c.minHeightPercent)||c.minHeightPercent<1||c.minHeightPercent>100))throw RangeError('Invalid component minimum height percentage');
   const children=group(c,0);
   if(slots!==1)throw RangeError('Component requires exactly one content slot');
   return {...c,children};
@@ -428,7 +431,15 @@ function placeComponent(c:PreviewComponent,outerWidth:number,measurement:Measure
     return {id,rect:{x:0,y:0,width:outer,height:flow.rect.height+2*g.padding},
       children:kids.map((n,i)=>({...n,rect:{...flow.children[i].rect,x:flow.children[i].rect.x+g.padding,y:flow.children[i].rect.y+g.padding}}))};
   }
-  return place(c,'root',outerWidth,capHeight);
+  const placed=place(c,'root',outerWidth,capHeight);
+  // Reserve extra paper below the measured children, without altering their
+  // dimensions or positions. The basis is the entire usable page body, not
+  // the remaining space on the current page or a nested Canvas cap.
+  if(c.minHeightPercent!==undefined){
+    const minimum=Math.ceil(capHeight*c.minHeightPercent/100);
+    return {...placed,rect:{...placed.rect,height:Math.max(placed.rect.height,minimum)}};
+  }
+  return placed;
 }
 
 export interface PreviewNamedSlot {
@@ -615,6 +626,7 @@ async function createTextPreview(document:Document,options:TextPagePreviewOption
     const origin={...b.origin,range:b.origin.range?{...b.origin.range}:undefined};
     if(isBreak(b))return {...b,origin};
     const component=b.component?snapshotComponent(b.component):undefined;
+    if(component?.minHeightPercent!==undefined&&b.splitPolicy!=='strict')throw RangeError('Minimum occupied height percentage requires a non-splittable component');
     const namedSlots=snapshotNamedSlots(b,component,mathCache);
     const listItem=b.listItem===undefined?undefined:snapshotListItem(b.listItem,b.request.width);
     if(listItem&&component)throw RangeError('List items do not support component frames yet');
