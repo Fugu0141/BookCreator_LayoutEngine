@@ -45,3 +45,5 @@ export * from './browser-lines.js';
 export * from './image-crop.js';
 
 export * from './math-preview.js';
+
+export * from './intelligent-layout.js';

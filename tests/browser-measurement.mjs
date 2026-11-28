@@ -5,7 +5,7 @@ import {spawn,spawnSync} from 'node:child_process';
 import {mkdtemp,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-const allowed=new Set(['/tests/browser-measurement.html','/dist/index.js','/dist/tree.js','/dist/pagination.js','/dist/inspector.js','/dist/browser-measurement.js','/dist/browser-lines.js','/dist/browser-page-measure.js','/dist/browser-page-render.js','/dist/preview-component-render-key.js','/dist/preview-page-priority.js','/dist/preview-page-delivery.js','/dist/text-measurement-cache.js','/dist/math-preview.js','/dist/image-crop.js','/dist/preview-font.js']);
+const allowed=new Set(['/tests/browser-measurement.html','/dist/index.js','/dist/tree.js','/dist/pagination.js','/dist/inspector.js','/dist/browser-measurement.js','/dist/browser-lines.js','/dist/browser-page-measure.js','/dist/browser-page-render.js','/dist/preview-component-render-key.js','/dist/preview-page-priority.js','/dist/preview-page-delivery.js','/dist/text-measurement-cache.js','/dist/math-preview.js','/dist/image-crop.js','/dist/preview-font.js','/dist/intelligent-layout.js']);
 // Fail fast on module syntax errors, which otherwise never reach /test-result.
 const html=await readFile(new URL('./browser-measurement.html',import.meta.url),'utf8');
 const moduleSource=html.match(/<script type="module">([\s\S]*?)<\/script>/)?.[1];
