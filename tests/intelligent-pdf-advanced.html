@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><title>IL advanced PDF acceptance fixture</title><body>
+<script type="module">
+import {createFullRetainedTextPagePreview,createRetainedTextPagePreview,createIntelligentPrintTicket,assertIntelligentPrintTicketMatchesPlan,createTrialPrintPreviewForLayout} from '/dist/index.js';
+globalThis.ilPdfReady=(async()=>{
+ const paper={width:100000,height:120000,top:12000,bottom:8000,inner:13000,outer:7000,firstSide:'right'};
+ const texts=['ILGROUPA','ILGROUPB','ILGROUPC','ILGROUPD','ILPIN','ILNEXT','ILSOFT','ILEND'];
+ const blockList=texts.map((blockKey,index)=>({origin:{documentId:index<4?'chapter-a':'chapter-b',revision:'pdf-advanced',blockKey,persistentId:'id-'+blockKey},request:{text:blockKey,width:24000,fontSize:3500,fontFamily:'sans-serif',lineHeight:1.5},splitPolicy:'strict'}));
+ const group={keepTogetherGroup:'pair',keepTogetherLayout:'adaptiveRows',sideBySide:true};
+ const options={revision:'pdf-advanced',fingerprint:'pdf-advanced-v1',paper,width:80000,height:100000,
+  sections:[{id:'chapter-a',startOn:'continuous',blocks:blockList.slice(0,4)},{id:'chapter-b',startOn:'page',blocks:blockList.slice(4)}],
+  intelligentLayout:{gap:2000,reservedRegions:[{id:'side',page:0,rect:{x:50000,y:0,width:30000,height:100000}}],intents:[
+   ...texts.slice(0,4).map(blockKey=>({documentId:'chapter-a',blockKey,placement:group})),
+   {documentId:'chapter-b',blockKey:'ILPIN',placement:{fixed:{page:1,x:5000,y:20000},fixedPositionOnly:true,fixedRowShare:true,sideBySide:true,sizeConstraints:{minWidth:30000}}},
+   {documentId:'chapter-b',blockKey:'ILNEXT',placement:{sideBySide:true}},
+   {documentId:'chapter-b',blockKey:'ILSOFT',placement:{preferred:{page:1,x:65000,y:50000},preferredTolerance:{x:10000,y:0}}},
+   {documentId:'chapter-b',blockKey:'ILEND',placement:{fixed:{page:3,x:9000,y:18000}}}
+  ]}};
+ const frame=document.createElement('iframe');document.body.append(frame);
+ let transport;
+ try{
+  const draftOptions=structuredClone(options);
+  draftOptions.intelligentLayout.intents.find(i=>i.blockKey==='ILPIN').placement.sizeConstraints.minWidth=28000;
+  const draft=await createFullRetainedTextPagePreview(frame.contentDocument,draftOptions);
+  const approved=await createFullRetainedTextPagePreview(frame.contentDocument,options,draft.snapshot);
+  if(approved.measurementWork.reusedBlocks!==texts.length)throw Error('Expected all draft measurements reused');
+  const first=await createRetainedTextPagePreview(frame.contentDocument,options,approved.snapshot);
+  const screen=await createRetainedTextPagePreview(frame.contentDocument,options,first.pageDelta.snapshot);
+  if(JSON.stringify(approved.plan)!==JSON.stringify(screen.plan))throw Error('Full and sparse approved plans differ');
+  const fragments=screen.intelligentLayout.fragments;
+  const at=id=>fragments.find(f=>f.origin.blockKey===id).placement;
+  const check=(id,page,x,y)=>{const p=at(id);if(p.page!==page||p.rect.x!==x||(y!==undefined&&p.rect.y!==y))throw Error('Unexpected advanced placement '+id);};
+  check('ILGROUPA',0,0,0);check('ILGROUPB',0,26000,0);
+  check('ILGROUPC',0,0);check('ILGROUPD',0,26000,at('ILGROUPC').rect.y);
+  if(at('ILGROUPC').rect.y<=0)throw Error('Expected adaptive second row');
+  check('ILPIN',1,5000,20000);check('ILNEXT',1,37000,20000);check('ILSOFT',1,56000,50000);
+  if(at('ILPIN').occupiedRect.width!==30000||at('ILSOFT').preference!=='honored')throw Error('Missing approved footprint or tolerance');
+  check('ILEND',3,9000,18000);
+  if(screen.pageDelta.reusedPageIndices.length!==screen.plan.pages.length)throw Error('Expected retained full plan with reused pages');
+  transport=JSON.parse(JSON.stringify({options,expectedPlan:screen.plan,ticket:createIntelligentPrintTicket(screen,paper)}));
+ }finally{frame.remove();}
+ // The host compares the transported record before loading the print DOM.
+ assertIntelligentPrintTicketMatchesPlan(transport.ticket,transport.expectedPlan,transport.options.paper);
+ const printOptions=transport.options;
+ const rejects=async fn=>{let rejected=false;try{await fn();}catch{rejected=true;}if(!rejected)throw Error('Mismatched transport accepted');};
+ const changedPlan=structuredClone(transport.expectedPlan);changedPlan.pages[0].fragments[0].rect.x++;
+ await rejects(()=>assertIntelligentPrintTicketMatchesPlan(transport.ticket,changedPlan,transport.options.paper));
+ await rejects(()=>createTrialPrintPreviewForLayout(document,printOptions));
+ await rejects(()=>createTrialPrintPreviewForLayout(document,{...printOptions,intelligentLayout:undefined},transport.ticket));
+ await rejects(()=>createTrialPrintPreviewForLayout(document,printOptions,{...transport.ticket,layoutSignature:'tampered'}));
+ // Changed occupancy is not permitted even when the content rectangle is unchanged.
+ const altered=structuredClone(printOptions);
+ altered.intelligentLayout.intents.find(i=>i.blockKey==='ILPIN').placement.sizeConstraints.minWidth=31000;
+ await rejects(()=>createTrialPrintPreviewForLayout(document,altered,transport.ticket));
+ const preview=await createTrialPrintPreviewForLayout(document,printOptions,transport.ticket);
+ if(JSON.stringify(preview.plan)!==JSON.stringify(transport.expectedPlan))throw Error('Print plan differs from transported approved plan');
+ // Test-only adapter mirrors BookCreator trial-print styling. No new pagination.
+ const pages=[...preview.element.shadowRoot.children];
+ if(pages.length!==4||preview.plan.pages[2].fragments.length!==0)throw Error('Expected four pages including explicit blank');
+ const expected=transport.expectedPlan.pages.map(p=>p.fragments.map(f=>{
+  const left=p.index%2===0?paper.inner:paper.outer;
+  return {text:f.origin.blockKey,x:left+f.rect.x,y:paper.top+f.rect.y,width:f.rect.width,height:f.rect.height};
+ }));
+ const style=document.createElement('style');
+ style.textContent='@page{size:100mm 120mm;margin:0}html,body{margin:0;padding:0;background:white}';
+ document.head.append(style);
+ for(const [i,page] of pages.entries()){
+  Object.assign(page.style,{border:'0',margin:'0',breakInside:'avoid',breakAfter:i===pages.length-1?'auto':'page',printColorAdjust:'exact',webkitPrintColorAdjust:'exact'});
+  for(const guide of page.querySelectorAll(':scope > [data-content-guide]'))guide.style.display='none';
+ }
+ document.body.replaceChildren(preview.element);
+ await document.fonts.ready;
+ return {paper,expected,publicationReady:preview.publicationReady};
+})();
+</script></body></html>
