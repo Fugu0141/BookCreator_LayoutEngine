@@ -1339,6 +1339,13 @@ try{
     assert(JSON.stringify(delivered)===JSON.stringify([2]),'unchanged priority pages need no provisional copies');
     assert(streaming.changedElement.shadowRoot.firstElementChild.isEqualNode(changed.get(2)),'consumer mutation cannot change final DOM');
     assert(JSON.stringify(streaming.slices)===JSON.stringify(oracle.slices),'provisional copy preserves canonical slices');
+    const omitted=[];
+    const direct=await createRetainedTextPagePreview(document,{...options,skipSinglePageProvisional:true},initial.pageDelta.snapshot,undefined,[2],page=>omitted.push(page.index));
+    assert(omitted.length===0&&direct.changedElement.shadowRoot.firstElementChild.isEqualNode(changed.get(2)),'single changed page skips provisional clone without changing final DOM');
+    assert(JSON.stringify(direct.plan)===JSON.stringify(streaming.plan)&&JSON.stringify(direct.slices)===JSON.stringify(streaming.slices)&&JSON.stringify(direct.pageDelta.reusedPageIndices)===JSON.stringify(streaming.pageDelta.reusedPageIndices),'single page direct publication parity');
+    const coldDelivered=[];
+    const coldDirect=await createRetainedTextPagePreview(document,{...options,skipSinglePageProvisional:true},undefined,undefined,[2],page=>coldDelivered.push(page.index));
+    assert(JSON.stringify(coldDelivered)===JSON.stringify([2])&&coldDirect.changedElement.shadowRoot.children.length===8,'multi-page generation still delivers priority copy');
     const reason=new Error('provisional consumer cancelled');let receivedError;
     try{await createRetainedTextPagePreview(document,options,initial.pageDelta.snapshot,undefined,[2],()=>{throw reason;});}catch(e){receivedError=e;}
     assert(receivedError===reason&&document.body.children.length===beforeRetained,'provisional receiver failure aborts and releases resources');

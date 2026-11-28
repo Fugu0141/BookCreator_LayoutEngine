@@ -523,6 +523,8 @@ export interface TextPagePreviewOptions {
   /** Optional resource-free page templates, owned by the host for this document. */
   pageCache?:PageRenderCache;
   collectTimings?:boolean;
+  /** Opt-in: omit provisional copies if fewer than two pages need generation. */
+  skipSinglePageProvisional?:boolean;
   /** Optional book-session-owned, font-independent syntax compilation cache. */
   mathCache?:MathCompilationCache;
   /** Optional document-owned natural geometry cache for independent display equations. */
@@ -589,6 +591,7 @@ async function createTextPreview(document:Document,options:TextPagePreviewOption
   // Snapshot the opt-in before any asynchronous work. The clock is never read otherwise.
   const mathCache=options.mathCache,displayMathCache=options.displayMathCache,inlineMathCache=options.inlineMathCache;
   const timed=options.collectTimings===true;
+  const skipSinglePageProvisional=retained!==undefined&&options.skipSinglePageProvisional===true;
   const now=()=>timed?document.defaultView!.performance.now():0;
   const started=now();
   if((options.blocks===undefined)===(options.sections===undefined))throw RangeError('Specify exactly one block list or section list');
@@ -675,7 +678,7 @@ async function createTextPreview(document:Document,options:TextPagePreviewOption
   if(!plan.pages.length)throw Error('No drawable content');
   if(plan.completeness!=='full')throw Error('Cannot render partial preview: '+plan.diagnostics.map(d=>d.code).join(', '));
   const paginated=now();
-  const result=await renderMeasuredPreview(document,plan,{width,height,paper,byKey,images,imageKeys,imageDimensions:imageSources,decodeImage,pageCache,pageCacheEpoch,delta},{styleText,frozenText:(el,r,line)=>frozenText(el,r,line,mathCache),listInset},checkpoint,retained?.priorityPages,retained?.onPriorityPage);
+  const result=await renderMeasuredPreview(document,plan,{width,height,paper,byKey,images,imageKeys,imageDimensions:imageSources,decodeImage,pageCache,pageCacheEpoch,delta},{styleText,frozenText:(el,r,line)=>frozenText(el,r,line,mathCache),listInset},checkpoint,retained?.priorityPages,retained?.onPriorityPage,skipSinglePageProvisional);
   if(checkpoint)await checkpoint('complete');
   // Register only after successful rendering, and use the newly issued
   // page snapshot as the key. An unsuccessful job cannot advance a lease.
