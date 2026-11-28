@@ -1,7 +1,7 @@
 <!doctype html>
 <html lang="ja"><meta charset="utf-8"><title>IL mixed PDF fixture</title><body>
 <script type="module">
-import {createPlainTextPagePreview,createIntelligentPrintTicket,createVerifiedIntelligentPrintPreview} from '/dist/index.js';
+import {createRetainedTextPagePreview,createIntelligentPrintTicket,assertIntelligentPrintTicketMatchesPlan,createTrialPrintPreviewForLayout} from '/dist/index.js';
 globalThis.ilPdfReady=(async()=>{
  const paper={width:100000,height:120000,top:12000,bottom:8000,inner:13000,outer:7000,firstSide:'right'};
  const revision='mixed-pdf',imageId='a'.repeat(64);
@@ -9,27 +9,39 @@ globalThis.ilPdfReady=(async()=>{
  const ctx=image.getContext('2d');ctx.fillStyle='#ff0000';ctx.fillRect(0,0,100,100);ctx.fillStyle='#0000ff';ctx.fillRect(100,0,100,100);
  const blob=await new Promise(resolve=>image.toBlob(resolve,'image/png'));
  const resolveImage=async id=>{if(id!==imageId||!blob)throw Error('Missing fixture image');return blob;};
- const block=(blockKey,text,width,extra={})=>({origin:{documentId:'mixed',revision,blockKey},request:{text,width,fontSize:4000,fontFamily:'sans-serif',lineHeight:1.5},splitPolicy:'strict',...extra});
- const options={revision,fingerprint:'mixed-v1',paper,width:80000,height:100000,resolveImage,
-  blocks:[block('heading','数学の基本',70000),
+ const block=(blockKey,text,width,extra={})=>({origin:{documentId:'mixed',revision,blockKey,persistentId:'id-'+blockKey},request:{text,width,fontSize:4000,fontFamily:'sans-serif',lineHeight:1.5},splitPolicy:'strict',...extra});
+ const options={revision,fingerprint:'mixed-v1',paper,width:80000,height:100000,
+  sections:[{id:'mixed',startOn:'continuous',blocks:[block('heading','数学の基本',70000),
    block('formula','\\frac{x^2+1}{2}',70000,{displayMath:true,equationNumber:'2.1'}),
    block('figure','図の説明',60000,{component:{direction:'column',gap:2000,padding:2000,background:'#ffffff',textColor:'#000000',
-    children:[{id:'art',type:'image',assetId:imageId,width:40000,height:20000,fit:'contain',alt:'Red and blue fixture'},{id:'content',type:'content'}]}})],
+    children:[{id:'art',type:'image',assetId:imageId,width:40000,height:20000,fit:'contain',alt:'Red and blue fixture'},{id:'content',type:'content'}]}})]}],
   intelligentLayout:{intents:[
    {documentId:'mixed',blockKey:'heading',placement:{sizeConstraints:{minHeight:20000}}},
    {documentId:'mixed',blockKey:'formula',placement:{fixed:{page:1,x:5000,y:20000}}},
    {documentId:'mixed',blockKey:'figure',placement:{fixed:{page:3,x:8000,y:15000}}}
   ]}};
  const frame=document.createElement('iframe');document.body.append(frame);
- let ticket;
+ let transport;
  try{
-  const screen=await createPlainTextPagePreview(frame.contentDocument,options);
-  ticket=JSON.parse(JSON.stringify(createIntelligentPrintTicket(screen,paper)));
+  const first=await createRetainedTextPagePreview(frame.contentDocument,{...options,resolveImage});
+  const screen=await createRetainedTextPagePreview(frame.contentDocument,{...options,resolveImage},first.pageDelta.snapshot);
+  if(screen.pageDelta.reusedPageIndices.length!==screen.plan.pages.length)throw Error('Expected retained full plan with reused pages');
+  transport=JSON.parse(JSON.stringify({options,expectedPlan:screen.plan,ticket:createIntelligentPrintTicket(screen,paper)}));
  }finally{frame.remove();}
- const preview=await createVerifiedIntelligentPrintPreview(document,options,ticket);
+ // The host compares the transported record before loading the print DOM.
+ assertIntelligentPrintTicketMatchesPlan(transport.ticket,transport.expectedPlan,transport.options.paper);
+ const printOptions={...transport.options,resolveImage};
+ const rejects=async fn=>{let rejected=false;try{await fn();}catch{rejected=true;}if(!rejected)throw Error('Mismatched transport accepted');};
+ const changedPlan=structuredClone(transport.expectedPlan);changedPlan.pages[0].fragments[0].rect.x++;
+ await rejects(()=>assertIntelligentPrintTicketMatchesPlan(transport.ticket,changedPlan,transport.options.paper));
+ await rejects(()=>createTrialPrintPreviewForLayout(document,printOptions));
+ await rejects(()=>createTrialPrintPreviewForLayout(document,{...printOptions,intelligentLayout:undefined},transport.ticket));
+ await rejects(()=>createTrialPrintPreviewForLayout(document,printOptions,{...transport.ticket,layoutSignature:'tampered'}));
+ const preview=await createTrialPrintPreviewForLayout(document,printOptions,transport.ticket);
+ if(JSON.stringify(preview.plan)!==JSON.stringify(transport.expectedPlan))throw Error('Print plan differs from transported approved plan');
  const pages=[...preview.element.shadowRoot.children];
  if(pages.length!==4||preview.plan.pages[2].fragments.length!==0)throw Error('Expected four pages with explicit blank');
- const expected=preview.plan.pages.map(p=>p.fragments.map(f=>({text:f.origin.blockKey,x:(p.index%2===0?paper.inner:paper.outer)+f.rect.x,y:paper.top+f.rect.y,width:f.rect.width,height:f.rect.height})));
+ const expected=transport.expectedPlan.pages.map(p=>p.fragments.map(f=>({text:f.origin.blockKey,x:(p.index%2===0?paper.inner:paper.outer)+f.rect.x,y:paper.top+f.rect.y,width:f.rect.width,height:f.rect.height})));
  const style=document.createElement('style');style.textContent='@page{size:100mm 120mm;margin:0}html,body{margin:0;padding:0;background:white}';document.head.append(style);
  for(const [i,page] of pages.entries()){
   Object.assign(page.style,{border:'0',margin:'0',breakInside:'avoid',breakAfter:i===pages.length-1?'auto':'page',printColorAdjust:'exact',webkitPrintColorAdjust:'exact'});

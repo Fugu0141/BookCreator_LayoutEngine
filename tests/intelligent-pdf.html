@@ -1,29 +1,42 @@
 <!doctype html>
 <html lang="en"><meta charset="utf-8"><title>IL PDF acceptance fixture</title><body>
 <script type="module">
-import {createPlainTextPagePreview,createIntelligentPrintTicket,createVerifiedIntelligentPrintPreview} from '/dist/index.js';
+import {createRetainedTextPagePreview,createIntelligentPrintTicket,assertIntelligentPrintTicketMatchesPlan,createTrialPrintPreviewForLayout} from '/dist/index.js';
 globalThis.ilPdfReady=(async()=>{
  const paper={width:100000,height:120000,top:12000,bottom:8000,inner:13000,outer:7000,firstSide:'right'};
  const texts=['ILALPHA','ILBETA','ILPIN','ILEND'];
+ const blockList=texts.map((blockKey,index)=>({origin:{documentId:index<2?'chapter-a':'chapter-b',revision:'pdf-acceptance',blockKey,persistentId:'id-'+blockKey},request:{text:blockKey,width:24000,fontSize:3500,fontFamily:'sans-serif',lineHeight:1.5},splitPolicy:'strict'}));
  const options={revision:'pdf-acceptance',fingerprint:'pdf-acceptance-v1',paper,width:80000,height:100000,
-  blocks:texts.map(blockKey=>({origin:{documentId:'fixture',revision:'pdf-acceptance',blockKey},request:{text:blockKey,width:24000,fontSize:3500,fontFamily:'sans-serif',lineHeight:1.5},splitPolicy:'strict'})),
+  sections:[{id:'chapter-a',startOn:'continuous',blocks:blockList.slice(0,2)},{id:'chapter-b',startOn:'page',blocks:blockList.slice(2)}],
   intelligentLayout:{gap:2000,intents:[
-   {documentId:'fixture',blockKey:'ILALPHA',placement:{sideBySide:true,sizeConstraints:{minWidth:32000}}},
-   {documentId:'fixture',blockKey:'ILBETA',placement:{sideBySide:true}},
-   {documentId:'fixture',blockKey:'ILPIN',placement:{fixed:{page:1,x:11000,y:30000}}},
-   {documentId:'fixture',blockKey:'ILEND',placement:{fixed:{page:3,x:9000,y:18000}}}
+   {documentId:'chapter-a',blockKey:'ILALPHA',placement:{sideBySide:true,sizeConstraints:{minWidth:32000}}},
+   {documentId:'chapter-a',blockKey:'ILBETA',placement:{sideBySide:true}},
+   {documentId:'chapter-b',blockKey:'ILPIN',placement:{fixed:{page:1,x:11000,y:30000}}},
+   {documentId:'chapter-b',blockKey:'ILEND',placement:{fixed:{page:3,x:9000,y:18000}}}
   ]}};
  const frame=document.createElement('iframe');document.body.append(frame);
- let ticket;
+ let transport;
  try{
-  const screen=await createPlainTextPagePreview(frame.contentDocument,options);
-  ticket=JSON.parse(JSON.stringify(createIntelligentPrintTicket(screen,paper)));
+  const first=await createRetainedTextPagePreview(frame.contentDocument,options);
+  const screen=await createRetainedTextPagePreview(frame.contentDocument,options,first.pageDelta.snapshot);
+  if(screen.pageDelta.reusedPageIndices.length!==screen.plan.pages.length)throw Error('Expected retained full plan with reused pages');
+  transport=JSON.parse(JSON.stringify({options,expectedPlan:screen.plan,ticket:createIntelligentPrintTicket(screen,paper)}));
  }finally{frame.remove();}
- const preview=await createVerifiedIntelligentPrintPreview(document,options,ticket);
+ // The host compares the transported record before loading the print DOM.
+ assertIntelligentPrintTicketMatchesPlan(transport.ticket,transport.expectedPlan,transport.options.paper);
+ const printOptions=transport.options;
+ const rejects=async fn=>{let rejected=false;try{await fn();}catch{rejected=true;}if(!rejected)throw Error('Mismatched transport accepted');};
+ const changedPlan=structuredClone(transport.expectedPlan);changedPlan.pages[0].fragments[0].rect.x++;
+ await rejects(()=>assertIntelligentPrintTicketMatchesPlan(transport.ticket,changedPlan,transport.options.paper));
+ await rejects(()=>createTrialPrintPreviewForLayout(document,printOptions));
+ await rejects(()=>createTrialPrintPreviewForLayout(document,{...printOptions,intelligentLayout:undefined},transport.ticket));
+ await rejects(()=>createTrialPrintPreviewForLayout(document,printOptions,{...transport.ticket,layoutSignature:'tampered'}));
+ const preview=await createTrialPrintPreviewForLayout(document,printOptions,transport.ticket);
+ if(JSON.stringify(preview.plan)!==JSON.stringify(transport.expectedPlan))throw Error('Print plan differs from transported approved plan');
  // Test-only adapter mirrors BookCreator trial-print styling. No new pagination.
  const pages=[...preview.element.shadowRoot.children];
  if(pages.length!==4||preview.plan.pages[2].fragments.length!==0)throw Error('Expected four pages including explicit blank');
- const expected=preview.plan.pages.map(p=>p.fragments.map(f=>{
+ const expected=transport.expectedPlan.pages.map(p=>p.fragments.map(f=>{
   const left=p.index%2===0?paper.inner:paper.outer;
   return {text:f.origin.blockKey,x:left+f.rect.x,y:paper.top+f.rect.y,width:f.rect.width,height:f.rect.height};
  }));
