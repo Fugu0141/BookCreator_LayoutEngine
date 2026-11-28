@@ -11,6 +11,7 @@ import {measureWithTextCache,measureWithParagraphCache,type TextMeasurementCache
 export {createTextMeasurementCache,createParagraphMeasurementCache,type TextMeasurementCache,type ParagraphMeasurementCache} from './text-measurement-cache.js';
 import {layoutTree} from './tree.js';
 import {applyPreviewFont,readyPreviewFont,isPreviewFontFamily,isPreviewFontWeight} from './preview-font.js';
+import {planMeasuredIntelligentLayout,planMeasuredIntelligentLayoutIncremental,planMeasuredIntelligentLayoutIncrementalCooperative,projectIntelligentMeasuredPlan,type IntelligentMeasuredResult,type IntelligentMeasuredOptions,type IntelligentMeasuredSnapshot,type IntelligentMeasuredWorkStage,type IncrementalIntelligentMeasuredResult} from './intelligent-measured.js';
 import {paginateMeasured,paginateMeasuredIncremental,paginateMeasuredIncrementalCooperative,type PaginationWorkStage,type PaginationCheckpointSnapshot,type Origin,type MeasuredPagePlan,type SplitPolicy,type PageBreak} from './pagination.js';
 import type {PlainTextMeasureRequest,InlineStyleRun,InlineMathAtom} from './browser-measurement.js';
 
@@ -513,6 +514,9 @@ export interface PreviewPhaseTimings {
 }
 export interface TextPagePreview {
   element:HTMLElement; plan:MeasuredPagePlan; slices:readonly PreviewTextSlice[];
+  /** Present only for opt-in IL previews; includes the occupied footprint. */
+  intelligentLayout?:Extract<IntelligentMeasuredResult,{status:'placed'}>;
+  intelligentPlacementWork?:IncrementalIntelligentMeasuredResult['placement'];
   publicationReady:false;
   /** Present only when the caller requests successful phase timings. */
   timings?:Readonly<PreviewPhaseTimings>;
@@ -532,6 +536,8 @@ export interface TextPagePreviewOptions {
   /** Optional resource-free page templates, owned by the host for this document. */
   pageCache?:PageRenderCache;
   collectTimings?:boolean;
+  /** Opt-in IL over the same measured content; omission preserves legacy layout. */
+  intelligentLayout?:IntelligentMeasuredOptions;
   /** Opt-in: omit provisional copies if fewer than two pages need generation. */
   skipSinglePageProvisional?:boolean;
   /** Optional book-session-owned, font-independent syntax compilation cache. */
@@ -569,7 +575,7 @@ export interface RetainedPaginationWork {
 /** Safe boundaries between completed units. The optional host callback may
  * return a task promise to yield to the event loop, or throw to abandon work.
  * It must not change fonts, the Document, or other measurement inputs. */
-export type PreviewCheckpointStage=PaginationWorkStage|'validated'|'image'|'measure-block'|'measure-graphemes'|'measure-hard-line'|'measure-frozen-line'|'measure-variable-graphemes'|'measure-variable-line'|'paginate'|'render-key-page'|'render-page'|'render-fragment'|'render-line'|'complete';
+export type PreviewCheckpointStage=PaginationWorkStage|IntelligentMeasuredWorkStage|'validated'|'image'|'measure-block'|'measure-graphemes'|'measure-hard-line'|'measure-frozen-line'|'measure-variable-graphemes'|'measure-variable-line'|'paginate'|'render-key-page'|'render-page'|'render-fragment'|'render-line'|'complete';
 export type PreviewCheckpoint=(stage:PreviewCheckpointStage,pageIndex?:number)=>void|Promise<void>;
 export interface RetainedTextPagePreview extends IncrementalTextPagePreview {
   readonly paginationWork:Readonly<RetainedPaginationWork>;
@@ -579,6 +585,10 @@ export interface RetainedTextPagePreview extends IncrementalTextPagePreview {
 // The placement checkpoint follows the exact same lease as sparse DOM reuse.
 // No DOM or separate host-owned checkpoint is retained here.
 const retainedPaginationSnapshots=new WeakMap<PageReuseSnapshot,PaginationCheckpointSnapshot>();
+const retainedIntelligentSnapshots=new WeakMap<PageReuseSnapshot,IntelligentMeasuredSnapshot>();
+export class IntelligentPreviewConflictError extends Error {
+  constructor(readonly conflict:Extract<IntelligentMeasuredResult,{status:'conflict'}>){super('IL preview conflict: '+conflict.diagnostic.code);this.name='IntelligentPreviewConflictError';}
+}
 const retainedImageSnapshots=new WeakMap<PageReuseSnapshot,ReadonlyMap<string,string>>();
 const retainedMeasurementSnapshots=new WeakMap<PageReuseSnapshot,{snapshot:BlockMeasurementSnapshot;inlineMathGeometry:boolean}>();
 /** Opt-in combined placement and DOM reuse. Same complete plan/slices and
@@ -589,17 +599,18 @@ export async function createRetainedTextPagePreview(document:Document,options:Te
   if(onPriorityPage!==undefined&&typeof onPriorityPage!=='function')throw TypeError('Invalid provisional page receiver');
   const previousKeys=previousPageKeys(document,previous);
   const saved=previous?retainedMeasurementSnapshots.get(previous):undefined;
-  const result=await createTextPreview(document,options,{previousKeys,allowInlineMath:true},{previous:previous?retainedPaginationSnapshots.get(previous):undefined,measurement:saved?.inlineMathGeometry===!!options.inlineMathCache?saved.snapshot:undefined,imageKeys:previous?retainedImageSnapshots.get(previous):undefined,checkpoint,priorityPages:snapshotPagePriority(priorityPages),onPriorityPage});
+  const result=await createTextPreview(document,options,{previousKeys,allowInlineMath:true},{previous:previous?retainedPaginationSnapshots.get(previous):undefined,previousIntelligent:previous?retainedIntelligentSnapshots.get(previous):undefined,measurement:saved?.inlineMathGeometry===!!options.inlineMathCache?saved.snapshot:undefined,imageKeys:previous?retainedImageSnapshots.get(previous):undefined,checkpoint,priorityPages:snapshotPagePriority(priorityPages),onPriorityPage});
   if(!result.pageDelta||!result.paginationWork||!result.measurementWork||!result.imageWork)throw Error('Missing retained preview data');
   const {element,pageDelta,paginationWork,measurementWork,imageWork,...rest}=result;
   return {...rest,changedElement:element,pageDelta,paginationWork,measurementWork,imageWork};
 }
-async function createTextPreview(document:Document,options:TextPagePreviewOptions,delta?:{previousKeys:ReadonlyMap<number,string>;allowInlineMath?:boolean},retained?:{previous?:PaginationCheckpointSnapshot;measurement?:BlockMeasurementSnapshot;imageKeys?:ReadonlyMap<string,string>;checkpoint?:PreviewCheckpoint;priorityPages?:readonly number[];onPriorityPage?:ProvisionalPageReceiver}):Promise<TextPagePreview & {pageDelta?:PageRenderDelta;paginationWork?:Readonly<RetainedPaginationWork>;measurementWork?:Readonly<BlockMeasurementWork>;imageWork?:RetainedTextPagePreview['imageWork']}>{
+async function createTextPreview(document:Document,options:TextPagePreviewOptions,delta?:{previousKeys:ReadonlyMap<number,string>;allowInlineMath?:boolean},retained?:{previous?:PaginationCheckpointSnapshot;previousIntelligent?:IntelligentMeasuredSnapshot;measurement?:BlockMeasurementSnapshot;imageKeys?:ReadonlyMap<string,string>;checkpoint?:PreviewCheckpoint;priorityPages?:readonly number[];onPriorityPage?:ProvisionalPageReceiver}):Promise<TextPagePreview & {pageDelta?:PageRenderDelta;paginationWork?:Readonly<RetainedPaginationWork>;measurementWork?:Readonly<BlockMeasurementWork>;imageWork?:RetainedTextPagePreview['imageWork']}>{
   live(document);
   const pageCache=options.pageCache,pageCacheEpoch=pageCache?pageRenderCacheEpoch(document,pageCache):undefined;
   // Snapshot the opt-in before any asynchronous work. The clock is never read otherwise.
   const mathCache=options.mathCache,displayMathCache=options.displayMathCache,inlineMathCache=options.inlineMathCache;
   const timed=options.collectTimings===true;
+  const ilOptions=options.intelligentLayout===undefined?undefined:structuredClone(options.intelligentLayout);
   const skipSinglePageProvisional=retained!==undefined&&options.skipSinglePageProvisional===true;
   const now=()=>timed?document.defaultView!.performance.now():0;
   const started=now();
@@ -682,8 +693,13 @@ async function createTextPreview(document:Document,options:TextPagePreviewOption
   const measured=now();
   if(checkpoint)await checkpoint('paginate');
   const paginationInput={schemaVersion:1 as const,revision,fingerprint,content:{width,height},sections:measuredSections};
-  const incremental=retained?(checkpoint?await paginateMeasuredIncrementalCooperative(paginationInput,retained.previous,checkpoint):paginateMeasuredIncremental(paginationInput,retained.previous)):undefined;
-  const plan=incremental?.plan??paginateMeasured(paginationInput);
+  const incremental=retained&&ilOptions===undefined?(checkpoint?await paginateMeasuredIncrementalCooperative(paginationInput,retained.previous,checkpoint):paginateMeasuredIncremental(paginationInput,retained.previous)):undefined;
+  const ilIncremental=ilOptions!==undefined&&retained?(checkpoint?await planMeasuredIntelligentLayoutIncrementalCooperative(paginationInput,ilOptions,retained.previousIntelligent,checkpoint):planMeasuredIntelligentLayoutIncremental(paginationInput,ilOptions,retained.previousIntelligent)):undefined;
+  const il=ilOptions===undefined?undefined:ilIncremental?.result??planMeasuredIntelligentLayout(paginationInput,ilOptions);
+  if(il?.status==='conflict')throw new IntelligentPreviewConflictError(il);
+  // Prevent an explicit distant fixed page from allocating thousands of DOM pages.
+  if(il?.fragments.some(f=>f.placement.page>=512))throw RangeError('IL browser page limit exceeded');
+  const plan=il?projectIntelligentMeasuredPlan(il):incremental?.plan??paginateMeasured(paginationInput);
   if(!plan.pages.length)throw Error('No drawable content');
   if(plan.completeness!=='full')throw Error('Cannot render partial preview: '+plan.diagnostics.map(d=>d.code).join(', '));
   const paginated=now();
@@ -692,12 +708,15 @@ async function createTextPreview(document:Document,options:TextPagePreviewOption
   // Register only after successful rendering, and use the newly issued
   // page snapshot as the key. An unsuccessful job cannot advance a lease.
   if(incremental?.snapshot&&result.pageDelta)retainedPaginationSnapshots.set(result.pageDelta.snapshot,incremental.snapshot);
+  if(ilIncremental?.snapshot&&result.pageDelta)retainedIntelligentSnapshots.set(result.pageDelta.snapshot,ilIncremental.snapshot);
   if(measurementSnapshot&&result.pageDelta)retainedMeasurementSnapshots.set(result.pageDelta.snapshot,{snapshot:measurementSnapshot,inlineMathGeometry:!!inlineMathCache});
   if(retained&&result.pageDelta)retainedImageSnapshots.set(result.pageDelta.snapshot,imageKeys);
   const imageWork=Object.freeze({resources:imageIds.size,decodedImages:images.size,skippedDecodes:imageIds.size-images.size});
-  const output=incremental?{...result,measurementWork,imageWork,paginationWork:Object.freeze({
-    reusedBlocks:incremental.reusedBlocks,reusedSuffixBlocks:incremental.reusedSuffixBlocks,placedBlocks:incremental.placedBlocks,sharedSnapshotFragments:incremental.sharedSnapshotFragments
-  })}:result;
+  const renderedResult=il?{...result,intelligentLayout:il,...(ilIncremental?.placement?{intelligentPlacementWork:ilIncremental.placement}:{})}:result;
+  const work=ilIncremental?.pagination??incremental;
+  const output=work?{...renderedResult,measurementWork,imageWork,paginationWork:Object.freeze({
+    reusedBlocks:work.reusedBlocks,reusedSuffixBlocks:work.reusedSuffixBlocks,placedBlocks:work.placedBlocks,sharedSnapshotFragments:work.sharedSnapshotFragments
+  })}:renderedResult;
   if(!timed)return output;
   const rendered=now();
   return {...output,timings:Object.freeze({validationMs:validated-started,imagesMs:imagesReady-validated,

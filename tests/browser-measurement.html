@@ -42,6 +42,35 @@ try{
     for(const line of fragment.children)assert(line.scrollWidth<=line.clientWidth+1,'frozen line fits');
   }
   assert(preview.publicationReady===false&&!preview.plan.publicationReady,'preview cannot authorize publication');
+  await phase("intelligent measured rendering");
+  {
+    const blocks=['il-a','il-b','il-pin'].map(blockKey=>({origin:{documentId:'il-demo',revision:'1',blockKey},request:{text:blockKey,width:22000,fontSize:3000,fontFamily:'sans-serif',lineHeight:1.4},splitPolicy:'strict'}));
+    const options={revision:'1',fingerprint:'il-browser',width:80000,height:80000,blocks,
+      intelligentLayout:{gap:2000,intents:[
+        {documentId:'il-demo',blockKey:'il-a',placement:{sideBySide:true,sizeConstraints:{minWidth:30000}}},
+        {documentId:'il-demo',blockKey:'il-b',placement:{sideBySide:true}},
+        {documentId:'il-demo',blockKey:'il-pin',placement:{fixed:{page:2,x:10000,y:20000}}}]}};
+    const legacy=await createPlainTextPagePreview(document,{...options,intelligentLayout:undefined});
+    const il=await createPlainTextPagePreview(document,options);
+    assert(!legacy.intelligentLayout&&legacy.plan.pages.length===1,'legacy layout unaffected');
+    assert(il.intelligentLayout?.status==='placed'&&il.plan.pages.length===3&&il.plan.pages[1].fragments.length===0,'IL fixed page and intervening blank');
+    assert(il.plan.pages[0].fragments[1].rect.x===32000,'IL occupied width and gap used');
+    assert(il.slices.map(s=>s.origin.blockKey).join(',')==='il-a,il-b,il-pin','IL source order preserved');
+    assert(il.element.shadowRoot.querySelectorAll('[data-page]').length===3,'all IL pages rendered');
+    const pin=il.element.shadowRoot.querySelector('[data-block="il-pin"]');
+    assert(Math.abs(parseFloat(pin.style.left)-10000*96/25400)<0.01&&Math.abs(parseFloat(pin.style.top)-20000*96/25400)<0.01,'fixed coordinates rendered');
+    assert(!il.publicationReady&&!il.plan.publicationReady,'IL preview not publication authority');
+    const a=await createRetainedTextPagePreview(document,options);
+    const b=await createRetainedTextPagePreview(document,{...options,revision:'2'},a.pageDelta.snapshot);
+    assert(b.intelligentPlacementWork?.reusedBlocks===3&&b.paginationWork.reusedBlocks===3,'IL retained placement and pagination');
+    assert(b.pageDelta.reusedPageIndices.length===3,'IL page DOM reused');
+    let conflict;
+    try{await createRetainedTextPagePreview(document,{...options,intelligentLayout:{intents:[{documentId:'il-demo',blockKey:'il-pin',placement:{fixed:{page:0,x:0,y:0}}}]}},a.pageDelta.snapshot);}
+    catch(error){conflict=error;}
+    assert(conflict?.name==='IntelligentPreviewConflictError'&&conflict.conflict.status==='conflict','typed IL conflict');
+    const after=await createRetainedTextPagePreview(document,options,a.pageDelta.snapshot);
+    assert(after.intelligentPlacementWork?.reusedBlocks===3,'conflict does not poison lease');
+  }
   await phase("text measurement cache");
   {
   const cache=createTextMeasurementCache(document);

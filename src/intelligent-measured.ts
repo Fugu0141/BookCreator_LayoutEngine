@@ -55,7 +55,7 @@ export interface IntelligentMeasuredSnapshot {readonly kind:'intelligent-measure
 export interface IncrementalIntelligentMeasuredResult {
   result:IntelligentMeasuredResult;
   snapshot?:IntelligentMeasuredSnapshot;
-  pagination:{reusedBlocks:number;reusedSuffixBlocks:number;placedBlocks:number};
+  pagination:{reusedBlocks:number;reusedSuffixBlocks:number;placedBlocks:number;sharedSnapshotFragments:number};
   placement?:Pick<IncrementalIntelligentLayoutResult,'reusedBlocks'|'reusedSuffixBlocks'|'placedBlocks'|'fullRecompute'>;
 }
 const measuredSnapshots=new WeakMap<IntelligentMeasuredSnapshot,{pagination?:PaginationCheckpointSnapshot;layout?:IntelligentLayoutSnapshot}>();
@@ -107,7 +107,7 @@ function finishMeasured(result:IntelligentMeasuredResult,p:ReturnType<typeof pag
     snapshot=Object.freeze({kind:'intelligent-measured-snapshot' as const});
     measuredSnapshots.set(snapshot,{pagination:p.snapshot,layout:nextLayout});
   }
-  return {result,snapshot,pagination:{reusedBlocks:p.reusedBlocks,reusedSuffixBlocks:p.reusedSuffixBlocks,placedBlocks:p.placedBlocks},placement};
+  return {result,snapshot,pagination:{reusedBlocks:p.reusedBlocks,reusedSuffixBlocks:p.reusedSuffixBlocks,placedBlocks:p.placedBlocks,sharedSnapshotFragments:p.sharedSnapshotFragments},placement};
 }
 
 function placeMeasured(input:PaginationInput,options:IntelligentMeasuredOptions,plan:MeasuredPagePlan,
@@ -174,4 +174,27 @@ function* placeMeasuredWork(input:PaginationInput,options:IntelligentMeasuredOpt
       sourceBreakReason:f.breakReason,placement:layout.placements[placed.length]});
   }
   return {...common,status:'placed',layout,fragments:placed};
+}
+
+/** Project a successful engine-produced IL result onto the existing measured
+ * rendering contract. This is NOT publication authorization or a validator
+ * for deserialized/untrusted results. Content rectangles, not occupied
+ * footprints, are drawn; explicit intervening pages are retained. */
+export function projectIntelligentMeasuredPlan(result:Extract<IntelligentMeasuredResult,{status:'placed'}>):MeasuredPagePlan{
+  const pages:MeasuredPagePlan['pages']=[];
+  let previousPage=-1;
+  for(const f of result.fragments){
+    const p=f.placement;
+    if(!Number.isSafeInteger(p.page)||p.page<previousPage||p.page<0||p.page>=10000)throw RangeError('Invalid IL page order');
+    while(pages.length<=p.page)pages.push({index:pages.length,fragments:[]});
+    const source=f.sourceBreakReason;
+    const breakReason=source==='flow'||source==='overflow'
+      ?(previousPage!==p.page&&(previousPage>=0||p.page>0)?'overflow':'flow'):source;
+    pages[p.page].fragments.push({origin:copyOrigin(f.origin),rect:{...p.rect},unitStart:f.unitStart,
+      unitEnd:f.unitEnd,continuationIndex:f.continuationIndex,breakReason});
+    previousPage=p.page;
+  }
+  return {schemaVersion:1,revision:result.revision,fingerprint:result.fingerprint,completeness:'full',
+    measurement:'premeasured',publicationReady:false,pages,
+    diagnostics:result.paginationDiagnostics.map(d=>({...d,...(d.origin?{origin:copyOrigin(d.origin)}:{})}))};
 }
