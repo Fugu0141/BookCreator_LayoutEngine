@@ -468,6 +468,7 @@ export interface PreviewTextBlock {
   origin:Origin; request:PlainTextMeasureRequest; splitPolicy:SplitPolicy;
   /** Soft minimum measured units on either side of a page split. */
   minUnitsBefore?:number; minUnitsAfter?:number;
+  optimizeSplit?:boolean;
   startPosition?:'page-top'; startPositionSource?:'component'|'explicit';
   // The host must verify the logical text is an exact raw source substring before setting this.
   sourceTextStart?:number;
