@@ -22,7 +22,8 @@
     "layout-inspector": "node cli/layout-inspector.mjs",
     "test:browser": "node tests/browser-measurement.mjs",
     "benchmark:il": "npm run build && node benchmarks/intelligent-layout.mjs",
-    "benchmark:il:session": "npm run build && node --expose-gc benchmarks/intelligent-session.mjs"
+    "benchmark:il:session": "npm run build && node --expose-gc benchmarks/intelligent-session.mjs",
+    "test:il:pdf": "node tests/intelligent-pdf.mjs"
   },
   "devDependencies": {
     "typescript": "5.8.3"
