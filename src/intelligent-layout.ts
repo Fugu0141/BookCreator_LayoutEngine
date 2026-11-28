@@ -71,6 +71,8 @@ export interface IntelligentOptimizationOptions {
   previousPositions?: readonly Readonly<IntelligentPreviousPosition>[];
   /** Opt-in bounded retry: skip one preceding soft position on a fixed conflict. */
   selectivePreferenceFallback?:boolean;
+  /** Soft semantic hint: keep this block and its immediate successor on one page when feasible. */
+  keepWithNextIds?:readonly string[];
 }
 export interface IntelligentCandidateScore {
   honoredPreferences:number;
@@ -78,11 +80,12 @@ export interface IntelligentCandidateScore {
   previousPageDistance:number;
   previousPositionDistance:number;
   occupiedDepth:number;
+  keptWithNext?:number;
 }
 export interface IntelligentOptimizationReport {
   evaluatedCandidates:number;
   feasibleCandidates:number;
-  selected:'greedy'|'lookahead'|'greedy-fallback'|'lookahead-fallback'|'greedy-selective'|'lookahead-selective';
+  selected:'greedy'|'lookahead'|'greedy-fallback'|'lookahead-fallback'|'greedy-selective'|'lookahead-selective'|'keep-next';
   score:IntelligentCandidateScore;
 }
 export type IntelligentLayoutResult =
@@ -300,7 +303,7 @@ function* incrementalWork(input:IntelligentLayoutInput,previous?:IntelligentLayo
   return {layout,snapshot,reusedBlocks:state.reusedBlocks,reusedSuffixBlocks:state.reusedSuffixBlocks,placedBlocks:state.placedBlocks,sharedSnapshotPlacements:state.sharedSnapshotPlacements,fullRecompute:false};
 }
 
-function* scoreCandidate(result:Placed,previous:ReadonlyMap<string,IntelligentPreviousPosition>):Generator<IntelligentWorkStage,IntelligentCandidateScore,void> {
+function* scoreCandidate(result:Placed,previous:ReadonlyMap<string,IntelligentPreviousPosition>,keep?:ReadonlySet<string>):Generator<IntelligentWorkStage,IntelligentCandidateScore,void> {
   let honoredPreferences=0,pageCount=0,previousPageDistance=0,previousPositionDistance=0;
   const depths=new Map<number,number>();
   let scanned=0;
@@ -317,12 +320,19 @@ function* scoreCandidate(result:Placed,previous:ReadonlyMap<string,IntelligentPr
   }
   let occupiedDepth=0;
   for(const depth of depths.values()) occupiedDepth+=depth;
-  return {honoredPreferences,pageCount,previousPageDistance,previousPositionDistance,occupiedDepth};
+  let keptWithNext=0;
+  if(keep)for(let i=0;i+1<result.placements.length;i++){
+    if(i%128===0)yield 'il-score';
+    if(keep.has(result.placements[i].id)&&result.placements[i].page===result.placements[i+1].page)keptWithNext++;
+  }
+  return {honoredPreferences,pageCount,previousPageDistance,previousPositionDistance,occupiedDepth,
+    ...(keep?{keptWithNext}:{})};
 }
 
 function better(a:IntelligentCandidateScore,b:IntelligentCandidateScore):boolean {
   if(a.honoredPreferences!==b.honoredPreferences) return a.honoredPreferences>b.honoredPreferences;
   if(a.pageCount!==b.pageCount) return a.pageCount<b.pageCount;
+  if((a.keptWithNext??0)!==(b.keptWithNext??0))return (a.keptWithNext??0)>(b.keptWithNext??0);
   if(a.previousPageDistance!==b.previousPageDistance) return a.previousPageDistance<b.previousPageDistance;
   if(a.previousPositionDistance!==b.previousPositionDistance) return a.previousPositionDistance<b.previousPositionDistance;
   return a.occupiedDepth<b.occupiedDepth;
@@ -345,6 +355,16 @@ function* optimize(input:IntelligentLayoutInput,options:IntelligentOptimizationO
     previous.set(hint.id,hint);
   }
   const first=yield* solve(input,true);
+  let keep: Set<string>|undefined;
+  if(options.keepWithNextIds!==undefined){
+    const ids=options.keepWithNextIds;
+    if(!Array.isArray(ids)||ids.length>10000||ids.some(id=>typeof id!=='string'||!id)||
+      new Set(ids).size!==ids.length)return invalid('Invalid keep-with-next hints');
+    if(!Array.isArray(input.blocks))return first;
+    const available=new Set(input.blocks.slice(0,-1).map(b=>b?.id));
+    if(ids.some(id=>!available.has(id)))return invalid('Unknown keep-with-next block or missing successor');
+    keep=new Set(ids);
+  }
   // Invalid input and static hard conflicts cannot be fixed by alternate shelves.
   if(first.status==='conflict'&&first.diagnostic.code!=='IL_FIXED_CONFLICT'&&first.diagnostic.code!=='IL_LIMIT') return first;
   const candidates: {name:IntelligentOptimizationReport['selected'];result:IntelligentLayoutResult}[]=[
@@ -379,10 +399,35 @@ function* optimize(input:IntelligentLayoutInput,options:IntelligentOptimizationO
   for(const {name,result} of candidates){
     if(result.status!=='placed') continue;
     feasibleCandidates++;
-    const score=yield* scoreCandidate(result,previous);
+    const score=yield* scoreCandidate(result,previous,keep);
     if(!best||better(score,best.score)) best={name,result,score};
   }
   if(!best) return first;
+  // One bounded extra candidate. Add internal page-start hints only for
+  // orphaned eligible pairs; never alter a fixed/preferred/group member,
+  // an explicit successor break, or measured geometry. These starts are
+  // temporary solver input, not persisted placement intents.
+  if(keep?.size){
+    const starts=new Set<string>();
+    for(let i=0;i+1<input.blocks.length;i++){
+      if(i%64===0)yield 'il-score';
+      const a=input.blocks[i],b=input.blocks[i+1];
+      if(!keep.has(a.id)||best.result.placements[i].page===best.result.placements[i+1].page||
+        a.startNewPage||b.startNewPage||a.fixed||b.fixed||a.preferred||b.preferred||
+        a.keepTogetherGroup!==undefined||b.keepTogetherGroup!==undefined||
+        keep.has(b.id))continue;
+      starts.add(a.id);
+    }
+    if(starts.size){
+      const alternate=yield* solve({...input,blocks:input.blocks.map(b=>starts.has(b.id)?{...b,startNewPage:true}:b)},true,true);
+      candidates.push({name:'keep-next',result:alternate});
+      if(alternate.status==='placed'){
+        feasibleCandidates++;
+        const score=yield* scoreCandidate(alternate,previous,keep);
+        if(better(score,best.score))best={name:'keep-next',result:alternate,score};
+      }
+    }
+  }
   return {...best.result,optimization:{evaluatedCandidates:candidates.length,feasibleCandidates,selected:best.name,score:best.score}};
 }
 
