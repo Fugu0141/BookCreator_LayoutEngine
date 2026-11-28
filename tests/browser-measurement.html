@@ -2,7 +2,7 @@
 <html lang="en"><meta charset="utf-8"><title>Browser measurement smoke test</title>
 <body><pre id="result">RUNNING</pre>
 <script type="module">
-import {createFullRetainedTextPagePreview,createTrialPrintPreviewForLayout,createIntelligentPrintTicket,createVerifiedIntelligentPrintPreview,measurePlainText,paginateMeasured,measurePlainTextLines,createPlainTextPagePreview,createIncrementalTextPagePreview,createRetainedTextPagePreview,measureDisplayMath,displayMathArtifact,restoreDisplayMathArtifact,createPreviewMath,createTextMeasurementCache,createParagraphMeasurementCache,createPageRenderCache,parsePreviewMath,parseDisplayMath,readyPreviewMathFont,createMathCompilationCache,createDisplayMathGeometryCache,createInlineMathGeometryCache,measureInlineMathGeometry,createInlineMathAtom} from '/dist/index.js';
+import {IntelligentPreviewConflictError,findIntelligentFixedConflictTarget,describeIntelligentPreferredPlacement,createFullRetainedTextPagePreview,createTrialPrintPreviewForLayout,createIntelligentPrintTicket,createVerifiedIntelligentPrintPreview,measurePlainText,paginateMeasured,measurePlainTextLines,createPlainTextPagePreview,createIncrementalTextPagePreview,createRetainedTextPagePreview,measureDisplayMath,displayMathArtifact,restoreDisplayMathArtifact,createPreviewMath,createTextMeasurementCache,createParagraphMeasurementCache,createPageRenderCache,parsePreviewMath,parseDisplayMath,readyPreviewMathFont,createMathCompilationCache,createDisplayMathGeometryCache,createInlineMathGeometryCache,measureInlineMathGeometry,createInlineMathAtom} from '/dist/index.js';
 const result=document.querySelector('#result');
 const assert=(condition,message)=>{if(!condition)throw Error(message);};
 const phase=async name=>{await fetch('/test-progress',{method:'POST',body:name});};
@@ -70,6 +70,40 @@ try{
     assert(conflict?.name==='IntelligentPreviewConflictError'&&conflict.conflict.status==='conflict','typed IL conflict');
     const after=await createRetainedTextPagePreview(document,options,a.pageDelta.snapshot);
     assert(after.intelligentPlacementWork?.reusedBlocks===3,'conflict does not poison lease');
+  }
+  await phase("IL full-book fixed recovery and drag feedback");
+  {
+    const blocks=['chapter-a','chapter-b'].map(documentId=>({origin:{documentId,revision:'1',blockKey:'same',persistentId:'id-'+documentId},request:{text:documentId,width:22000,fontSize:3000,fontFamily:'sans-serif',lineHeight:1.4},splitPolicy:'strict'}));
+    const make=(position)=>({revision:'book-r',fingerprint:'il-recovery',width:80000,height:80000,
+      sections:blocks.map(b=>({id:b.origin.documentId,startOn:'continuous',blocks:[b]})),
+      intelligentLayout:{gap:2000,intents:[
+        {documentId:'chapter-a',blockKey:'same',placement:{fixed:{page:0,x:0,y:0}}},
+        {documentId:'chapter-b',blockKey:'same',placement:{sizeConstraints:{minWidthPercent:40},spaceAfter:1000,...position}}
+      ]}});
+    const initialOptions=make({fixed:{page:0,x:0,y:30000},fixedPositionOnly:true});
+    const initial=await createFullRetainedTextPagePreview(document,initialOptions);
+    const previous=initial.element.shadowRoot.innerHTML;
+    const broken=make({fixed:{page:0,x:0,y:0},fixedPositionOnly:true});
+    let error;
+    try{await createFullRetainedTextPagePreview(document,broken,initial.snapshot,()=>{});}catch(e){error=e;}
+    assert(error instanceof IntelligentPreviewConflictError,'full retained throws typed conflict');
+    const source=findIntelligentFixedConflictTarget(error.conflict,broken.intelligentLayout,broken);
+    assert(source?.documentId==='chapter-b'&&source.blockKey==='same','only conflicting chapter identified');
+    assert(initial.element.shadowRoot.innerHTML===previous,'failed draft preserves approved DOM');
+    const restored=await createFullRetainedTextPagePreview(document,initialOptions,initial.snapshot);
+    assert(restored.measurementWork.reusedBlocks===2&&JSON.stringify(restored.plan)===JSON.stringify(initial.plan),'conflict leaves successful lease reusable');
+    const recovered=make({});
+    const next=await createFullRetainedTextPagePreview(document,recovered,initial.snapshot);
+    const cold=await createPlainTextPagePreview(document,recovered);
+    assert(JSON.stringify(next.plan)===JSON.stringify(cold.plan),'unlock retained and cold plans agree');
+    const [pin,free]=next.intelligentLayout.fragments.map(f=>f.placement);
+    assert(pin.fixed&&pin.rect.x===0&&pin.rect.y===0&&!free.fixed&&free.occupiedRect.width===32000&&free.occupiedRect.height===free.rect.height+1000,'unlock preserves other lock and footprint');
+    const preferred=make({preferred:{page:0,x:60000,y:30000},preferredTolerance:{x:15000,y:0}});
+    const draft=await createFullRetainedTextPagePreview(document,preferred,next.snapshot);
+    const feedback=describeIntelligentPreferredPlacement(draft.intelligentLayout,preferred.intelligentLayout,preferred,source);
+    assert(feedback?.status==='within-tolerance'&&feedback.requested.x===60000&&feedback.actual.x===48000&&feedback.offset.x===-12000,'drag feedback describes footprint-constrained origin');
+    assert(draft.measurementWork.reusedBlocks===2,'drag reuses measurements');
+    assert(initial.element.shadowRoot.innerHTML===previous,'draft cannot modify approved DOM');
   }
   await phase("IL verified print preview");
   {

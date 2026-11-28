@@ -89,6 +89,58 @@ export function findIntelligentFixedConflictTarget(
   return target;
 }
 
+export interface IntelligentPreferredFeedback {
+  documentId:string;
+  blockKey:string;
+  status:'exact'|'within-tolerance'|'fallback';
+  requested:{page:number;x:number;y:number};
+  actual:{page:number;x:number;y:number};
+  tolerance:{x:number;y:number};
+  /** Signed offsets in µm on the same page; never compare across pages. */
+  offset?:{x:number;y:number};
+}
+
+/**
+ * Describe the selected block's soft-position outcome for a drag preview.
+ * Options must be the exact captured request that produced result; the host
+ * also owns request-generation checks (revision/fingerprint alone is not a
+ * unique proposal ID). Never use this as a save authorization or a new intent.
+ */
+export function describeIntelligentPreferredPlacement(
+  result:IntelligentMeasuredResult,
+  options:IntelligentMeasuredOptions,
+  expected:Readonly<Pick<PaginationInput,'revision'|'fingerprint'>>,
+  source:Readonly<Pick<IntelligentMeasuredIntent,'documentId'|'blockKey'>>,
+):IntelligentPreferredFeedback|undefined {
+  if(result.status!=='placed'||result.revision!==expected.revision||
+    result.fingerprint!==expected.fingerprint||!Array.isArray(options.intents)||
+    options.intents.length>10000)return undefined;
+  const key=sourceKey(source);
+  const intents=options.intents.filter(i=>i&&sourceKey(i)===key);
+  if(intents.length!==1||!validIntentShape(intents[0]))return undefined;
+  const intent=intents[0].placement,requested=intent.preferred;
+  const tolerance=intent.preferredTolerance??{x:0,y:0};
+  const valid=(n:number,max=1_000_000_000)=>Number.isSafeInteger(n)&&n>=0&&n<=max;
+  if(!requested||intent.fixed!==undefined||
+    (intent.mode!==undefined&&intent.mode!=='preferred')||
+    !valid(requested.page,9999)||!valid(requested.x)||!valid(requested.y)||
+    !valid(tolerance.x)||!valid(tolerance.y))return undefined;
+  const fragments=result.fragments.filter(f=>sourceKey(f.origin)===key);
+  if(fragments.length!==1)return undefined;
+  const p=fragments[0].placement;
+  if(p.id!==intelligentMeasuredId(source)||p.fixed||
+    (p.preference!=='honored'&&p.preference!=='fallback'))return undefined;
+  const actual={page:p.page,x:p.rect.x,y:p.rect.y};
+  if(!valid(actual.page,9999)||!valid(actual.x)||!valid(actual.y))return undefined;
+  const offset=actual.page===requested.page?{x:actual.x-requested.x,y:actual.y-requested.y}:undefined;
+  const within=!!offset&&Math.abs(offset.x)<=tolerance.x&&Math.abs(offset.y)<=tolerance.y;
+  if(within!==(p.preference==='honored'))return undefined;
+  const status=within?(offset!.x===0&&offset!.y===0?'exact':'within-tolerance'):'fallback';
+  return {documentId:source.documentId,blockKey:source.blockKey,status,
+    requested:{page:requested.page,x:requested.x,y:requested.y},actual,
+    tolerance:{x:tolerance.x,y:tolerance.y},...(offset?{offset}:{})};
+}
+
 const copyOrigin=(o:Origin):Origin=>({...o,...(o.range?{range:{...o.range}}:{})});
 
 /**
