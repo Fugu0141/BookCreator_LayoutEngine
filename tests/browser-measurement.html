@@ -1451,6 +1451,12 @@ try{
     }
 
   }
+  // Count actual MathML root creation, not merely final page DOM nodes.
+  async function countMathRoots(run){
+    const create=document.createElementNS;let count=0;
+    document.createElementNS=function(ns,tag,...rest){if(ns==='http://www.w3.org/1998/Math/MathML'&&tag==='math')count++;return create.call(this,ns,tag,...rest);};
+    try{return {result:await run(),count};}finally{document.createElementNS=create;}
+  }
   await phase("node-free display math artifact");
   {
     const source='\\frac{a}{b}',width=80000,size=5000;
@@ -1472,7 +1478,9 @@ try{
       request:{...request,text:formula,width,fontSize:size},displayMath:true,equationNumber:number,splitPolicy:'strict'
     }]});
     const first=await createRetainedTextPagePreview(document,make('1'));
-    const second=await createRetainedTextPagePreview(document,make('2'),first.pageDelta.snapshot);
+    const unchanged=await countMathRoots(()=>createRetainedTextPagePreview(document,make('2'),first.pageDelta.snapshot));
+    const second=unchanged.result;
+    assert(unchanged.count===0,'unchanged standalone equation allocates no native MathML roots');
     assert(second.measurementWork.measuredBlocks===0&&second.measurementWork.reusedBlocks===1,'unchanged numbered equation not remeasured');
     assert(second.measurementWork.sharedSnapshotEntries===1,'numbered formula value shared, not its live node');
     const originalPage=first.changedElement.shadowRoot.firstElementChild,originalFormula=originalPage.querySelector('mfrac');
@@ -1503,13 +1511,23 @@ try{
     assert(q.element.shadowRoot.querySelectorAll('[data-slot-display-math] mtable').length===2,'primary and named multiline display formulas');
     const retainedOptions={...multiOptions,height:190000,blocks:[multi]};
     const first=await createRetainedTextPagePreview(document,retainedOptions);
-    const next=await createRetainedTextPagePreview(document,{...retainedOptions,revision:'next'},first.pageDelta.snapshot);
+    const unchanged=await countMathRoots(()=>createRetainedTextPagePreview(document,{...retainedOptions,revision:'next'},first.pageDelta.snapshot));
+    const next=unchanged.result;
+    assert(unchanged.count===0,'unchanged primary and named slot equations allocate no native MathML roots');
     const full=await createPlainTextPagePreview(document,{...retainedOptions,revision:'next'});
     assert(next.measurementWork.measuredBlocks===0&&next.measurementWork.reusedBlocks===1,'primary and named slot display artifacts avoid measurement');
     assert(JSON.stringify(next.plan)===JSON.stringify(full.plan)&&JSON.stringify(next.slices)===JSON.stringify(full.slices),'slot display retained plan and slices parity');
     const priorPage=first.changedElement.shadowRoot.firstElementChild;
     assert(JSON.stringify(next.pageDelta.reusedPageIndices)===JSON.stringify([0])&&next.changedElement.shadowRoot.children.length===0,'unchanged component display rows omit page DOM');
     assert(priorPage.isEqualNode(full.element.shadowRoot.firstElementChild),'slot display retained DOM parity');
+    const recolor={...retainedOptions,revision:'slot-recolor',blocks:[{...multi,component:{...multi.component,textColor:'#445566'}}]};
+    const redrawn=await countMathRoots(()=>createRetainedTextPagePreview(document,recolor,next.pageDelta.snapshot));
+    const recolorFull=await createPlainTextPagePreview(document,recolor);
+    assert(redrawn.result.measurementWork.measuredBlocks===0&&redrawn.result.measurementWork.reusedBlocks===1,'visual change preserves measured equations');
+    assert(redrawn.count===2&&redrawn.result.pageDelta.reusedPageIndices.length===0,'changed page materializes exactly two restored equations');
+    assert(redrawn.result.changedElement.shadowRoot.firstElementChild.isEqualNode(recolorFull.element.shadowRoot.firstElementChild),'lazy restored equations match full render');
+    const afterRecolor=await countMathRoots(()=>createRetainedTextPagePreview(document,{...recolor,revision:'slot-recolor-next'},redrawn.result.pageDelta.snapshot));
+    assert(afterRecolor.count===0&&afterRecolor.result.pageDelta.reusedPageIndices.length===1,'restored artifacts remain reusable in next generation');
     const primaryEdit={...multi,request:{...multi.request,inlineMath:[{...multi.request.inlineMath[0],formula:formula.replace('x&=1','x&=3')}]}};
     const slotEdit={...multi,namedSlots:[{...multi.namedSlots[0],request:{...multi.namedSlots[0].request,inlineMath:[{...multi.namedSlots[0].request.inlineMath[0],equationNumber:'2.4'}]}},multi.namedSlots[1]]};
     for(const [i,editedBlock] of [primaryEdit,slotEdit].entries()){

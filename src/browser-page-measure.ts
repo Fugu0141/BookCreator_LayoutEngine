@@ -1,6 +1,6 @@
 // Measurement boundary: receives validated snapshot sections, produces a value
 // pagination input plus transient render data. Does not paginate or render pages.
-import {displayMathArtifact,restoreDisplayMathArtifact,type DisplayMathArtifact,type MathCompilationCache,type measureDisplayMath as MeasureDisplayMath} from './math-preview.js';
+import {displayMathArtifact,deferDisplayMathArtifact,type DisplayMathArtifact,type MathCompilationCache,type measureDisplayMath as MeasureDisplayMath} from './math-preview.js';
 import type {MeasuredSection,PageBreak} from './pagination.js';
 import type {PlainTextMeasureRequest} from './browser-measurement.js';
 import type {MeasuredTextLines,PreviewTextBlock,PreviewComponent,PreviewComponentChild,PreviewListItem,PreviewCheckpoint} from './browser-lines.js';
@@ -19,7 +19,7 @@ type SavedLine=Omit<MeasuredTextLines['lines'][number],'displayMath'>&{artifact?
 type SavedText=Omit<MeasuredTextLines,'lines'>&{lines:SavedLine[]};
 type ValueMeasurement={measurement:SavedText;labels:Map<string,SavedText>;slots:Map<string,SavedText>;marker?:SavedText;placement?:ComponentPlacement;math?:DisplayMathArtifact};
 // Private, node-free entries are never mutated after capture. restoreValue
-// always rebuilds independently owned live render data.
+// rebuilds independent transient render handles; native formula nodes are lazy.
 type RetainedEntry=Readonly<{key:string;value:ValueMeasurement;lineCount:number}>;
 export type BlockMeasurementSnapshot=ReadonlyMap<string,RetainedEntry>;
 export interface BlockMeasurementWork {readonly measuredBlocks:number;readonly reusedBlocks:number;readonly bypassedBlocks:number;readonly sharedSnapshotEntries:number}
@@ -61,12 +61,12 @@ function valueCopy(v:LiveMeasurement):ValueMeasurement|undefined{
 }
 function restoreValue(document:Document,v:ValueMeasurement,cache?:MathCompilationCache):LiveMeasurement{
   const copy=(m:SavedText):MeasuredTextLines=>({
-    request:cleanRequest(m.request),lines:m.lines.map(l=>({start:l.start,end:l.end,height:l.height,...(l.artifact?{displayMath:restoreDisplayMathArtifact(document,l.artifact,cache)}:{})})),
+    request:cleanRequest(m.request),lines:m.lines.map(l=>({start:l.start,end:l.end,height:l.height,...(l.artifact?{displayMath:deferDisplayMathArtifact(document,l.artifact,cache)}:{})})),
     measurement:'browser-dom-lines',publicationReady:false
   });
   return {measurement:copy(v.measurement),labels:new Map([...v.labels].map(([k,m])=>[k,copy(m)])),
     slots:new Map([...v.slots].map(([k,m])=>[k,copy(m)])),marker:v.marker?copy(v.marker):undefined,
-    placement:v.placement?structuredClone(v.placement):undefined,math:v.math?restoreDisplayMathArtifact(document,v.math,cache):undefined};
+    placement:v.placement?structuredClone(v.placement):undefined,math:v.math?deferDisplayMathArtifact(document,v.math,cache):undefined};
 }
 function countLines(v:LiveMeasurement){return v.measurement.lines.length+[...v.labels.values(),...v.slots.values()].reduce((n,m)=>n+m.lines.length,0)+(v.marker?.lines.length??0);}
 export async function measurePreviewSections(document:Document,sections:readonly {id:string;startOn:'page'|'continuous';blocks:readonly (PreviewTextBlock|PageBreak)[]}[],width:number,height:number,{measurePlainTextLines,measureDisplayMath,resolveComponentWidths,placeComponent,listInset,listMarker}:MeasureServices,retained?:{previous?:BlockMeasurementSnapshot;mathCache?:MathCompilationCache},checkpoint?:PreviewCheckpoint){

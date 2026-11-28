@@ -308,13 +308,30 @@ function createDisplayMathElement(document:Document,source:string,width:number,f
 /** Rebuild a fresh native node from the measured artifact without layout reads.
  * The host must still own the same document/font environment as measurement. */
 export function restoreDisplayMathArtifact(document:Document,artifact:DisplayMathArtifact,cache?:MathCompilationCache):MeasuredDisplayMath{
+  const deferred=deferDisplayMathArtifact(document,artifact,cache);
+  const result:MeasuredDisplayMath={element:deferred.element,width:deferred.width,height:deferred.height,publicationReady:false};
+  measuredArtifacts.set(result,artifact);
+  return result;
+}
+/** A transient render handle. Geometry and identity are available immediately,
+ * but the native node is allocated only when the renderer reads element.
+ * Each handle owns its own node; neither snapshots nor prior pages are mutated. */
+export function deferDisplayMathArtifact(document:Document,artifact:DisplayMathArtifact,cache?:MathCompilationCache):MeasuredDisplayMath{
   const data=artifactData.get(artifact);
   if(!data||data.document!==document)throw Error('Display math artifact belongs to another document or is invalid');
-  const {element}=createDisplayMathElement(document,data.source,data.availableWidth,data.fontSize,data.equationNumber,data.family,cache);
-  // Preserve the exact measured CSS serialization, including shorthand and
-  // declaration order. Replaying CSSOM assignments can normalize it differently.
-  element.setAttribute('style',data.styleText);
-  const result:MeasuredDisplayMath={element,width:data.width,height:data.height,publicationReady:false};
+  let element:HTMLElement|undefined;
+  const result:MeasuredDisplayMath={
+    get element(){
+      if(!element){
+        const created=createDisplayMathElement(document,data.source,data.availableWidth,data.fontSize,data.equationNumber,data.family,cache).element;
+        // Preserve exact measured CSS, including shorthand and declaration order.
+        created.setAttribute('style',data.styleText);
+        element=created;
+      }
+      return element;
+    },
+    width:data.width,height:data.height,publicationReady:false
+  };
   measuredArtifacts.set(result,artifact);
   return result;
 }
