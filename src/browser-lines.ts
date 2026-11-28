@@ -628,7 +628,7 @@ async function createTextPreview(document:Document,options:TextPagePreviewOption
   function collectImages(children:readonly PreviewComponentChild[]){for(const n of children){if(n.type==='image')imageIds.add(n.assetId);else if(n.type==='group')collectImages(n.children);}}
   for(const s of sections)for(const b of s.blocks)if(!isBreak(b)&&b.component)collectImages(b.component.children);
   if(imageIds.size>32)throw RangeError('Too many preview image resources');
-  const images=new Map<string,ImageBitmap>();let imagePixels=0;
+  const images=new Map<string,ImageBitmap>(),imageKeys=new Map<string,string>();let imagePixels=0;
   const validated=now();
   const checkpoint=retained?.checkpoint;
   try{
@@ -646,6 +646,13 @@ async function createTextPreview(document:Document,options:TextPagePreviewOption
     if(bitmap.width!==w||bitmap.height!==h){bitmap.close();throw Error('PNG decoded size mismatch');}
     if(!positive(bitmap.width)||!positive(bitmap.height)||bitmap.width>8192||bitmap.height>8192||bitmap.width*bitmap.height>16000000||(imagePixels+=bitmap.width*bitmap.height)>32000000){bitmap.close();throw RangeError('Image resource pixel limit exceeded');}
     images.set(id,bitmap);
+    // A resolver may return different bytes for the same ID. Never use the
+    // caller-supplied ID alone as proof of raster equivalence.
+    const subtle=retained?document.defaultView?.crypto?.subtle:undefined;
+    if(subtle){
+      const digest=await subtle.digest('SHA-256',await blob.arrayBuffer());
+      imageKeys.set(id,Array.from(new Uint8Array(digest),n=>n.toString(16).padStart(2,'0')).join(''));
+    }
   }
   const imagesReady=now();
   const measure=(doc:Document,r:PlainTextMeasureRequest)=>measureValidatedTextLines(doc,snapshotRequest(r,false,mathCache),mathCache,displayMathCache,inlineMathCache,checkpoint);
@@ -658,7 +665,7 @@ async function createTextPreview(document:Document,options:TextPagePreviewOption
   if(!plan.pages.length)throw Error('No drawable content');
   if(plan.completeness!=='full')throw Error('Cannot render partial preview: '+plan.diagnostics.map(d=>d.code).join(', '));
   const paginated=now();
-  const result=await renderMeasuredPreview(document,plan,{width,height,paper,byKey,images,pageCache,pageCacheEpoch,delta},{styleText,frozenText:(el,r,line)=>frozenText(el,r,line,mathCache),listInset},checkpoint,retained?.priorityPages,retained?.onPriorityPage);
+  const result=await renderMeasuredPreview(document,plan,{width,height,paper,byKey,images,imageKeys,pageCache,pageCacheEpoch,delta},{styleText,frozenText:(el,r,line)=>frozenText(el,r,line,mathCache),listInset},checkpoint,retained?.priorityPages,retained?.onPriorityPage);
   if(checkpoint)await checkpoint('complete');
   // Register only after successful rendering, and use the newly issued
   // page snapshot as the key. An unsuccessful job cannot advance a lease.

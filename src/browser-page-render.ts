@@ -81,7 +81,7 @@ function keepPage(state:PageCacheState,key:string,page:HTMLElement){
 }
 /** Serialize only fields consumed by the renderer. Exclude revisions and raw
  * source ranges, which affect slices/navigation, not the template. */
-function pageKey(p:MeasuredPage,width:number,height:number,paper:PreviewPaper|undefined,byKey:ReadonlyMap<string,MeasuredPreviewBlock>,plainOnly=false,retained=false):string|undefined{
+function pageKey(p:MeasuredPage,width:number,height:number,paper:PreviewPaper|undefined,byKey:ReadonlyMap<string,MeasuredPreviewBlock>,plainOnly=false,retained=false,imageKeys:ReadonlyMap<string,string>=new Map()):string|undefined{
   const fragments=[];
   for(const f of p.fragments){
     const entry=byKey.get(previewBlockKey(f.origin));
@@ -89,7 +89,7 @@ function pageKey(p:MeasuredPage,width:number,height:number,paper:PreviewPaper|un
     const {block,measurement,math,marker}=entry;
     if((block.listItem&&(!retained||!marker))||(!block.component&&measurement.lines.some(l=>l.displayMath))||(plainOnly&&measurement.request.inlineMath!==undefined))return undefined;
     if(block.component){
-      const key=retained?componentPageRenderKey(entry):undefined;
+      const key=retained?componentPageRenderKey(entry,imageKeys):undefined;
       if(key===undefined)return undefined;
       fragments.push([f.origin.documentId,f.origin.blockKey,[f.rect.x,f.rect.y,f.rect.width,f.rect.height],'component',key,f.unitStart,f.unitEnd]);
       continue;
@@ -118,8 +118,25 @@ const px=(um:number)=>um*96/25400;
 export const previewBlockKey=(o:Origin)=>JSON.stringify([o.documentId,o.blockKey]);
 // Internal ownership contract: math nodes are consumed by this render; bitmaps
 // are borrowed for this call (including optional cooperative waits), and closed by their owning orchestrator.
-export async function renderMeasuredPreview(document:Document,plan:MeasuredPagePlan,{width,height,paper,byKey,images,pageCache,pageCacheEpoch,delta}:{width:number;height:number;paper?:PreviewPaper;byKey:ReadonlyMap<string,MeasuredPreviewBlock>;images:ReadonlyMap<string,ImageBitmap>;pageCache?:PageRenderCache;pageCacheEpoch?:number;delta?:{previousKeys:ReadonlyMap<number,string>;allowInlineMath?:boolean}},{styleText,frozenText,listInset}:RenderServices,checkpoint?:PreviewCheckpoint,priorityPages?:readonly number[],onPriorityPage?:ProvisionalPageReceiver):Promise<TextPagePreview & {pageDelta?:PageRenderDelta}>{
+export async function renderMeasuredPreview(document:Document,plan:MeasuredPagePlan,{width,height,paper,byKey,images,imageKeys,pageCache,pageCacheEpoch,delta}:{width:number;height:number;paper?:PreviewPaper;byKey:ReadonlyMap<string,MeasuredPreviewBlock>;images:ReadonlyMap<string,ImageBitmap>;imageKeys?:ReadonlyMap<string,string>;pageCache?:PageRenderCache;pageCacheEpoch?:number;delta?:{previousKeys:ReadonlyMap<number,string>;allowInlineMath?:boolean}},{styleText,frozenText,listInset}:RenderServices,checkpoint?:PreviewCheckpoint,priorityPages?:readonly number[],onPriorityPage?:ProvisionalPageReceiver):Promise<TextPagePreview & {pageDelta?:PageRenderDelta}>{
   let renderedImagePixels=0;
+  function rasterGeometry(child:Extract<PreviewComponentChild,{type:'image'}>,rect:ComponentPlacement['rect']){
+    const bitmap=images.get(child.assetId)!;
+    const source=imageSourceRect(bitmap.width,bitmap.height,rect.width,rect.height,child.fit,child.crop);
+    const scale=Math.min(1,2048/Math.max(source.width,source.height));
+    return {bitmap,source,width:Math.max(1,Math.round(source.width*scale)),height:Math.max(1,Math.round(source.height*scale))};
+  }
+  function reserveRaster(w:number,h:number){
+    if((renderedImagePixels+=w*h)>64000000)throw RangeError('Rendered image pixel limit exceeded');
+  }
+  // Retained canvases still consume the same total paper raster budget.
+  function reserveRetainedImages(children:readonly PreviewComponentChild[],placed:ComponentPlacement){
+    for(const child of children){
+      const node=placed.children.find(n=>n.id===child.id)!;
+      if(child.type==='image'){const r=rasterGeometry(child,node.rect);reserveRaster(r.width,r.height);}
+      else if(child.type==='group')reserveRetainedImages(child.children,node);
+    }
+  }
   const element=document.createElement('div');element.style.cssText='all:initial;display:block;';
   const root=element.attachShadow({mode:'open'});
   const slices:PreviewTextSlice[]=[];
@@ -132,10 +149,10 @@ export async function renderMeasuredPreview(document:Document,plan:MeasuredPageP
     // Inline atoms are recreated from their source and font family by frozenText.
     // The existing render key already includes both plus the measured line geometry.
     // Verified standalone equations also carry a complete node-free render key.
-    // Resource-free components also have a separate render identity.
+    // Components use a separate render identity, including verified image bytes.
     // Lists carry marker/indent identity. Legacy sparse/template eligibility
-    // stays unchanged; images and non-component embedded display rows remain excluded.
-    const deltaKey=delta?pageKey(p,width,height,paper,byKey,!delta.allowInlineMath,delta.allowInlineMath===true):undefined;
+    // stays unchanged; non-component embedded display rows remain excluded.
+    const deltaKey=delta?pageKey(p,width,height,paper,byKey,!delta.allowInlineMath,delta.allowInlineMath===true,imageKeys):undefined;
     if(deltaKey!==undefined&&nextKeys.size<pageLimits.entries&&keyCharacters+deltaKey.length<=pageLimits.characters){
       nextKeys.set(p.index,deltaKey);keyCharacters+=deltaKey.length;
     }
@@ -184,6 +201,7 @@ export async function renderMeasuredPreview(document:Document,plan:MeasuredPageP
       const sourceSlice=block.sourceTextStart===undefined?undefined:{start:block.sourceTextStart+textStart,end:block.sourceTextStart+textEnd};
       const namedSlots=(block.namedSlots??[]).map(s=>({name:s.name,textStart:0,textEnd:s.request.text.length,...(s.sourceTextStart===undefined?{}:{sourceSlice:{start:s.sourceTextStart,end:s.sourceTextStart+s.request.text.length}})}));
       slices.push({pageIndex:p.index,origin:f.origin,textStart,textEnd,...(sourceSlice?{sourceSlice}:{}),...(namedSlots.length?{namedSlots}:{})});
+      if(skip&&placement&&block.component)reserveRetainedImages(block.component.children,placement);
       if(!page||cached)continue; // Slices above always describe the current source revision.
       const fragment=document.createElement('div');fragment.dataset.block=f.origin.blockKey;fragment.dataset.document=f.origin.documentId;
       fragment.style.cssText='all:initial;display:block;position:absolute;box-sizing:border-box;';
@@ -219,15 +237,13 @@ export async function renderMeasuredPreview(document:Document,plan:MeasuredPageP
           if(child.type==='rect'){el.style.background=child.color;el.setAttribute('aria-hidden','true');}
           else if(child.type==='image'){
             el.dataset.componentImage=child.assetId;
-            const bitmap=images.get(child.assetId)!;
             // Raster dimensions follow source pixels, not layout CSS pixels; fit does not distort the image.
+            const raster=rasterGeometry(child,rect),{bitmap,source}=raster;
             const canvas=document.createElement('canvas');
             const ratio=rect.width/rect.height;
-            const source=imageSourceRect(bitmap.width,bitmap.height,rect.width,rect.height,child.fit,child.crop);
             const sw=source.width,sh=source.height;
-            const scale=Math.min(1,2048/Math.max(sw,sh));
-            canvas.width=Math.max(1,Math.round(sw*scale));canvas.height=Math.max(1,Math.round(sh*scale));
-            if((renderedImagePixels+=canvas.width*canvas.height)>64000000)throw RangeError('Rendered image pixel limit exceeded');
+            canvas.width=raster.width;canvas.height=raster.height;
+            reserveRaster(canvas.width,canvas.height);
             const ctx=canvas.getContext('2d');if(!ctx)throw Error('Image canvas unavailable');
             ctx.drawImage(bitmap,source.x,source.y,sw,sh,0,0,canvas.width,canvas.height);
             canvas.style.cssText='all:initial;position:absolute;display:block;left:50%;top:50%;transform:translate(-50%,-50%);';
