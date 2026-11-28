@@ -244,12 +244,12 @@ export interface IncrementalIntelligentLayoutResult {
 type FlowState=readonly [number,number,number,number,boolean,boolean];
 // Normalized, validated geometry only. All fields are primitive, and the
 // tuple never retains any caller-owned object. No per-block JSON encoding.
-type LayoutKey=readonly [string,number,number,number,number,number,number,boolean,boolean,number,number,number,boolean,number,number,number,number,number];
+type LayoutKey=readonly [string,number,number,number,number,number,number,boolean,boolean,number,number,number,boolean,number,number,number,number,number,string,string];
 const equalKey=(a:LayoutKey,b:LayoutKey)=>a[0]===b[0]&&a[1]===b[1]&&a[2]===b[2]&&
   a[3]===b[3]&&a[4]===b[4]&&a[5]===b[5]&&a[6]===b[6]&&a[7]===b[7]&&
   a[8]===b[8]&&a[9]===b[9]&&a[10]===b[10]&&a[11]===b[11]&&a[12]===b[12]&&a[13]===b[13]&&a[14]===b[14]&&
-  a[15]===b[15]&&a[16]===b[16]&&a[17]===b[17];
-type SavedLayout={context:string;keys:LayoutKey[];states:FlowState[];placements:IntelligentPlacement[]};
+  a[15]===b[15]&&a[16]===b[16]&&a[17]===b[17]&&a[18]===b[18]&&a[19]===b[19];
+type SavedLayout={context:string;keys:LayoutKey[];states:(FlowState|undefined)[];placements:IntelligentPlacement[]};
 type IncrementalLayoutState={previous?:SavedLayout;next?:SavedLayout;reusedBlocks:number;reusedSuffixBlocks:number;placedBlocks:number;sharedSnapshotPlacements:number};
 const layoutSnapshots=new WeakMap<IntelligentLayoutSnapshot,SavedLayout>();
 function copyPlacement(p:IntelligentPlacement):IntelligentPlacement{
@@ -260,7 +260,7 @@ function copyPlacement(p:IntelligentPlacement):IntelligentPlacement{
 }
 
 /** Opt-in incremental placement of the ordinary preference-honoring pass.
- * Groups, optimized candidates and the hard-only retry remain full calculations. */
+ * Groups are atomic reuse units. Optimized candidates and hard-only retry remain full calculations. */
 export function planIntelligentLayoutIncremental(input:IntelligentLayoutInput,previous?:IntelligentLayoutSnapshot,
   options?:IntelligentOptimizationOptions):IncrementalIntelligentLayoutResult {
   return finishIntelligentWork(incrementalWork(input,previous,options));
@@ -275,7 +275,7 @@ export function planIntelligentLayoutIncrementalCooperative(input:IntelligentLay
 function* incrementalWork(input:IntelligentLayoutInput,previous?:IntelligentLayoutSnapshot,
   options?:IntelligentOptimizationOptions):Generator<IntelligentWorkStage,IncrementalIntelligentLayoutResult,void>{
   yield 'il-validate';
-  if(options!==undefined||!Array.isArray(input.blocks)||input.blocks.some(b=>b?.keepTogetherGroup!==undefined)){
+  if(options!==undefined||!Array.isArray(input.blocks)){
     const layout=yield* planWork(input,options);
     return {layout,reusedBlocks:0,reusedSuffixBlocks:0,placedBlocks:0,fullRecompute:true};
   }
@@ -438,7 +438,7 @@ function* solve(input:IntelligentLayoutInput,honorPreferences:boolean,lookahead=
       const f=b.fixed;
       keys.push([b.id,b.size.width,b.size.height,occupied.width,occupied.height,b.spaceBefore??0,b.spaceAfter??0,
         !!b.sideBySide,!!b.startNewPage,f?.page??-1,f?.x??0,f?.y??0,b.fixedRowShare===true,
-        b.preferred?.page??-1,b.preferred?.x??0,b.preferred?.y??0,b.preferredTolerance?.x??0,b.preferredTolerance?.y??0]);
+        b.preferred?.page??-1,b.preferred?.x??0,b.preferred?.y??0,b.preferredTolerance?.x??0,b.preferredTolerance?.y??0,b.keepTogetherGroup??'',b.keepTogetherLayout??'vertical']);
     }
   }
   // A group reserves one conservative enclosing rectangle. Its members retain
@@ -503,7 +503,9 @@ function* solve(input:IntelligentLayoutInput,honorPreferences:boolean,lookahead=
   }
   const capture=():FlowState=>[page,rowY,bottom,right,rowOpen,rowShare];
   const restore=(s:FlowState)=>{[page,rowY,bottom,right,rowOpen,rowShare]=s;};
-  const states:FlowState[]=[];
+  // Undefined interior states are intentionally not resumable: group geometry
+  // depends on every member, including those after the changed key.
+  const states:(FlowState|undefined)[]=[];
   let context='',prefix=0,suffix=0,previous:SavedLayout|undefined;
   const savedPlacements:IntelligentPlacement[]=[];
   if(incremental){
@@ -515,6 +517,13 @@ function* solve(input:IntelligentLayoutInput,honorPreferences:boolean,lookahead=
       while(prefix<keys.length&&prefix<previous.keys.length&&equalKey(keys[prefix],previous.keys[prefix])){
         if(prefix%128===0)yield 'il-match';prefix++;
       }
+      // Prefix must end on a group boundary in BOTH versions. This also
+      // handles extending a group with an inserted member at its old end.
+      const interior=(index:number)=>index>0&&index<keys.length&&
+        keys[index][18]!==''&&keys[index][18]===keys[index-1][18];
+      while(prefix>0&&(previous.states[prefix]===undefined||interior(prefix))){
+        if(prefix%128===0)yield 'il-match';prefix--;
+      }
       while(suffix<keys.length-prefix&&suffix<previous.keys.length-prefix&&
         equalKey(keys[keys.length-1-suffix],previous.keys[previous.keys.length-1-suffix])){
         if(suffix%128===0)yield 'il-match';suffix++;
@@ -523,7 +532,7 @@ function* solve(input:IntelligentLayoutInput,honorPreferences:boolean,lookahead=
         if(i%128===0)yield 'il-reuse';
         states.push(previous.states[i]);savedPlacements.push(previous.placements[i]);placements.push(copyPlacement(previous.placements[i]));
       }
-      restore(previous.states[prefix]);incremental.reusedBlocks=prefix;incremental.sharedSnapshotPlacements=prefix;
+      restore(previous.states[prefix]!);incremental.reusedBlocks=prefix;incremental.sharedSnapshotPlacements=prefix;
       if(prefix===keys.length&&prefix===previous.keys.length){
         incremental.next=previous;
         return {status:'placed',revision:input.revision,placements,publicationReady:false};
@@ -536,12 +545,13 @@ function* solve(input:IntelligentLayoutInput,honorPreferences:boolean,lookahead=
       const now=capture();
       if(previous&&suffix&&i>=keys.length-suffix){
         const oldIndex=previous.keys.length-(keys.length-i);
-        if(now.every((v,j)=>v===previous!.states[oldIndex][j])){
+        const oldState=previous.states[oldIndex];
+        if(oldState&&now.every((v,j)=>v===oldState[j])){
           for(let j=oldIndex;j<previous.keys.length;j++){
             if(j%128===0)yield 'il-reuse';
             states.push(previous.states[j]);savedPlacements.push(previous.placements[j]);placements.push(copyPlacement(previous.placements[j]));
           }
-          restore(previous.states[previous.keys.length]);
+          restore(previous.states[previous.keys.length]!);
           incremental.reusedSuffixBlocks=keys.length-i;
           incremental.reusedBlocks+=keys.length-i;
           incremental.sharedSnapshotPlacements+=keys.length-i;
@@ -578,8 +588,13 @@ function* solve(input:IntelligentLayoutInput,honorPreferences:boolean,lookahead=
         const member=input.blocks[k],footprint=footprints[k],offset=shape.offsets[k-i];
         const x=slot.x+offset.x,y=slot.y+offset.y;
         const rect={x,y,width:member.size.width,height:member.size.height};
-        placements.push({id:member.id,page,rect,fixed:false,
-          ...(footprint.width!==rect.width||footprint.height!==rect.height?{occupiedRect:{x,y,...footprint}}:{})});
+        const placement:IntelligentPlacement={id:member.id,page,rect,fixed:false,
+          ...(footprint.width!==rect.width||footprint.height!==rect.height?{occupiedRect:{x,y,...footprint}}:{})};
+        placements.push(placement);
+        if(incremental){
+          if(k>i){states.push(undefined);incremental.placedBlocks++;}
+          savedPlacements.push(copyPlacement(placement));
+        }
       }
       rowY=slot.y;bottom=slot.y+shape.height;right=slot.x+shape.width;rowOpen=true;rowShare=false;
       i=group.end-1;continue;
