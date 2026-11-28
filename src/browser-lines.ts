@@ -336,13 +336,13 @@ export type PreviewComponentChild = (
   | {id:string;type:'rect';width:number|'fill';height:number;color:string}
   | {id:string;type:'image';width:number|'fill';height:number;assetId:string;fit:'contain'|'cover';alt:string;crop?:ImageCrop}
   | {id:string;type:'label';width:number|'fill';text:string;fontFamily:PlainTextMeasureRequest['fontFamily'];fontWeight:number;fontSize:number;lineHeight:number;color:string}
-  | {id:string;type:'group';width:number|'fill';direction:'row'|'column'|'canvas';height?:number;gap:number;padding:number;background:string;children:readonly PreviewComponentChild[]}) & {x?:number;y?:number};
+  | {id:string;type:'group';width:number|'fill';direction:'row'|'column'|'canvas';height?:number;heightMode?:'auto';gap:number;padding:number;background:string;children:readonly PreviewComponentChild[]}) & {x?:number;y?:number};
 export interface PreviewComponent {
   direction:'row'|'column'; gap:number; padding:number; background:string; textColor:string;
   children:readonly PreviewComponentChild[];
 }
 type ComponentPlacement=import('./tree.js').PlacedNode;
-type Group=Omit<Pick<PreviewComponent,'direction'|'gap'|'padding'|'background'|'children'>,'direction'>&{direction:'row'|'column'|'canvas';height?:number};
+type Group=Omit<Pick<PreviewComponent,'direction'|'gap'|'padding'|'background'|'children'>,'direction'>&{direction:'row'|'column'|'canvas';height?:number;heightMode?:'auto'};
 const isColor=(v:unknown):v is string=>typeof v==='string'&&/^#[0-9a-fA-F]{6}$/.test(v);
 const validSlotName=(v:unknown):v is string=>typeof v==='string'&&/^[a-z][a-z0-9-]{0,31}$/.test(v)&&v!=='content';
 const length=(n:number)=>Number.isSafeInteger(n)&&n>=0&&n<=100000;
@@ -352,7 +352,9 @@ function snapshotComponent(c:PreviewComponent):PreviewComponent{
   function group(g:Group,depth:number):PreviewComponentChild[]{
     if(depth>4||!g||!['row','column','canvas'].includes(g.direction)||!length(g.gap)||!length(g.padding)||!isColor(g.background)||!Array.isArray(g.children)||g.children.length<1||g.children.length>8)throw RangeError('Invalid component group');
     const canvas=g.direction==='canvas';
-    if(canvas?(!length(g.height!)||g.height!<=2*g.padding||g.gap!==0):g.height!==undefined)throw RangeError('Invalid canvas height or gap');
+    // With auto height, height is the minimum (zero means pure content fit).
+    // Omitted heightMode retains the original fixed-height contract.
+    if(canvas?(!length(g.height!)||g.gap!==0||(g.heightMode===undefined?g.height!<=2*g.padding:g.heightMode!=='auto')):g.height!==undefined||g.heightMode!==undefined)throw RangeError('Invalid canvas height or gap');
     return g.children.map(child=>{
       if(++count>32||!child||!/^[-A-Za-z0-9_]{1,64}$/.test(child.id)||child.id==='root'||ids.has(child.id))throw Error('Invalid component child ID or limit');
       ids.add(child.id);
@@ -407,7 +409,9 @@ function placeComponent(c:PreviewComponent,outerWidth:number,measurement:Measure
   const textHeight=(m:MeasuredTextLines)=>m.lines.reduce((n,l)=>n+l.height,0);
   function place(g:Group,id:string,outer:number,cap:number):ComponentPlacement{
     const canvas=g.direction==='canvas';
-    const outerHeight=canvas?g.height!:cap;
+    const autoCanvas=canvas&&g.heightMode==='auto';
+    const outerHeight=autoCanvas?Math.min(cap,100000):canvas?g.height!:cap;
+    if(autoCanvas&&g.height!>outerHeight)throw RangeError('Canvas minimum height exceeds available height');
     if(outerHeight>cap)throw RangeError('Canvas exceeds available height');
     const inner=outer-2*g.padding,innerCap=outerHeight-2*g.padding;
     if(innerCap<=0)throw RangeError('Component padding exceeds height');
@@ -417,7 +421,9 @@ function placeComponent(c:PreviewComponent,outerWidth:number,measurement:Measure
       const height=n.type==='content'?textHeight(measurement):n.type==='label'?textHeight(labels.get(n.id)!):n.type==='slot'?textHeight(slots.get(n.name)!):n.height;
       return {id:n.id,rect:{x:0,y:0,width:w,height},children:[]};
     });
-    const flow=layoutTree({id:'root',type:g.direction,width:inner,height:canvas?innerCap:'auto',gap:g.gap,
+    const canvasHeight=autoCanvas?Math.max(1,g.height!-2*g.padding,...kids.map((n,i)=>g.children[i].y!+n.rect.height)):innerCap;
+    if(canvas&&canvasHeight>innerCap)throw RangeError('Canvas exceeds available height');
+    const flow=layoutTree({id:'root',type:g.direction,width:inner,height:canvas?canvasHeight:'auto',gap:g.gap,
       children:kids.map((n,i)=>({id:n.id,type:'leaf',width:n.rect.width,height:n.rect.height,...(canvas?{x:g.children[i].x,y:g.children[i].y}:{})}))},{width:inner,height:innerCap});
     return {id,rect:{x:0,y:0,width:outer,height:flow.rect.height+2*g.padding},
       children:kids.map((n,i)=>({...n,rect:{...flow.children[i].rect,x:flow.children[i].rect.x+g.padding,y:flow.children[i].rect.y+g.padding}}))};

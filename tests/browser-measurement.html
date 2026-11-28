@@ -209,6 +209,23 @@ try{
     let rejected=false;try{await createPlainTextPagePreview(document,{revision:'7',fingerprint:'bad-canvas',width:65000,height:150000,blocks:[makeText('sample','head','Heading',{component:bad})]});}catch{rejected=true;}
     assert(rejected,'canvas overflow rejected');
   }
+  // Auto height follows measured content, not the editor's example text.
+  const autoGroup={...canvas.children[0],heightMode:'auto',height:0,children:[{id:'title',type:'content',x:3000,y:5000,width:35000}]};
+  const autoPreview=(group,text,height=150000)=>createPlainTextPagePreview(document,{revision:'7a',fingerprint:'auto-canvas',width:65000,height,blocks:[makeText('sample','head',text,{component:{...canvas,children:[group]}}),makeText('sample','after','After')]});
+  const short=await autoPreview(autoGroup,'Heading'),long=await autoPreview(autoGroup,'Heading '.repeat(12).trim());
+  const shortH=short.plan.pages[0].fragments[0].rect.height,longH=long.plan.pages[0].fragments[0].rect.height;
+  assert(longH>shortH,'automatic canvas expands with measured wrapping');
+  assert(long.plan.pages[0].fragments[1].rect.y>=long.plan.pages[0].fragments[0].rect.y+longH,'following paragraph moves below expanded canvas');
+  const minPreview=await autoPreview({...autoGroup,height:50000},'Heading');
+  assert(minPreview.plan.pages[0].fragments[0].rect.height===54000,'automatic canvas honors minimum height');
+  const autoMinLong=await autoPreview({...autoGroup,height:10000},'Heading '.repeat(12).trim());
+  assert(autoMinLong.plan.pages[0].fragments[0].rect.height===longH,'minimum does not prevent expansion');
+  const autoNode=long.element.shadowRoot.querySelector('[data-component-canvas]');
+  assert(Math.abs(parseFloat(autoNode.style.height)-(longH-4000)*96/25400)<.02,'measured canvas DOM matches occupied plan height');
+  for(const [group,cap] of [[{...autoGroup,height:100001},150000],[{...autoGroup,height:50000},40000],[{...autoGroup,heightMode:'invalid'},150000],[{...autoGroup,children:[{...autoGroup.children[0],y:99000}]},150000],[{...autoGroup,children:[{...autoGroup.children[0],x:40000}]},150000]]){
+    let rejected=false;try{await autoPreview(group,'Heading',cap);}catch{rejected=true;}
+    assert(rejected,'automatic canvas rejects invalid mode or page/coordinate overflow');
+  }
   // Four distinct source columns, two rows. Cover crops the central two columns.
   const imageId='a'.repeat(64),png=new Blob([Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAAAQAAAACCAIAAADwyuo0AAAAGUlEQVR4nGP4z8DA8J+BgeH/////mRiQAABryAX9SqklXwAAAABJRU5ErkJggg=='),c=>c.charCodeAt(0))],{type:'image/png'});
   const imageNode={id:'art',type:'image',assetId:imageId,width:20000,height:20000,fit:'contain',alt:'Sample illustration'};
