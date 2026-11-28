@@ -429,6 +429,22 @@ try{
     assert([...listRoot.querySelectorAll('[data-start]')].map(e=>e.textContent).join('')===listText,'markers excluded from logical row text');
     assert(listPreview.slices.map(s=>listText.slice(s.sourceSlice.start-30,s.sourceSlice.end-30)).join('')===listText,'list fragments preserve exact raw ranges');
     const bulletItems=[0,1,2].map((depth,i)=>({...makeText('list','bullet-'+i,'短い項目。'),listItem:{kind:'bullet',depth,indentStep:5000,markerWidth:9000,gap:2000}}));
+    await phase("retained list page identity");
+    const retainedList=(revision,style=itemStyle)=>({...listOptions,revision,fingerprint:'retained-list-'+revision,blocks:undefined,sections:[
+      {id:'list-body',startOn:'page',blocks:[{...listBlock,origin:{...listBlock.origin,revision},listItem:style}]},
+      {id:'list-tail',startOn:'page',blocks:[makeText('list-tail','tail','変更しない本文。')]}
+    ]});
+    const listBase=await createRetainedTextPagePreview(document,retainedList('1'));
+    const listNodes=Array.from(listBase.changedElement.shadowRoot.children);
+    const listSame=await createRetainedTextPagePreview(document,retainedList('2'),listBase.pageDelta.snapshot);
+    assert(listSame.pageDelta.reusedPageIndices.length===listNodes.length&&listSame.changedElement.shadowRoot.children.length===0,'unchanged list including continuation pages omitted');
+    for(const style of [{...itemStyle,number:13},{...itemStyle,depth:1},{kind:'bullet',depth:2,indentStep:5000,markerWidth:9000,gap:2000}]){
+      const options=retainedList('3',style),edited=await createRetainedTextPagePreview(document,options,listSame.pageDelta.snapshot),full=await createPlainTextPagePreview(document,options);
+      const changed=new Map(Array.from(edited.changedElement.shadowRoot.children,page=>[Number(page.dataset.page),page]));
+      assert(edited.pageDelta.reusedPageIndices.every(i=>!listNodes[i].querySelector('[data-list-item]'))&&changed.size>0,'list marker or indent changes invalidate all affected list fragments');
+      assert(JSON.stringify(edited.plan)===JSON.stringify(full.plan)&&JSON.stringify(edited.slices)===JSON.stringify(full.slices),'retained list plan and source slice parity');
+      assert(Array.from(full.element.shadowRoot.children).every((page,i)=>page.isEqualNode(changed.get(i)??listNodes[i])),'retained list full DOM parity');
+    }
     await phase("bullet marker geometry");
     const bulletPreview=await createPlainTextPagePreview(document,{...listOptions,height:150000,blocks:bulletItems});
     assert([...bulletPreview.element.shadowRoot.querySelectorAll('[data-list-marker]')].map(e=>e.textContent).join('')==='•◦▪','depth-specific bullet markers');

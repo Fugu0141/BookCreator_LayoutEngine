@@ -86,8 +86,8 @@ function pageKey(p:MeasuredPage,width:number,height:number,paper:PreviewPaper|un
   for(const f of p.fragments){
     const entry=byKey.get(previewBlockKey(f.origin));
     if(!entry)throw Error('Missing preview block');
-    const {block,measurement,math}=entry;
-    if(block.listItem||measurement.lines.some(l=>l.displayMath)||(plainOnly&&measurement.request.inlineMath!==undefined))return undefined;
+    const {block,measurement,math,marker}=entry;
+    if((block.listItem&&(!retained||!marker))||measurement.lines.some(l=>l.displayMath)||(plainOnly&&measurement.request.inlineMath!==undefined))return undefined;
     if(block.component){
       const key=retained?componentPageRenderKey(entry):undefined;
       if(key===undefined)return undefined;
@@ -102,11 +102,15 @@ function pageKey(p:MeasuredPage,width:number,height:number,paper:PreviewPaper|un
     }
     const r=measurement.request,lines=measurement.lines.slice(f.unitStart,f.unitEnd);
     if(!lines.length)throw Error('Missing preview lines');
+    // Continuations do not draw a marker, but keep the conservative full
+    // list geometry/marker identity for each fragment.
+    const item=block.listItem;
+    const listKey=item&&marker?[item.kind,item.kind==='ordered'?item.number:null,item.depth,item.indentStep,item.markerWidth,item.gap,f.unitStart,marker.request.text,marker.request.width,marker.request.fontSize,marker.request.fontFamily,marker.request.fontWeight??400,marker.request.lineHeight,marker.lines[0].height]:null;
     fragments.push([f.origin.documentId,f.origin.blockKey,[f.rect.x,f.rect.y,f.rect.width,f.rect.height],
       [r.text,r.width,r.fontSize,r.fontFamily,r.fontWeight??400,r.lineHeight,r.mathFontFamily??'auto',
         r.inlineStyles?.map(s=>[s.start,s.end,s.fontFamily,s.fontWeight,s.italic,s.underline,s.color,s.fontSize,s.baseline]),
         r.inlineMath?.map(a=>[a.start,a.formula])],
-      lines.map(l=>[l.start,l.end,l.height])]);
+      lines.map(l=>[l.start,l.end,l.height]),...(listKey?[listKey]:[])]);
   }
   return JSON.stringify([1,p.index,width,height,paper?[paper.width,paper.height,paper.top,paper.bottom,paper.inner,paper.outer,paper.firstSide]:null,fragments]);
 }
@@ -129,8 +133,8 @@ export async function renderMeasuredPreview(document:Document,plan:MeasuredPageP
     // The existing render key already includes both plus the measured line geometry.
     // Verified standalone equations also carry a complete node-free render key.
     // Resource-free components also have a separate render identity.
-    // Keep legacy sparse/template eligibility unchanged; lists, images and
-    // embedded display rows remain excluded in either mode.
+    // Lists carry marker/indent identity. Legacy sparse/template eligibility
+    // stays unchanged; images and embedded display rows remain excluded.
     const deltaKey=delta?pageKey(p,width,height,paper,byKey,!delta.allowInlineMath,delta.allowInlineMath===true):undefined;
     if(deltaKey!==undefined&&nextKeys.size<pageLimits.entries&&keyCharacters+deltaKey.length<=pageLimits.characters){
       nextKeys.set(p.index,deltaKey);keyCharacters+=deltaKey.length;
