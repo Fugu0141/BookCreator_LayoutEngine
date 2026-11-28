@@ -117,3 +117,11 @@ test('measured mixed row group keeps individual source ranges and same-page geom
  const r=plan(i,opts);assert.equal(r.status,'placed');assert.deepEqual(r.fragments.map(f=>[f.origin.blockKey,f.placement.page,f.placement.rect.x,f.placement.rect.y]),[['prior',0,0,0],['image',0,0,70],['caption',0,35,70]]);
  assert.deepEqual((await cooperative(i,opts,undefined,()=>{})).result,r);
 });
+
+test('adaptive measured group preserves original fragments beside reservations',async()=>{
+ const i=input([section([b('a',25,[20]),b('b',25,[20]),b('c',25,[20]),b('d',25,[20])])]);
+ const group={keepTogetherGroup:'adaptive',keepTogetherLayout:'adaptiveRows',sideBySide:true};
+ const opts=JSON.parse(JSON.stringify({gap:5,intents:['a','b','c','d'].map(id=>intent(id,group)),reservedRegions:[{id:'side',page:0,rect:{x:55,y:0,width:45,height:100}}]}));
+ const r=plan(i,opts);assert.equal(r.status,'placed');assert.deepEqual(r.fragments.map(f=>[f.origin.blockKey,f.placement.page,f.placement.rect.x,f.placement.rect.y]),[['a',0,0,0],['b',0,30,0],['c',0,0,25],['d',0,30,25]]);
+ assert.deepEqual((await cooperative(i,opts,undefined,()=>{})).result,r);
+});

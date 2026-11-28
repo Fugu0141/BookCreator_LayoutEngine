@@ -57,3 +57,27 @@ test('row groups remain indivisible and reserve their complete enclosing rectang
   const bad=plan(input(blocks));assert.equal(bad.status,'conflict');assert.equal(bad.diagnostic.code,'IL_INVALID');assert.deepEqual(bad.placements,[]);
  }
 });
+
+const adaptive=(id,width,height,extra={})=>rows(id,width,height,{keepTogetherLayout:'adaptiveRows',...extra});
+test('adaptive group chooses a narrower intact envelope beside a reserved region',()=>{
+ const blocks=Array.from({length:4},(_,i)=>adaptive('m'+i,25,20));
+ const i=input(blocks,{reservedRegions:[{id:'side',page:0,rect:{x:55,y:0,width:45,height:100}}]});
+ const r=plan(i);assert.equal(r.status,'placed');
+ assert.deepEqual(r.placements.map(p=>[p.page,p.rect.x,p.rect.y]),[[0,0,0],[0,30,0],[0,0,25],[0,30,25]]);
+ const fixedRows=plan({...i,blocks:blocks.map(b=>({...b,keepTogetherLayout:'rows'}))});
+ assert.equal(fixedRows.status,'placed');assert.equal(fixedRows.placements[0].page,1);
+ assert.deepEqual(plan(i),r);
+});
+test('adaptive candidates minimize occupied bottom without dropping spacing or permissions',async()=>{
+ const i=input([adaptive('a',25,20,{sizeConstraints:{minWidth:30}}),adaptive('b',25,20),adaptive('c',25,10,{spaceBefore:3,spaceAfter:4}),adaptive('d',25,10,{sideBySide:false}),b('next',10,10)]);
+ const r=plan(i);assert.equal(r.status,'placed');assert.deepEqual(r.placements.map(p=>[p.rect.x,p.rect.y]),[[0,0],[35,0],[0,28],[0,47],[0,62]]);
+ assert.deepEqual(r.placements[0].occupiedRect,{x:0,y:0,width:30,height:20});
+ assert.deepEqual(r.placements[2].occupiedRect,{x:0,y:28,width:25,height:14});
+ assert.deepEqual((await cooperative(i,undefined,()=>{})).layout,r);assert.deepEqual(plan(i,{}).placements,r.placements);
+});
+test('adaptive group cannot move fixed blocks or silently split an oversized group',()=>{
+ const blocks=[adaptive('a',50,60),adaptive('b',50,60)];
+ const bad=plan(input(blocks));assert.equal(bad.status,'conflict');assert.equal(bad.diagnostic.code,'IL_TOO_LARGE');assert.deepEqual(bad.placements,[]);
+ const i=input([adaptive('a',25,20),adaptive('b',25,20),b('pin',20,20,{fixed:{page:0,x:0,y:15}})]);
+ const conflict=plan(i);assert.equal(conflict.status,'conflict');assert.equal(conflict.diagnostic.code,'IL_FIXED_CONFLICT');assert.deepEqual(conflict.placements,[]);
+});
