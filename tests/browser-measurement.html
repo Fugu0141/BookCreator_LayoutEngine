@@ -1368,9 +1368,9 @@ try{
     const oracle=await createPlainTextPagePreview(document,formulaEdit);
     assert(stages.includes('measure-variable-graphemes')&&stages.includes('measure-variable-line'),'native inline math measurement yields within glyphs and rows');
     assert(cooperative.measurementWork.measuredBlocks===1&&cooperative.measurementWork.reusedBlocks===2,'cooperative inline edit retains unchanged measurements');
-    assert(JSON.stringify(cooperative.pageDelta.reusedPageIndices)===JSON.stringify([2]),'inline formula source change invalidates only its eligible page at identical source length');
+    assert(JSON.stringify(cooperative.pageDelta.reusedPageIndices)===JSON.stringify([0,2]),'inline formula source change invalidates only its page at identical source length');
     assert(JSON.stringify(cooperative.plan)===JSON.stringify(oracle.plan)&&JSON.stringify(cooperative.slices)===JSON.stringify(oracle.slices),'cooperative inline edit plan/slice parity');
-    const reconstruct=(result,i)=>result.pageDelta.reusedPageIndices.includes(i)?first.changedElement.shadowRoot.children[i]:Array.from(result.changedElement.shadowRoot.children).find(page=>Number(page.dataset.page)===i);
+    const reconstruct=(result,i)=>result.pageDelta.reusedPageIndices.includes(i)?(i===0?changed.changedElement.shadowRoot.firstElementChild:first.changedElement.shadowRoot.children[i]):Array.from(result.changedElement.shadowRoot.children).find(page=>Number(page.dataset.page)===i);
     assert(Array.from(oracle.element.shadowRoot.children).every((node,i)=>node.isEqualNode(reconstruct(cooperative,i))),'cooperative inline edit DOM parity');
     for(const stop of ['measure-variable-graphemes','measure-variable-line']){
       const reason=new Error('cancel '+stop);let caught;
@@ -1381,13 +1381,19 @@ try{
     }
     const resumed=await createRetainedTextPagePreview(document,formulaEdit,changed.pageDelta.snapshot);
     assert(resumed.measurementWork.reusedBlocks===2&&Array.from(oracle.element.shadowRoot.children).every((node,i)=>node.isEqualNode(reconstruct(resumed,i))),'prior lease usable after native measurement cancellation');
+    const recolored=make('6','#eeeeee','変更した例題','x^3');
+    recolored.sections[0].blocks[0].component.textColor='#444444';
+    const recoloredPaper=await createRetainedTextPagePreview(document,recolored,resumed.pageDelta.snapshot);
+    const recoloredExact=await createPlainTextPagePreview(document,recolored);
+    assert(recoloredPaper.measurementWork.measuredBlocks===0&&JSON.stringify(recoloredPaper.pageDelta.reusedPageIndices)===JSON.stringify([1,2]),'visual-only component edit invalidates DOM without remeasurement');
+    assert(Array.from(recoloredExact.element.shadowRoot.children).every((node,i)=>node.isEqualNode(i===0?recoloredPaper.changedElement.shadowRoot.firstElementChild:reconstruct(resumed,i))),'component text color DOM parity');
     for(const [source,number] of [['x^3','2.3'],['x^2','2.4']]){
       const editedOptions=make('5','#eeeeee','変更した例題','x^3',source,number);
       const edited=await createRetainedTextPagePreview(document,editedOptions,resumed.pageDelta.snapshot);
       const exact=await createPlainTextPagePreview(document,editedOptions);
-      assert(JSON.stringify(edited.pageDelta.reusedPageIndices)===JSON.stringify([1]),'standalone equation content or numbering change invalidates page');
+      assert(JSON.stringify(edited.pageDelta.reusedPageIndices)===JSON.stringify([0,1]),'standalone equation content or numbering change invalidates page');
       assert(JSON.stringify(edited.plan)===JSON.stringify(exact.plan)&&JSON.stringify(edited.slices)===JSON.stringify(exact.slices),'standalone edit plan/slice parity');
-      assert(Array.from(exact.element.shadowRoot.children).every((node,i)=>node.isEqualNode(i===1?reconstruct(resumed,i):Array.from(edited.changedElement.shadowRoot.children).find(page=>Number(page.dataset.page)===i))),'standalone edit DOM parity');
+      assert(Array.from(exact.element.shadowRoot.children).every((node,i)=>node.isEqualNode(i<2?reconstruct(resumed,i):Array.from(edited.changedElement.shadowRoot.children).find(page=>Number(page.dataset.page)===i))),'standalone edit DOM parity');
     }
 
   }
