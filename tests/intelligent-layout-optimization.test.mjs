@@ -121,3 +121,44 @@ test('obstacle-aware lookahead keeps feasible greedy geometry when a fresh share
  const r=plan(i,{}),greedy=plan(i);
  assert.equal(r.status,'placed');assert.deepEqual(r.placements,greedy.placements);
 });
+
+test('soft keep-next moves an orphan heading with its successor without adding pages',async()=>{
+ const i=input([b('intro',80,60),b('heading',80,20),b('body',80,35),b('tail',80,15)]);
+ const before=JSON.stringify(i),original=plan(i,{}),options={keepWithNextIds:['heading']};
+ assert.deepEqual(original.placements.map(p=>p.page),[0,0,1,1]);
+ const r=plan(i,options);
+ assert.equal(r.status,'placed');assert.equal(r.optimization.selected,'keep-next');
+ assert.equal(r.optimization.score.pageCount,2);assert.equal(r.optimization.score.keptWithNext,1);
+ assert.deepEqual(r.placements.map(p=>[p.id,p.page,p.rect.y]),[['intro',0,0],['heading',1,0],['body',1,25],['tail',1,65]]);
+ assert.equal(JSON.stringify(i),before);
+ assert.deepEqual(incremental(i,undefined,options).layout,r);
+ assert.deepEqual((await cooperative(i,undefined,()=>{},options)).layout,r);
+ assert.deepEqual(plan(i,{}),original);
+});
+test('keep-next is advisory: explicit successor breaks, fixed positions and preferences outrank it',()=>{
+ const base=[b('intro',80,60),b('heading',80,20),b('body',80,35)];
+ for(const blocks of [
+  [base[0],base[1],{...base[2],startNewPage:true}],
+  [base[0],{...base[1],fixed:{page:0,x:0,y:65}},base[2]],
+  [base[0],{...base[1],preferred:{page:0,x:0,y:65}},base[2]],
+  [base[0],base[1],base[2],b('pin',20,15,{fixed:{page:1,x:0,y:40}})]
+ ]){
+  const i=input(blocks),old=plan(i,{}),r=plan(i,{keepWithNextIds:['heading']});
+  assert.equal(r.status,'placed');assert.deepEqual(r.placements,old.placements);
+  assert.equal(r.optimization.score.keptWithNext,0);
+ }
+});
+test('keep-next respects page budget and does not silently create hard groups',()=>{
+ const i=input([b('intro',80,60),b('heading',80,30),b('body',80,70)]);
+ const r=plan(i,{keepWithNextIds:['heading']});
+ assert.equal(r.status,'placed');assert.equal(r.optimization.score.keptWithNext,0);
+ assert.deepEqual(r.placements,plan(i).placements);
+ for(const keepWithNextIds of [null,'heading',['heading','heading'],['missing'],['body'],[4]]){
+  const bad=plan(i,{keepWithNextIds});
+  assert.equal(bad.status,'conflict');assert.equal(bad.diagnostic.code,'IL_INVALID');
+ }
+ const already=input([b('heading',80,20),b('body',80,35)]);
+ const same=plan(already,{keepWithNextIds:['heading']});
+ assert.equal(same.optimization.score.keptWithNext,1);
+ assert.equal(same.optimization.evaluatedCandidates,2);
+});
