@@ -610,6 +610,8 @@ export interface FullRetainedTextPagePreview extends TextPagePreview {
 }
 /** Useful for independent transient proposals. Every page is drawn again;
  * reuse only private successful computation metadata, never prior DOM.
+ * Its snapshot carries computation metadata, not sparse page keys; the first
+ * subsequent sparse preview must redraw all pages.
  * Keep a separate snapshot for the proposal session, and discard it on
  * document/font changes. A rejected checkpoint cannot advance the snapshot. */
 export async function createFullRetainedTextPagePreview(document:Document,options:TextPagePreviewOptions,previous?:PageReuseSnapshot,checkpoint?:PreviewCheckpoint):Promise<FullRetainedTextPagePreview>{
@@ -624,11 +626,11 @@ async function runRetainedTextPreview(document:Document,options:TextPagePreviewO
   // Validate document ownership even when no prior page keys will be reused.
   const previousKeys=previousPageKeys(document,previous);
   const saved=previous?retainedMeasurementSnapshots.get(previous):undefined;
-  const result=await createTextPreview(document,options,{previousKeys:reusePages?previousKeys:new Map<number,string>(),allowInlineMath:true},{previous:previous?retainedPaginationSnapshots.get(previous):undefined,previousIntelligent:previous?retainedIntelligentSnapshots.get(previous):undefined,measurement:saved?.inlineMathGeometry===!!options.inlineMathCache?saved.snapshot:undefined,imageKeys:previous?retainedImageSnapshots.get(previous):undefined,checkpoint,priorityPages:snapshotPagePriority(priorityPages),onPriorityPage});
+  const result=await createTextPreview(document,options,{previousKeys:reusePages?previousKeys:new Map<number,string>(),allowInlineMath:true,collectPageKeys:reusePages},{previous:previous?retainedPaginationSnapshots.get(previous):undefined,previousIntelligent:previous?retainedIntelligentSnapshots.get(previous):undefined,measurement:saved?.inlineMathGeometry===!!options.inlineMathCache?saved.snapshot:undefined,imageKeys:previous?retainedImageSnapshots.get(previous):undefined,checkpoint,priorityPages:snapshotPagePriority(priorityPages),onPriorityPage});
   if(!result.pageDelta||!result.paginationWork||!result.measurementWork||!result.imageWork)throw Error('Missing retained preview data');
   return {...result,pageDelta:result.pageDelta,paginationWork:result.paginationWork,measurementWork:result.measurementWork,imageWork:result.imageWork};
 }
-async function createTextPreview(document:Document,options:TextPagePreviewOptions,delta?:{previousKeys:ReadonlyMap<number,string>;allowInlineMath?:boolean},retained?:{previous?:PaginationCheckpointSnapshot;previousIntelligent?:IntelligentMeasuredSnapshot;measurement?:BlockMeasurementSnapshot;imageKeys?:ReadonlyMap<string,string>;checkpoint?:PreviewCheckpoint;priorityPages?:readonly number[];onPriorityPage?:ProvisionalPageReceiver}):Promise<TextPagePreview & {pageDelta?:PageRenderDelta;paginationWork?:Readonly<RetainedPaginationWork>;measurementWork?:Readonly<BlockMeasurementWork>;imageWork?:RetainedTextPagePreview['imageWork']}>{
+async function createTextPreview(document:Document,options:TextPagePreviewOptions,delta?:{previousKeys:ReadonlyMap<number,string>;allowInlineMath?:boolean;collectPageKeys?:boolean},retained?:{previous?:PaginationCheckpointSnapshot;previousIntelligent?:IntelligentMeasuredSnapshot;measurement?:BlockMeasurementSnapshot;imageKeys?:ReadonlyMap<string,string>;checkpoint?:PreviewCheckpoint;priorityPages?:readonly number[];onPriorityPage?:ProvisionalPageReceiver}):Promise<TextPagePreview & {pageDelta?:PageRenderDelta;paginationWork?:Readonly<RetainedPaginationWork>;measurementWork?:Readonly<BlockMeasurementWork>;imageWork?:RetainedTextPagePreview['imageWork']}>{
   live(document);
   const pageCache=options.pageCache,pageCacheEpoch=pageCache?pageRenderCacheEpoch(document,pageCache):undefined;
   // Snapshot the opt-in before any asynchronous work. The clock is never read otherwise.

@@ -118,7 +118,7 @@ const px=(um:number)=>um*96/25400;
 export const previewBlockKey=(o:Origin)=>JSON.stringify([o.documentId,o.blockKey]);
 // Internal ownership contract: math nodes are consumed by this render; bitmaps
 // are borrowed for this call (including optional cooperative waits), and closed by their owning orchestrator.
-export async function renderMeasuredPreview(document:Document,plan:MeasuredPagePlan,{width,height,paper,byKey,images,imageKeys,imageDimensions,decodeImage,pageCache,pageCacheEpoch,delta}:{width:number;height:number;paper?:PreviewPaper;byKey:ReadonlyMap<string,MeasuredPreviewBlock>;images:ReadonlyMap<string,ImageBitmap>;imageKeys?:ReadonlyMap<string,string>;imageDimensions:ReadonlyMap<string,{width:number;height:number}>;decodeImage:(id:string)=>Promise<void>;pageCache?:PageRenderCache;pageCacheEpoch?:number;delta?:{previousKeys:ReadonlyMap<number,string>;allowInlineMath?:boolean}},{styleText,frozenText,listInset}:RenderServices,checkpoint?:PreviewCheckpoint,priorityPages?:readonly number[],onPriorityPage?:ProvisionalPageReceiver,skipSinglePageProvisional=false):Promise<TextPagePreview & {pageDelta?:PageRenderDelta}>{
+export async function renderMeasuredPreview(document:Document,plan:MeasuredPagePlan,{width,height,paper,byKey,images,imageKeys,imageDimensions,decodeImage,pageCache,pageCacheEpoch,delta}:{width:number;height:number;paper?:PreviewPaper;byKey:ReadonlyMap<string,MeasuredPreviewBlock>;images:ReadonlyMap<string,ImageBitmap>;imageKeys?:ReadonlyMap<string,string>;imageDimensions:ReadonlyMap<string,{width:number;height:number}>;decodeImage:(id:string)=>Promise<void>;pageCache?:PageRenderCache;pageCacheEpoch?:number;delta?:{previousKeys:ReadonlyMap<number,string>;allowInlineMath?:boolean;collectPageKeys?:boolean}},{styleText,frozenText,listInset}:RenderServices,checkpoint?:PreviewCheckpoint,priorityPages?:readonly number[],onPriorityPage?:ProvisionalPageReceiver,skipSinglePageProvisional=false):Promise<TextPagePreview & {pageDelta?:PageRenderDelta}>{
   let renderedImagePixels=0;
   function rasterGeometry(child:Extract<PreviewComponentChild,{type:'image'}>,rect:ComponentPlacement['rect']){
     const dimensions=imageDimensions.get(child.assetId)!;
@@ -152,7 +152,7 @@ export async function renderMeasuredPreview(document:Document,plan:MeasuredPageP
     // Components use a separate render identity, including verified image bytes.
     // Lists carry marker/indent identity. Legacy sparse/template eligibility
     // stays unchanged; non-component embedded display rows remain excluded.
-    const deltaKey=delta?pageKey(p,width,height,paper,byKey,!delta.allowInlineMath,delta.allowInlineMath===true,imageKeys):undefined;
+    const deltaKey=delta&&delta.collectPageKeys!==false?pageKey(p,width,height,paper,byKey,!delta.allowInlineMath,delta.allowInlineMath===true,imageKeys):undefined;
     if(deltaKey!==undefined&&nextKeys.size<pageLimits.entries&&keyCharacters+deltaKey.length<=pageLimits.characters){
       nextKeys.set(p.index,deltaKey);keyCharacters+=deltaKey.length;
     }
