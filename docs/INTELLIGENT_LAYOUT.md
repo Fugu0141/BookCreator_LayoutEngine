@@ -154,6 +154,16 @@ PR #85 の実PDF CI run 46127318350 は4ページ、3ページ目空白、英字
 
 混合fixtureを追加。Noto CJKをLinux CIへ導入し、日本語見出し・図の説明の文字抽出と日本語フォント埋め込み、番号付き分数の番号抽出と中央領域のインク、2色PNGの所定領域の色・空白ページの白画素を検査する。別Documentでのチケット一致、固定ページ、最低占有高さ、既存印刷投影を維持。PDFをPopplerで144dpiのPPMに変換し、色領域とインクを独立検査する。文字・数式の全字形や画像の一般的な忠実性、Windows実機、本体IPC/保存・正式出版は対象外。CI結果未確認。
 
+## IL本体受入: モード切替・印刷ディスパッチ
+
+PR #86 Linux CI run 46127676639 は日本語抽出・Noto CJK埋め込み・分数と番号・空白ページ・画像の検査に成功。赤6084/6084、青6162/6162のサンプル領域で色条件を満たした。画像全画素・全字形の同一性の証明ではない。
+
+BookCreator #250 の paper-area-preview.mjs は保存済み永続IDを現行ブロックに解決し、明示opt-inで options.intelligentLayout を作る。Engine側は本体の保存形式を変更しない。createTrialPrintPreviewForLayout(document, options, ticket?) を印刷用の単一入口として追加する。ILなし・ticketなしは従来描画、ILあり・ticketありは createVerifiedIntelligentPrintPreview。片方だけ指定された場合は拒否し、ILの失敗時に通常描画へフォールバックしない。ホストは保存済み入力・資源・fingerprint・expectedPlan・出力中の変更を引き続き検証する。正式出版には使用しない。
+
+受入試験: 同じページleaseを使って通常→IL→通常→ILと切り替え、占有率を適用/解除し、各結果をcold計算と比較する。旧モードの組版snapshotを再利用しない。同一ILのsparse retained結果から完全印刷DOMを再生成する。チケットなしIL、ILなしチケット、旧fingerprint、占有高さ変更、内容矩形は同じだが占有幅だけ異なるケースを拒否する。
+
+本体担当への残りの受入条件: Engine固定参照更新、全冊の保存済みIL意図と同一revision/fingerprintでチケット生成・IPC移送、印刷専用Documentで上記入口を使用、既存assertMatchingPrintPlan/prepareTrialPrintを維持、出力前後の保存済み意図照合、ILなし経路の回帰、実Electron/WindowsのPDF検査。現在の本体 #250 はILのPDFを拒否しており、これらの条件が満たされるまでは拒否を維持する。本体コードはこのPRで変更しない。
+
 ## 組版への統合（正式出版経路は未実装）
 
 既存測定・分割・増分組版を活用し、ロックや手動余白、明示改ページを制約として扱う。ユーザーが許可した範囲のみ再計測・配置し、不要な全冊再組版を避ける。異なるページへ移動する提案や競合解消はプレビューで明示する。最終的にGUIとPDFは同じ検証済みPagePlanを使用する。

@@ -2,7 +2,7 @@
 <html lang="en"><meta charset="utf-8"><title>Browser measurement smoke test</title>
 <body><pre id="result">RUNNING</pre>
 <script type="module">
-import {createIntelligentPrintTicket,createVerifiedIntelligentPrintPreview,measurePlainText,paginateMeasured,measurePlainTextLines,createPlainTextPagePreview,createIncrementalTextPagePreview,createRetainedTextPagePreview,measureDisplayMath,displayMathArtifact,restoreDisplayMathArtifact,createPreviewMath,createTextMeasurementCache,createParagraphMeasurementCache,createPageRenderCache,parsePreviewMath,parseDisplayMath,readyPreviewMathFont,createMathCompilationCache,createDisplayMathGeometryCache,createInlineMathGeometryCache,measureInlineMathGeometry,createInlineMathAtom} from '/dist/index.js';
+import {createTrialPrintPreviewForLayout,createIntelligentPrintTicket,createVerifiedIntelligentPrintPreview,measurePlainText,paginateMeasured,measurePlainTextLines,createPlainTextPagePreview,createIncrementalTextPagePreview,createRetainedTextPagePreview,measureDisplayMath,displayMathArtifact,restoreDisplayMathArtifact,createPreviewMath,createTextMeasurementCache,createParagraphMeasurementCache,createPageRenderCache,parsePreviewMath,parseDisplayMath,readyPreviewMathFont,createMathCompilationCache,createDisplayMathGeometryCache,createInlineMathGeometryCache,measureInlineMathGeometry,createInlineMathAtom} from '/dist/index.js';
 const result=document.querySelector('#result');
 const assert=(condition,message)=>{if(!condition)throw Error(message);};
 const phase=async name=>{await fetch('/test-progress',{method:'POST',body:name});};
@@ -95,6 +95,50 @@ try{
     await rejects(options,{...ticket,layoutSignature:'invalid'});
     await rejects(options,{...ticket,planSignature:'invalid'});
     }finally{printDocumentFrame.remove();}
+  }
+  await phase("IL host mode transitions and print dispatch");
+  {
+    const paper={width:100000,height:100000,top:10000,bottom:10000,inner:12000,outer:8000,firstSide:'right'};
+    const make=(revision,enabled,percent=50)=>({revision,fingerprint:'host-'+revision,paper,width:80000,height:80000,
+      blocks:['area','next'].map(blockKey=>({origin:{documentId:'host',revision,blockKey,persistentId:'id-'+blockKey},
+        request:{text:blockKey,width:20000,fontSize:3000,fontFamily:'sans-serif',lineHeight:1.4},splitPolicy:'strict'})),
+      ...(enabled?{intelligentLayout:{intents:[{documentId:'host',blockKey:'area',placement:{sizeConstraints:{minHeightPercent:percent}}}]}}:{})});
+    const base=make('base',false),on=make('on',true),off=make('off',false),again=make('again',true);
+    const legacy=await createRetainedTextPagePreview(document,base);
+    const enabled=await createRetainedTextPagePreview(document,on,legacy.pageDelta.snapshot);
+    assert(enabled.intelligentLayout?.fragments[0].placement.occupiedRect.height===40000,'saved minHeightPercent applied');
+    assert(enabled.plan.pages[0].fragments[1].rect.y===40000,'following content moves after reserved footprint');
+    assert(enabled.intelligentPlacementWork.reusedBlocks===0,'legacy lease does not supply IL checkpoint');
+    const disabled=await createRetainedTextPagePreview(document,off,enabled.pageDelta.snapshot);
+    assert(!disabled.intelligentLayout&&!disabled.intelligentPlacementWork,'opt-out restores legacy mode');
+    assert(JSON.stringify(disabled.plan)===JSON.stringify((await createPlainTextPagePreview(document,off)).plan),'opt-out matches cold legacy');
+    assert(disabled.plan.pages[0].fragments[1].rect.y<40000,'opt-out removes saved footprint only from preview');
+    const reenabled=await createRetainedTextPagePreview(document,again,disabled.pageDelta.snapshot);
+    assert(reenabled.intelligentPlacementWork.reusedBlocks===0,'re-enable begins a fresh IL checkpoint');
+    assert(JSON.stringify(reenabled.plan)===JSON.stringify((await createPlainTextPagePreview(document,again)).plan),'re-enable matches cold IL');
+    const same=await createRetainedTextPagePreview(document,again,reenabled.pageDelta.snapshot);
+    assert(same.pageDelta.reusedPageIndices.length===1,'unchanged IL page retained');
+    const ticket=JSON.parse(JSON.stringify(createIntelligentPrintTicket(same,paper)));
+    const frame=document.createElement('iframe');document.body.append(frame);
+    try{
+      const printDoc=frame.contentDocument;
+      const print=await createTrialPrintPreviewForLayout(printDoc,again,ticket);
+      assert(print.element.ownerDocument===printDoc&&!print.element.isConnected&&print.element.shadowRoot.children.length===1,'sparse retained metadata reproduces full print DOM');
+      assert(JSON.stringify(print.plan)===JSON.stringify(same.plan),'IL print dispatch matches confirmed plan');
+      const normal=await createTrialPrintPreviewForLayout(printDoc,off);
+      assert(!normal.intelligentLayout&&JSON.stringify(normal.plan)===JSON.stringify(disabled.plan),'legacy print dispatch unchanged');
+      const rejects=async(options,t)=>{let error;try{await createTrialPrintPreviewForLayout(printDoc,options,t);}catch(e){error=e;}assert(error,'print dispatch must fail closed');};
+      await rejects(again,undefined);await rejects(off,ticket);
+      await rejects(make('again',true,60),ticket);
+      await rejects({...again,fingerprint:'stale'},ticket);
+      await rejects(again,null);
+      // A width-only footprint change can leave all drawn content coordinates
+      // identical. The full IL signature must still prevent silent downgrade.
+      const widthOnly={...again,intelligentLayout:{intents:[{documentId:'host',blockKey:'next',placement:{sizeConstraints:{minWidthPercent:50}}},...again.intelligentLayout.intents]}};
+      const widthPreview=await createPlainTextPagePreview(document,widthOnly);
+      assert(JSON.stringify(widthPreview.plan)===JSON.stringify(same.plan),'width-only footprint does not alter content geometry');
+      await rejects(widthOnly,ticket);
+    }finally{frame.remove();}
   }
   await phase("text measurement cache");
   {
