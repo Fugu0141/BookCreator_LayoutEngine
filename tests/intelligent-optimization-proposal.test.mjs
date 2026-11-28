@@ -196,3 +196,21 @@ test('targeted balance settings are compatible with source semantic hints',()=>{
  const r=plan(i,options);assert.equal(r.status,'placed');assert.equal(r.layout.optimization.score.keptWithNext,1);
  assert.equal(r.layout.optimization.selected,'page-balance');
 });
+
+test('targeted balance reuses unchanged placement prefix and converged suffix in a long book',()=>{
+ const earlier=Array.from({length:50},(_,n)=>b('before-'+n,80,30)),later=Array.from({length:50},(_,n)=>b('after-'+n,80,30));
+ const i=input([...earlier,...['a','b','c','d'].map(id=>b(id,80,30)),...later]);
+ const options={gap:5,intents:[...earlier.map((_,n)=>intent('before-'+n,{startNewPage:true})),intent('a',{startNewPage:true}),...later.map((_,n)=>intent('after-'+n,{startNewPage:true}))]};
+ const approved=plan(i,options);
+ const p=propose(i,approved,options,'balance',{firstPage:50,lastPage:51,maxMovedFragments:2});
+ assert.equal(p.status,'proposed');
+ assert.equal(p.before.pageCount,102);assert.equal(p.after.pageCount,102);
+ const work=p.result.layout.optimization.targetedBalanceWork;
+ assert.ok(work.reusedBlocks>=95);assert.ok(work.reusedSuffixBlocks>=49);
+ assert.equal(work.reusedBlocks+work.placedBlocks,104);
+ assert.deepEqual(p.result.fragments.slice(0,50),approved.fragments.slice(0,50));
+ assert.deepEqual(p.result.fragments.slice(54),approved.fragments.slice(54));
+ const global=plan(i,{...options,optimization:{balancePageDepths:true}});
+ assert.deepEqual(p.result.fragments,global.fragments);
+ assert.deepEqual(plan(i,JSON.parse(JSON.stringify(p.options))),p.result);
+});
