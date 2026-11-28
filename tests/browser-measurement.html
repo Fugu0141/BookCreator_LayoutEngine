@@ -1415,12 +1415,18 @@ try{
     const second=await createRetainedTextPagePreview(document,make('2'),first.pageDelta.snapshot);
     assert(second.measurementWork.measuredBlocks===0&&second.measurementWork.reusedBlocks===1,'unchanged numbered equation not remeasured');
     assert(second.measurementWork.sharedSnapshotEntries===1,'numbered formula value shared, not its live node');
-    assert(first.changedElement.shadowRoot.firstElementChild.isEqualNode(second.changedElement.shadowRoot.firstElementChild),'fresh numbered page parity');
-    assert(first.changedElement.shadowRoot.querySelector('mfrac')!==second.changedElement.shadowRoot.querySelector('mfrac'),'prior formula node not moved');
+    const originalPage=first.changedElement.shadowRoot.firstElementChild,originalFormula=originalPage.querySelector('mfrac');
+    const exact=await createPlainTextPagePreview(document,make('2'));
+    assert(JSON.stringify(second.pageDelta.reusedPageIndices)===JSON.stringify([0])&&second.changedElement.shadowRoot.children.length===0,'unchanged numbered page generates no DOM');
+    assert(originalPage.isEqualNode(exact.element.shadowRoot.firstElementChild)&&JSON.stringify(second.plan)===JSON.stringify(exact.plan)&&JSON.stringify(second.slices)===JSON.stringify(exact.slices),'retained numbered page parity');
+    assert(first.changedElement.shadowRoot.firstElementChild===originalPage&&originalPage.querySelector('mfrac')===originalFormula&&originalFormula!==exact.element.shadowRoot.querySelector('mfrac'),'prior formula node not moved or replaced');
     const renumbered=await createRetainedTextPagePreview(document,make('3','2.4'),second.pageDelta.snapshot);
     assert(renumbered.measurementWork.measuredBlocks===1,'equation number changes invalidate measurement');
+    assert(renumbered.pageDelta.reusedPageIndices.length===0&&renumbered.changedElement.shadowRoot.querySelector('[data-equation-number]').textContent==='(2.4)','renumbering regenerates the equation page');
+    assert(renumbered.changedElement.shadowRoot.firstElementChild.isEqualNode((await createPlainTextPagePreview(document,make('3','2.4'))).element.shadowRoot.firstElementChild),'renumbered DOM parity');
     const edited=await createRetainedTextPagePreview(document,make('4','2.4','x^2'),renumbered.pageDelta.snapshot);
     assert(edited.measurementWork.measuredBlocks===1,'formula content changes invalidate measurement');
+    assert(edited.pageDelta.reusedPageIndices.length===0&&edited.changedElement.shadowRoot.firstElementChild.isEqualNode((await createPlainTextPagePreview(document,make('4','2.4','x^2'))).element.shadowRoot.firstElementChild),'edited standalone formula regenerates exact DOM');
   }
   await phase("multiline display source and exact offsets");
   {
