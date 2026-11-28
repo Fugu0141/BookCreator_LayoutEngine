@@ -57,3 +57,13 @@ balancePageRange 指定時の増分APIで、成功済み希望尊重lookahead pa
 #128 全3系統CI成功・main統合済み。npm run benchmark:il:targeted で240ページ/480ブロックおよび1000ページ/2000ブロックの合成計測済み書籍を比較する。中央章の高さ変更と範囲のみ変更の2シナリオ、それぞれ4回ウォームアップ・16組のペア測定。同一入力・同一設定でcoldと前回snapshotを引き継ぐincrementalを交互の実行順で比較する。
 
 各ペアで完全な結果一致、成功、ページ数、選択候補、主lookaheadと追加候補の再利用件数を必須検証する。局所編集では全ブロックから9個を引いた数以上、範囲のみ変更では主lookahead全件の再利用を要求。IL_TARGETED_BENCH のJSONで中央値/p95/最小/最大・中央値比、作業数と全ペア値を出力する。時間閾値は設けず、増分処理が遅い場合も結果をそのまま報告する。Core CIに追加した。計測済み入力からの処理時間であり、フォント/DOM/Electron/実機操作/PDF出力は含まない。1000ページはcore solverの合成負荷試験であって、ブラウザプレビューの上限変更ではない。CI結果・実測値未確認。
+
+## IL-16E 実測結果と実用機能への移行
+
+#129 Core CI run 46141290227（各16ペア、単位ms）: 240ページ局所編集 cold 2.383 / incremental 1.967、範囲変更 2.168 / 3.646。1000ページ局所編集 4.409 / 5.408、範囲変更 4.312 / 5.213。局所編集の主lookahead再利用最小値は476/480、1996/2000。全結果一致と作業数条件に合格。増分は必ずしも高速ではない。p95は順に cold 5.174/4.875/4.998/6.367、incremental 6.272/4.369/12.519/8.097。計測済みsolverの合成負荷でありGUI速度の保証ではない。追加の微細な高速化よりも実用接続を優先する。
+
+## IL-17A: retained紙面から改善案を確認するブラウザ接続
+
+prepareRetainedIntelligentOptimizationReview(document,base,goal,lease,scope?) は成功済みretained IL紙面のsnapshotに紐づく内部計測入力・元設定・元計画を使用する。hostがPaginationInputを再構築したりmutable計画を渡したりする必要がない。戻り値の提案設定でcreateFullRetainedTextPagePreviewを実行し、実際に生成されたcandidate snapshotをconfirmRetainedIntelligentOptimizationReview(document,handle,base,candidate,lease)へ渡す。取消はcancelRetainedIntelligentOptimizationReview。元snapshotの同一性・Document所有権・候補の実測入力一致・元lease・候補設定/計画一致を検証し、単回消費する。元紙面の変更や自動保存は行わない。
+
+hostは原稿/フォント/画像/用紙/測定環境の同一性、最新世代、完全な表示紙面、保存直前の再検証、Undo/Redo、印刷ticketを引き続き管理する。内部計測入力一致は資源バイトや原稿内容の完全認証ではない。retained snapshotへ設定/計画の独立コピーを保持するため追加メモリ・コピー費用がある。ブラウザ回帰に候補描画、計測再利用、承認・取消・旧lease/別base/別Document/変更入力拒否、表示改変隔離、独立印刷DOM一致を追加。CI・本体接続・実機速度未確認。
