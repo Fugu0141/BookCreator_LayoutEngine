@@ -8,7 +8,9 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {setTimeout as delay} from 'node:timers/promises';
 const mixed=process.argv.includes('--mixed');
-const fixture=mixed?'/tests/intelligent-pdf-mixed.html':'/tests/intelligent-pdf.html';
+const advanced=process.argv.includes('--advanced');
+assert.ok(!(mixed&&advanced),'Select one PDF fixture');
+const fixture=mixed?'/tests/intelligent-pdf-mixed.html':advanced?'/tests/intelligent-pdf-advanced.html':'/tests/intelligent-pdf.html';
 const temp=await mkdtemp(join(tmpdir(),'il-pdf-'));
 const dist=new URL('../dist/',import.meta.url);
 const modules=new Set((await readdir(dist)).filter(n=>/^[a-z0-9-]+\.js$/.test(n)).map(n=>'/dist/'+n));
@@ -136,7 +138,7 @@ try{
    evidence.push({page:i,text:f.text,expectedXPt:pt(f.x),expectedYPt:pt(f.y),actualXPt:x,actualYPt:y});
   }
  }
- console.log(JSON.stringify({test:'il-pdf',pages:pages.length,blankPage:2,coordinateToleranceMm:1,words:evidence,publicationReady:false}));
+ console.log(JSON.stringify({test:advanced?'il-pdf-advanced':'il-pdf',pages:pages.length,blankPage:2,coordinateToleranceMm:1,words:evidence,publicationReady:false}));
  }
 }finally{
  socket?.close();

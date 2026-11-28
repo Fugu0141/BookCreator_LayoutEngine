@@ -44,3 +44,6 @@ jobs:
           pdftotext -v
           if ($LASTEXITCODE -ne 0) { throw "pdftotext is unavailable" }
           npm run test:il:pdf
+          if ($LASTEXITCODE -ne 0) { throw "Baseline IL PDF acceptance failed" }
+          npm run test:il:pdf -- --advanced
+          if ($LASTEXITCODE -ne 0) { throw "Advanced IL PDF acceptance failed" }
