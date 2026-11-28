@@ -124,9 +124,10 @@ function findX(regions:readonly IntelligentReservedRegion[], minX:number,y:numbe
 }
 
 // Search only obstacle bottoms, never individual physical units.
-function findRow(regions:readonly IntelligentReservedRegion[],minY:number,w:number,h:number,width:number,height:number):{x:number;y:number}|undefined {
-  let y=minY;
+function* findRow(regions:readonly IntelligentReservedRegion[],minY:number,w:number,h:number,width:number,height:number):Generator<IntelligentWorkStage,{x:number;y:number}|undefined,void> {
+  let y=minY,attempts=0;
   while(y+h<=height){
+    if(attempts++%32===31)yield 'il-place';
     const x=findX(regions,0,y,w,h,width);
     if(x!==undefined) return {x,y};
     let next=Infinity;
@@ -146,13 +147,32 @@ function findRow(regions:readonly IntelligentReservedRegion[],minY:number,w:numb
  * that could fit with more sophisticated search.
  */
 export function planIntelligentLayout(input: IntelligentLayoutInput, options?:IntelligentOptimizationOptions): IntelligentLayoutResult {
-  if(options!==undefined) return optimize(input,options);
-  const first = solve(input,true);
+  return finishIntelligentWork(planWork(input,options));
+}
+
+/** Shared work stages for synchronous and cooperative solvers. */
+export type IntelligentWorkStage='il-validate'|'il-key'|'il-match'|'il-reuse'|'il-place'|'il-score'|'il-snapshot';
+export type IntelligentWorkCheckpoint=(stage:IntelligentWorkStage)=>void|Promise<void>;
+function finishIntelligentWork<T>(work:Generator<IntelligentWorkStage,T,void>):T {
+  let step=work.next();
+  while(!step.done)step=work.next();
+  return step.value;
+}
+async function finishIntelligentWorkCooperative<T>(work:Generator<IntelligentWorkStage,T,void>,checkpoint:IntelligentWorkCheckpoint):Promise<T>{
+  try{
+    let step=work.next();
+    while(!step.done){const wait=checkpoint(step.value);if(wait)await wait;step=work.next();}
+    return step.value;
+  }finally{work.return(undefined as never);}
+}
+function* planWork(input:IntelligentLayoutInput,options?:IntelligentOptimizationOptions):Generator<IntelligentWorkStage,IntelligentLayoutResult,void>{
+  if(options!==undefined) return yield* optimize(input,options);
+  const first = yield* solve(input,true);
   // Soft choices must not make a feasible hard plan fail. At most two passes.
   if(first.status==='conflict' && Array.isArray(input.blocks) &&
     input.blocks.some(b=>b?.preferred!==undefined) &&
     (first.diagnostic.code==='IL_FIXED_CONFLICT'||first.diagnostic.code==='IL_LIMIT'))
-    return solve(input,false);
+    return yield* solve(input,false);
   return first;
 }
 
@@ -181,12 +201,24 @@ const copyPlacement=(p:IntelligentPlacement):IntelligentPlacement=>({...p,rect:{
  * searches deliberately use the full planner until per-candidate snapshots exist. */
 export function planIntelligentLayoutIncremental(input:IntelligentLayoutInput,previous?:IntelligentLayoutSnapshot,
   options?:IntelligentOptimizationOptions):IncrementalIntelligentLayoutResult {
+  return finishIntelligentWork(incrementalWork(input,previous,options));
+}
+
+/** The caller keeps input and options immutable until completion. Rejecting a
+ * checkpoint cancels the work without changing the previous snapshot. */
+export function planIntelligentLayoutIncrementalCooperative(input:IntelligentLayoutInput,previous:IntelligentLayoutSnapshot|undefined,
+  checkpoint:IntelligentWorkCheckpoint,options?:IntelligentOptimizationOptions):Promise<IncrementalIntelligentLayoutResult>{
+  return finishIntelligentWorkCooperative(incrementalWork(input,previous,options),checkpoint);
+}
+function* incrementalWork(input:IntelligentLayoutInput,previous?:IntelligentLayoutSnapshot,
+  options?:IntelligentOptimizationOptions):Generator<IntelligentWorkStage,IncrementalIntelligentLayoutResult,void>{
+  yield 'il-validate';
   if(options!==undefined||!Array.isArray(input.blocks)||input.blocks.some(b=>b?.preferred!==undefined)){
-    const layout=planIntelligentLayout(input,options);
+    const layout=yield* planWork(input,options);
     return {layout,reusedBlocks:0,reusedSuffixBlocks:0,placedBlocks:0,fullRecompute:true};
   }
   const state:IncrementalLayoutState={previous:previous?layoutSnapshots.get(previous):undefined,reusedBlocks:0,reusedSuffixBlocks:0,placedBlocks:0};
-  const layout=solve(input,true,false,state);
+  const layout=yield* solve(input,true,false,state);
   let snapshot:IntelligentLayoutSnapshot|undefined;
   if(state.next){
     snapshot=Object.freeze({kind:'intelligent-layout-snapshot' as const});
@@ -195,10 +227,12 @@ export function planIntelligentLayoutIncremental(input:IntelligentLayoutInput,pr
   return {layout,snapshot,reusedBlocks:state.reusedBlocks,reusedSuffixBlocks:state.reusedSuffixBlocks,placedBlocks:state.placedBlocks,fullRecompute:false};
 }
 
-function scoreCandidate(result:Placed,previous:ReadonlyMap<string,IntelligentPreviousPosition>):IntelligentCandidateScore {
+function* scoreCandidate(result:Placed,previous:ReadonlyMap<string,IntelligentPreviousPosition>):Generator<IntelligentWorkStage,IntelligentCandidateScore,void> {
   let honoredPreferences=0,pageCount=0,previousPageDistance=0,previousPositionDistance=0;
   const depths=new Map<number,number>();
+  let scanned=0;
   for(const p of result.placements){
+    if(scanned++%128===0)yield 'il-score';
     if(p.preference==='honored') honoredPreferences++;
     pageCount=Math.max(pageCount,p.page+1);
     const old=previous.get(p.id), r=p.occupiedRect??p.rect;
@@ -221,41 +255,43 @@ function better(a:IntelligentCandidateScore,b:IntelligentCandidateScore):boolean
   return a.occupiedDepth<b.occupiedDepth;
 }
 
-function optimize(input:IntelligentLayoutInput,options:IntelligentOptimizationOptions):IntelligentLayoutResult {
+function* optimize(input:IntelligentLayoutInput,options:IntelligentOptimizationOptions):Generator<IntelligentWorkStage,IntelligentLayoutResult,void> {
   const invalid=(message:string):IntelligentLayoutResult=>({status:'conflict',revision:input.revision,
     placements:[],publicationReady:false,diagnostic:{code:'IL_INVALID',message}});
   if(!options||typeof options!=='object'||Array.isArray(options)) return invalid('Invalid optimization options');
   const hints=options.previousPositions===undefined?[]:options.previousPositions;
   if(!Array.isArray(hints)||hints.length>10000) return invalid('Invalid previous positions');
   const previous=new Map<string,IntelligentPreviousPosition>();
+  let scanned=0;
   for(const hint of hints){
+    if(scanned++%64===0)yield 'il-validate';
     if(!hint||typeof hint.id!=='string'||!hint.id||previous.has(hint.id)||!validPosition(hint))
       return invalid('Invalid or duplicate previous position');
     previous.set(hint.id,hint);
   }
-  const first=solve(input,true);
+  const first=yield* solve(input,true);
   // Invalid input and static hard conflicts cannot be fixed by alternate shelves.
   if(first.status==='conflict'&&first.diagnostic.code!=='IL_FIXED_CONFLICT'&&first.diagnostic.code!=='IL_LIMIT') return first;
   const candidates: {name:IntelligentOptimizationReport['selected'];result:IntelligentLayoutResult}[]=[
-    {name:'greedy',result:first},{name:'lookahead',result:solve(input,true,true)}
+    {name:'greedy',result:first},{name:'lookahead',result:yield* solve(input,true,true)}
   ];
   if(Array.isArray(input.blocks)&&input.blocks.some(b=>b?.preferred!==undefined)){
-    candidates.push({name:'greedy-fallback',result:solve(input,false)},
-      {name:'lookahead-fallback',result:solve(input,false,true)});
+    candidates.push({name:'greedy-fallback',result:yield* solve(input,false)},
+      {name:'lookahead-fallback',result:yield* solve(input,false,true)});
   }
   let best:{name:IntelligentOptimizationReport['selected'];result:Placed;score:IntelligentCandidateScore}|undefined;
   let feasibleCandidates=0;
   for(const {name,result} of candidates){
     if(result.status!=='placed') continue;
     feasibleCandidates++;
-    const score=scoreCandidate(result,previous);
+    const score=yield* scoreCandidate(result,previous);
     if(!best||better(score,best.score)) best={name,result,score};
   }
   if(!best) return first;
   return {...best.result,optimization:{evaluatedCandidates:candidates.length,feasibleCandidates,selected:best.name,score:best.score}};
 }
 
-function solve(input:IntelligentLayoutInput,honorPreferences:boolean,lookahead=false,incremental?:IncrementalLayoutState):IntelligentLayoutResult {
+function* solve(input:IntelligentLayoutInput,honorPreferences:boolean,lookahead=false,incremental?:IncrementalLayoutState):Generator<IntelligentWorkStage,IntelligentLayoutResult,void> {
   const conflict = (code: Extract<IntelligentLayoutResult,{status:'conflict'}>['diagnostic']['code'],
     message:string,blockId?:string,regionId?:string):IntelligentLayoutResult =>
       ({status:'conflict',revision:input.revision,placements:[],publicationReady:false,
@@ -268,7 +304,9 @@ function solve(input:IntelligentLayoutInput,honorPreferences:boolean,lookahead=f
   if(!Array.isArray(reserved)) return conflict('IL_INVALID','Invalid reserved regions');
   if(reserved.length>MAX_REGIONS) return conflict('IL_LIMIT','Reserved region limit exceeded');
   const byPage=new Map<number,IntelligentReservedRegion[]>(), regionIds=new Set<string>();
+  let scanned=0;
   for(const region of reserved){
+    if(scanned++%64===0)yield 'il-validate';
     if(!region || typeof region.id!=='string'||!region.id||regionIds.has(region.id)||
       !region.rect||!validSize(region.rect)||!validPosition({page:region.page,x:region.rect.x,y:region.rect.y})||
       region.rect.x+region.rect.width>width||region.rect.y+region.rect.height>height)
@@ -282,6 +320,7 @@ function solve(input:IntelligentLayoutInput,honorPreferences:boolean,lookahead=f
   const regionsAt=(p:number):readonly IntelligentReservedRegion[]=>byPage.get(p)??[];
   const footprints=new Map<string,Size>();
   for(const b of input.blocks){
+    if(scanned++%64===0)yield 'il-validate';
     if(!b || typeof b.id!=='string' || !b.id || ids.has(b.id) || !validSize(b.size) ||
       (b.spaceBefore!==undefined&&!natural(b.spaceBefore)) ||
       (b.spaceAfter!==undefined&&!natural(b.spaceAfter)) ||
@@ -325,30 +364,38 @@ function solve(input:IntelligentLayoutInput,honorPreferences:boolean,lookahead=f
     // Build keys only AFTER full validation. Project every geometry-affecting
     // field into primitives; revision and origin metadata are not geometry.
     context=JSON.stringify([width,height,gap,reserved.map(r=>[r.id,r.page,r.rect.x,r.rect.y,r.rect.width,r.rect.height])]);
-    keys=input.blocks.map(b=>{
+    for(const b of input.blocks){
+      if(keys.length%64===0)yield 'il-key';
       const f=b.fixed,c=b.sizeConstraints;
-      return JSON.stringify([b.id,b.size.width,b.size.height,b.mode??null,
+      keys.push(JSON.stringify([b.id,b.size.width,b.size.height,b.mode??null,
         f?[f.page,f.x,f.y]:null,b.sideBySide??false,b.spaceBefore??0,b.spaceAfter??0,b.startNewPage??false,
-        c?[c.minWidth,c.minHeight,c.maxWidth,c.maxHeight,c.minWidthPercent,c.minHeightPercent]:null]);
-    });
+        c?[c.minWidth,c.minHeight,c.maxWidth,c.maxHeight,c.minWidthPercent,c.minHeightPercent]:null]));
+    }
     previous=incremental.previous?.context===context?incremental.previous:undefined;
     if(previous){
-      while(prefix<keys.length&&prefix<previous.keys.length&&keys[prefix]===previous.keys[prefix])prefix++;
+      while(prefix<keys.length&&prefix<previous.keys.length&&keys[prefix]===previous.keys[prefix]){
+        if(prefix%128===0)yield 'il-match';prefix++;
+      }
       while(suffix<keys.length-prefix&&suffix<previous.keys.length-prefix&&
-        keys[keys.length-1-suffix]===previous.keys[previous.keys.length-1-suffix])suffix++;
+        keys[keys.length-1-suffix]===previous.keys[previous.keys.length-1-suffix]){
+        if(suffix%128===0)yield 'il-match';suffix++;
+      }
       for(let i=0;i<prefix;i++){
+        if(i%128===0)yield 'il-reuse';
         states.push(previous.states[i]);placements.push(copyPlacement(previous.placements[i]));
       }
       restore(previous.states[prefix]);incremental.reusedBlocks=prefix;
     }
   }
   for(let i=prefix;i<input.blocks.length;i++){
+    if(i%64===0)yield 'il-place';
     if(incremental){
       const now=capture();
       if(previous&&suffix&&i>=keys.length-suffix){
         const oldIndex=previous.keys.length-(keys.length-i);
         if(now.every((v,j)=>v===previous!.states[oldIndex][j])){
           for(let j=oldIndex;j<previous.keys.length;j++){
+            if(j%128===0)yield 'il-reuse';
             states.push(previous.states[j]);placements.push(copyPlacement(previous.placements[j]));
           }
           restore(previous.states[previous.keys.length]);
@@ -394,10 +441,12 @@ function solve(input:IntelligentLayoutInput,honorPreferences:boolean,lookahead=f
         }
       }
       let naturalPage=page;
-      let slot=shareX!==undefined?{x:shareX,y:rowY}:findRow(regionsAt(page),minY,w,h,width,height);
+      let slot=shareX!==undefined?{x:shareX,y:rowY}:(yield* findRow(regionsAt(page),minY,w,h,width,height));
       // Every failed page advances. With no exclusions, the next page must fit.
-      while(!slot && ++naturalPage<MAX_PAGES)
-        slot=findRow(regionsAt(naturalPage),before,w,h,width,height);
+      while(!slot && ++naturalPage<MAX_PAGES){
+        if(naturalPage%16===0)yield 'il-place';
+        slot=yield* findRow(regionsAt(naturalPage),before,w,h,width,height);
+      }
       if(!slot || naturalPage>=MAX_PAGES) return conflict('IL_LIMIT','Page limit exceeded',b.id);
       const targetMinY=target?.page===page?minY:before;
       const canHonor=honorPreferences && target && target.page===naturalPage &&
@@ -422,7 +471,9 @@ function solve(input:IntelligentLayoutInput,honorPreferences:boolean,lookahead=f
   }
   if(incremental){
     states.push(capture());
-    incremental.next={context,keys,states,placements:placements.map(copyPlacement)};
+    const saved:IntelligentPlacement[]=[];
+    for(const p of placements){if(saved.length%128===0)yield 'il-snapshot';saved.push(copyPlacement(p));}
+    incremental.next={context,keys,states,placements:saved};
   }
   return {status:'placed',revision:input.revision,placements,publicationReady:false};
 }
