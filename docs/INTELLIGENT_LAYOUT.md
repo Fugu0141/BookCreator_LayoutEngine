@@ -95,6 +95,16 @@ ILの競合は IntelligentPreviewConflictError（conflict に診断・revision�
 
 この投影は実験的な MeasuredPagePlan であり、publicationReady=false を維持する。projectIntelligentMeasuredPlan はエンジンが生成した成功結果専用で、外部JSONの検証器ではない。正式な出版PagePlan、ページ番号・面付け、PDF生成を担うBookCreator側の接続は別作業。固定ページの空白・本文位置をPDFでも同じように扱うには、ホストが同一確定計画を使うことを検証する必要がある。
 
+## IL-09B: 試しPDF用の計画一致ゲート
+
+BookCreator本体の apps/desktop/print-renderer.mjs は createPlainTextPagePreview、assertMatchingPrintPlan、prepareTrialPrint、Electron printToPDF の順で処理する。options.intelligentLayout を保存済みの全冊入力に含めれば既存の印刷画面でも IL を選択できる。試し出力のみで正式出版は許可しない。
+
+追加 API createIntelligentPrintTicket(preview, paper) は全体計画・IL詳細結果・紙面条件の一致を確認し、JSON移送可能な比較レコードを作成する。retained の sparse DOM は使わず、完全な plan メタデータを受け付ける。revision/fingerprint、連続ページ（中間空白を含む）、原稿ID/範囲、全断片の内容座標・分割範囲・継続番号・改ページ理由、警告に加え、ILの占有矩形・固定/希望状態・元の分割理由を比較対象にする。紙面は試しPDFの既存制限30–300mm、512ページ。レコードは暗号学的な署名ではなく、ホストが承認した不変入力の比較専用。
+
+createVerifiedIntelligentPrintPreview(document, options, ticket) は専用印刷Documentで完全な未接続DOMを再生成し、比較レコードの紙面・revision/fingerprint・計画・IL詳細が一致しなければ拒否する。印刷アダプタは既存 prepareTrialPrint にこのDOMを渡し、別の改ページをさせない。inlineMathCache を使用する場合は印刷Documentに属する新規キャッシュをホストが用意し、同じ計測モードを再現する。比較レコードの移送はホストの責務。ユーザー意図、素材、フォント、計測環境の保存と検証、出力中の変更検知、PDF実体の検査、正式FinalizeはBookCreator側の責務。
+
+ここではEngineの接続APIとChromiumでの紙面再生成試験を追加する。別Document・Electron実PDFの実測、文字や描画の忠実性、正式出版は未検証。BookCreator本体のGUI/保存/IPC変更は本体担当との連携で行う。
+
 ## 組版への統合（正式出版経路は未実装）
 
 既存測定・分割・増分組版を活用し、ロックや手動余白、明示改ページを制約として扱う。ユーザーが許可した範囲のみ再計測・配置し、不要な全冊再組版を避ける。異なるページへ移動する提案や競合解消はプレビューで明示する。最終的にGUIとPDFは同じ検証済みPagePlanを使用する。
