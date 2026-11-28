@@ -8,15 +8,15 @@ function fixture(chapters,step,edited=-1){
  return {schemaVersion:1,revision,fingerprint:'fp-'+revision,content:{width:100000,height:100000},
   sections:Array.from({length:chapters},(_,chapter)=>({id:'chapter-'+chapter,startOn:'page',blocks:Array.from({length:4},(_,n)=>({
     kind:'block',origin:{documentId:'chapter-'+chapter,blockKey:'b'+n,revision},
-    width:80000,unitHeights:[chapter===edited&&n===1?31000:30000],splitPolicy:'strict'
+    width:80000,unitHeights:[chapter===edited&&n===1?29000:30000],splitPolicy:'strict'
   }))}))};
 }
 const options=chapter=>({gap:5000,optimization:{balancePageDepths:true,balancePageRange:{firstPage:chapter*2,lastPage:chapter*2+1}}});
 const timed=fn=>{const start=performance.now(),value=fn();return {value,ms:performance.now()-start};};
 function run(chapters,kind,pairs=16){
  const middle=Math.floor(chapters/2);
- let previousInput=fixture(chapters,0),previousOptions=options(middle);
- let retained=incremental(previousInput,previousOptions);
+ let previousInput=fixture(chapters,0);
+ let retained=incremental(previousInput,options(middle));
  assert.ok(retained.snapshot);
  const samples=[];
  function pair(step,record){
@@ -39,7 +39,7 @@ function run(chapters,kind,pairs=16){
   assert.equal(w.reusedBlocks+w.placedBlocks,chapters*4);
   if(record)samples.push({coldMs:a.ms,incrementalMs:b.ms,primaryReused:p.reusedBlocks,primaryPlaced:p.placedBlocks,
     primarySuffixReused:p.reusedSuffixBlocks,trialReused:w.reusedBlocks,trialPlaced:w.placedBlocks});
-  retained=b.value;previousInput=input;previousOptions=opt;
+  retained=b.value;previousInput=input;
  }
  for(let step=1;step<=4;step++)pair(step,false);
  for(let step=5;step<5+pairs;step++)pair(step,true);
