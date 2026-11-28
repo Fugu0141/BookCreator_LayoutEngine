@@ -23,6 +23,9 @@ export interface IntelligentBlock {
   sideBySide?: boolean;
   // An exact user constraint; never silently moved or resized.
   fixed?: Readonly<IntelligentPosition>;
+  // Explicitly lock position only, allowing user-specified footprint minima.
+  // Without this opt-in, the legacy fixed-size rule remains in force.
+  fixedPositionOnly?: boolean;
   // Omitted mode is inferred from position fields for legacy callers.
   mode?: IntelligentPlacementMode;
   preferred?: Readonly<IntelligentPosition>;
@@ -101,7 +104,7 @@ function resolveFootprint(b:IntelligentBlock,content:Readonly<Size>):SizeResolut
   const h=Math.max(b.size.height,c?.minHeight??0,Math.ceil(content.height*(c?.minHeightPercent??0)/100));
   if(w>(c?.maxWidth??MAX)||h>(c?.maxHeight??MAX))
     return {code:'IL_SIZE_CONFLICT',message:'Measured or minimum footprint exceeds maximum'};
-  if(b.fixed&&(w!==b.size.width||h!==b.size.height))
+  if(b.fixed&&b.fixedPositionOnly!==true&&(w!==b.size.width||h!==b.size.height))
     return {code:'IL_SIZE_CONFLICT',message:'Minimum footprint conflicts with fixed size'};
   return {size:{width:w,height:h+(b.spaceAfter??0)}};
 }
@@ -339,7 +342,9 @@ function* solve(input:IntelligentLayoutInput,honorPreferences:boolean,lookahead=
       (b.spaceBefore!==undefined&&!natural(b.spaceBefore)) ||
       (b.spaceAfter!==undefined&&!natural(b.spaceAfter)) ||
       (b.sideBySide!==undefined&&typeof b.sideBySide!=='boolean') ||
-      (b.startNewPage!==undefined&&typeof b.startNewPage!=='boolean'))
+      (b.startNewPage!==undefined&&typeof b.startNewPage!=='boolean') ||
+      (b.fixedPositionOnly!==undefined&&typeof b.fixedPositionOnly!=='boolean') ||
+      (b.fixedPositionOnly===true&&b.fixed===undefined))
       return conflict('IL_INVALID','Invalid or duplicate block',b?.id);
     const mode=b.mode ?? (b.fixed!==undefined?'fixed':b.preferred!==undefined?'preferred':'auto');
     if((b.mode!==undefined&&b.mode!==mode) ||
