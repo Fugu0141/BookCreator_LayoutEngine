@@ -249,12 +249,11 @@ try{
   const retainedArea=await createRetainedTextPagePreview(document,percentOptions('area-retained-1',labelComponent));
   const retainedAreaNext=await createRetainedTextPagePreview(document,percentOptions('area-retained-2',percentageDesign),retainedArea.pageDelta.snapshot);
   assert(retainedAreaNext.plan.pages[0].fragments[0].rect.height===75000,'retained plan invalidates occupied percentage changes');
-  const fixedModeArea={...canvas,children:[{...autoGroup,height:50000,heightMode:undefined}]};
-  const retainedModeStart={...fixedModeArea,children:[{...fixedModeArea.children[0],height:60000}]};
-  const retainedModeEnd={...retainedModeStart,children:[{...retainedModeStart.children[0],heightMode:'auto'}]};
+  const retainedModeStart={...canvas,children:[{...autoGroup,height:10000,children:[{...autoGroup.children[0],y:20000}]}]};
+  const retainedModeEnd={...retainedModeStart,children:[{...retainedModeStart.children[0],heightMode:undefined}]};
   const retainedMode=await createRetainedTextPagePreview(document,percentOptions('mode-retained-1',retainedModeStart));
-  const retainedModeNext=await createRetainedTextPagePreview(document,percentOptions('mode-retained-2',retainedModeEnd),retainedMode.pageDelta.snapshot);
-  assert(retainedModeNext.plan.pages[0].fragments[0].rect.height===retainedMode.plan.pages[0].fragments[0].rect.height,'mode conversion preserves height floor');
+  let modeOverflow=false;try{await createRetainedTextPagePreview(document,percentOptions('mode-retained-2',retainedModeEnd),retainedMode.pageDelta.snapshot);}catch{modeOverflow=true;}
+  assert(modeOverflow,'retained plan does not bypass fixed-height overflow when mode changes');
   // Four distinct source columns, two rows. Cover crops the central two columns.
   const imageId='a'.repeat(64),png=new Blob([Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAAAQAAAACCAIAAADwyuo0AAAAGUlEQVR4nGP4z8DA8J+BgeH/////mRiQAABryAX9SqklXwAAAABJRU5ErkJggg=='),c=>c.charCodeAt(0))],{type:'image/png'});
   const imageNode={id:'art',type:'image',assetId:imageId,width:20000,height:20000,fit:'contain',alt:'Sample illustration'};
