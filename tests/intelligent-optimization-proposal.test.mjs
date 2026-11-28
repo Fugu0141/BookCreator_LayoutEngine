@@ -196,3 +196,37 @@ test('targeted balance settings are compatible with source semantic hints',()=>{
  const r=plan(i,options);assert.equal(r.status,'placed');assert.equal(r.layout.optimization.score.keptWithNext,1);
  assert.equal(r.layout.optimization.selected,'page-balance');
 });
+
+test('targeted balance reuses unchanged placement prefix and converged suffix in a long book',()=>{
+ const earlier=Array.from({length:50},(_,n)=>b('before-'+n,80,30)),later=Array.from({length:50},(_,n)=>b('after-'+n,80,30));
+ const i=input([...earlier,...['a','b','c','d'].map(id=>b(id,80,30)),...later]);
+ const options={gap:5,intents:[...earlier.map((_,n)=>intent('before-'+n,{startNewPage:true})),intent('a',{startNewPage:true}),...later.map((_,n)=>intent('after-'+n,{startNewPage:true}))]};
+ const approved=plan(i,options);
+ const p=propose(i,approved,options,'balance',{firstPage:50,lastPage:51,maxMovedFragments:2});
+ assert.equal(p.status,'proposed');
+ assert.equal(p.before.pageCount,102);assert.equal(p.after.pageCount,102);
+ const work=p.result.layout.optimization.targetedBalanceWork;
+ assert.ok(work.reusedBlocks>=95);assert.ok(work.reusedSuffixBlocks>=49);
+ assert.equal(work.reusedBlocks+work.placedBlocks,104);
+ assert.deepEqual(p.result.fragments.slice(0,50),approved.fragments.slice(0,50));
+ assert.deepEqual(p.result.fragments.slice(54),approved.fragments.slice(54));
+ const global=plan(i,{...options,optimization:{balancePageDepths:true}});
+ assert.deepEqual(p.result.fragments,global.fragments);
+ assert.deepEqual(plan(i,JSON.parse(JSON.stringify(p.options))),p.result);
+});
+
+test('targeted balance reuse matches full balance with preceding adaptive group and row lookahead',()=>{
+ const i=input([b('short',60,10),b('tall',30,40),b('neighbor',60,40),b('g1',30,15),b('g2',30,15),
+   ...['a','b','c','d'].map(id=>b(id,80,30)),b('tail',80,20)]);
+ const group={keepTogetherGroup:'g',keepTogetherLayout:'adaptiveRows',sideBySide:true};
+ const options={gap:5,intents:[...['short','tall','neighbor'].map(id=>intent(id,{sideBySide:true})),
+   intent('g1',group),intent('g2',group),intent('a',{startNewPage:true}),intent('tail',{startNewPage:true})]};
+ const full=plan(i,{...options,optimization:{balancePageDepths:true}});
+ assert.equal(full.status,'placed');assert.equal(full.layout.optimization.selected,'page-balance');
+ const first=full.fragments.find(f=>f.origin.blockKey==='a').placement.page;
+ const targeted=plan(i,{...options,optimization:{balancePageDepths:true,balancePageRange:{firstPage:first,lastPage:first+1}}});
+ assert.equal(targeted.status,'placed');
+ assert.deepEqual(targeted.fragments,full.fragments);
+ const work=targeted.layout.optimization.targetedBalanceWork;
+ assert.ok(work.reusedBlocks>=5);assert.equal(work.reusedBlocks+work.placedBlocks,i.sections[0].blocks.length);
+});
