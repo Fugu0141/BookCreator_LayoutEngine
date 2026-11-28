@@ -79,3 +79,9 @@ hostは原稿/フォント/画像/用紙/測定環境の同一性、最新世代
 #131 全3系統CI成功・main統合済み。prepareRetainedIntelligentDocumentOptimizationReview(document,base,documentId,goal,lease,maxMovedFragments?) を追加。GUIは選択した原稿IDを渡し、非公開の実測配置から排他的ページ範囲を再取得する。表示用診断の改変や古い表示範囲を入力として使わない。原稿なしはunknown-document、共有ページを含む範囲はshared-pages、非ILはstaleで拒否し、全冊改善にフォールバックしない。共有ページを対象とする場合はユーザーが明示したページ範囲で従来のprepareRetainedIntelligentOptimizationReviewを呼ぶ。
 
 範囲内外の移動制限とmaxMovedFragmentsの検証、確認・取消・実際の候補紙面との照合は既存APIを再利用する。範囲集約は断片の列挙順序によらず最小・最大ページを使用する。回帰試験では共有/不明原稿、非IL、別Document、移動予算、表示診断の改変、明示範囲案との一致、確認・取消を検証する。hostの最新世代・資源・保存/履歴検証は引き続き必要。CI、本体GUI接続、実機操作は未確認。
+
+## IL-17D: 改善案の紙面差分をGUIへ提供
+
+inspectRetainedIntelligentOptimizationReview(document,handle,base,lease) は有効なretained reviewの非公開候補から、改善前後の総ページ数、移動・ページ変更断片数、改善理由、対象範囲、変更断片の完全な前後配置、影響ページの前後品質と出入りの断片IDを返す。座標は本文領域基準の整数µm、ページは0始まり。ページ単位の品質値が同じでも断片変更があれば含め、追加/削除ページの存在しない側は省略する。全体評価から個々の移動の因果は推定しない。変更のないページは除外する。
+
+元base・Document・leaseを検証し、取消済み/消費済みのhandleはundefined。誤った参照による照会はhandleを消費しない。返却値は独立コピーで、公開proposalの改変にも影響されない。照会は再配置・測定・描画・保存を行わず、候補紙面の実測確認やhostの世代検証を代替しない。ブラウザ回帰で前後座標、ページ対応、公開データの隔離、別base/Document/lease、取消・確認後の無効化を検証する。CI・GUI接続・実機未確認。
