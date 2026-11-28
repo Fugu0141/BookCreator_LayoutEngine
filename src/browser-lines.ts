@@ -595,14 +595,38 @@ const retainedMeasurementSnapshots=new WeakMap<PageReuseSnapshot,{snapshot:Block
  * sparse output contract as createIncrementalTextPagePreview. A valid sparse
  * snapshot from the older API simply starts a new placement checkpoint. */
 export async function createRetainedTextPagePreview(document:Document,options:TextPagePreviewOptions,previous?:PageReuseSnapshot,checkpoint?:PreviewCheckpoint,priorityPages?:readonly number[],onPriorityPage?:ProvisionalPageReceiver):Promise<RetainedTextPagePreview>{
-  if(options.pageCache!==undefined)throw RangeError('Retained page rendering and page template cache are mutually exclusive');
-  if(onPriorityPage!==undefined&&typeof onPriorityPage!=='function')throw TypeError('Invalid provisional page receiver');
-  const previousKeys=previousPageKeys(document,previous);
-  const saved=previous?retainedMeasurementSnapshots.get(previous):undefined;
-  const result=await createTextPreview(document,options,{previousKeys,allowInlineMath:true},{previous:previous?retainedPaginationSnapshots.get(previous):undefined,previousIntelligent:previous?retainedIntelligentSnapshots.get(previous):undefined,measurement:saved?.inlineMathGeometry===!!options.inlineMathCache?saved.snapshot:undefined,imageKeys:previous?retainedImageSnapshots.get(previous):undefined,checkpoint,priorityPages:snapshotPagePriority(priorityPages),onPriorityPage});
-  if(!result.pageDelta||!result.paginationWork||!result.measurementWork||!result.imageWork)throw Error('Missing retained preview data');
+  const result=await runRetainedTextPreview(document,options,previous,checkpoint,true,priorityPages,onPriorityPage);
   const {element,pageDelta,paginationWork,measurementWork,imageWork,...rest}=result;
   return {...rest,changedElement:element,pageDelta,paginationWork,measurementWork,imageWork};
+}
+/** Complete detached paper with retained measurement and placement work.
+ * Unlike the sparse API, callers do not need to own any previous DOM.
+ * The snapshot is document/font-environment scoped, not persistent data. */
+export interface FullRetainedTextPagePreview extends TextPagePreview {
+  readonly snapshot:PageReuseSnapshot;
+  readonly paginationWork:Readonly<RetainedPaginationWork>;
+  readonly measurementWork:Readonly<BlockMeasurementWork>;
+  readonly imageWork:RetainedTextPagePreview['imageWork'];
+}
+/** Useful for independent transient proposals. Every page is drawn again;
+ * reuse only private successful computation metadata, never prior DOM.
+ * Keep a separate snapshot for the proposal session, and discard it on
+ * document/font changes. A rejected checkpoint cannot advance the snapshot. */
+export async function createFullRetainedTextPagePreview(document:Document,options:TextPagePreviewOptions,previous?:PageReuseSnapshot,checkpoint?:PreviewCheckpoint):Promise<FullRetainedTextPagePreview>{
+  const result=await runRetainedTextPreview(document,options,previous,checkpoint,false);
+  const {pageDelta,...rest}=result;
+  if(pageDelta.reusedPageIndices.length)throw Error('Full retained preview must contain every page');
+  return {...rest,snapshot:pageDelta.snapshot};
+}
+async function runRetainedTextPreview(document:Document,options:TextPagePreviewOptions,previous:PageReuseSnapshot|undefined,checkpoint:PreviewCheckpoint|undefined,reusePages:boolean,priorityPages?:readonly number[],onPriorityPage?:ProvisionalPageReceiver){
+  if(options.pageCache!==undefined)throw RangeError('Retained page rendering and page template cache are mutually exclusive');
+  if(onPriorityPage!==undefined&&typeof onPriorityPage!=='function')throw TypeError('Invalid provisional page receiver');
+  // Validate document ownership even when no prior page keys will be reused.
+  const previousKeys=previousPageKeys(document,previous);
+  const saved=previous?retainedMeasurementSnapshots.get(previous):undefined;
+  const result=await createTextPreview(document,options,{previousKeys:reusePages?previousKeys:new Map<number,string>(),allowInlineMath:true},{previous:previous?retainedPaginationSnapshots.get(previous):undefined,previousIntelligent:previous?retainedIntelligentSnapshots.get(previous):undefined,measurement:saved?.inlineMathGeometry===!!options.inlineMathCache?saved.snapshot:undefined,imageKeys:previous?retainedImageSnapshots.get(previous):undefined,checkpoint,priorityPages:snapshotPagePriority(priorityPages),onPriorityPage});
+  if(!result.pageDelta||!result.paginationWork||!result.measurementWork||!result.imageWork)throw Error('Missing retained preview data');
+  return {...result,pageDelta:result.pageDelta,paginationWork:result.paginationWork,measurementWork:result.measurementWork,imageWork:result.imageWork};
 }
 async function createTextPreview(document:Document,options:TextPagePreviewOptions,delta?:{previousKeys:ReadonlyMap<number,string>;allowInlineMath?:boolean},retained?:{previous?:PaginationCheckpointSnapshot;previousIntelligent?:IntelligentMeasuredSnapshot;measurement?:BlockMeasurementSnapshot;imageKeys?:ReadonlyMap<string,string>;checkpoint?:PreviewCheckpoint;priorityPages?:readonly number[];onPriorityPage?:ProvisionalPageReceiver}):Promise<TextPagePreview & {pageDelta?:PageRenderDelta;paginationWork?:Readonly<RetainedPaginationWork>;measurementWork?:Readonly<BlockMeasurementWork>;imageWork?:RetainedTextPagePreview['imageWork']}>{
   live(document);
