@@ -79,6 +79,14 @@ planMeasuredIntelligentLayoutIncremental(input, options?, previous?) は既存 p
 
 制限: 計測済み入力の増分処理であり、ブラウザ再計測の省略は既存測定器の責務。全入力の検証、キー作成、公開結果の複製は残る。非同期化、候補ごとのチェックポイント、実測性能試験、PagePlan/PDF統合は後続。
 
+## IL-08: 協調計算と最新編集優先プレビュー（実験的）
+
+planIntelligentLayoutIncrementalCooperative と planMeasuredIntelligentLayoutIncrementalCooperative は同期版と同一の生成器を駆動する。検証、キー、再利用、配置、候補評価、snapshot作成、計測済み断片の変換で checkpoint を呼び、呼び出し側がホストに制御を返せる。checkpoint の拒否は処理を中止する。希望配置・候補最適化も中断可能な全体計算となる。入力・オプションは完了まで変更しないこと。
+
+createIntelligentPreviewSession は文書ごとに1個作る。request(input, options) は単調増加 requestId と revision を持ち、次のホストターンまで開始を遅延する。同時に要求された古い仕事は superseded となり、最新の成功だけが内部checkpointを更新する。競合では前回成功状態を維持する。cancel は要求を無効化し、reset は保持snapshotも解放する。GUIは current かつ isCurrent(requestId) かつ現在revision一致の場合のみ結果を採用し、競合時は既存プレビューを維持する。セッションは公開結果にsnapshotを含めない。
+
+既定は約8msの目標スライスと setTimeout(0) によるホストへの譲渡。sliceMs・yieldToHost・now を注入できる。実際の割込み点間の処理時間、JS実行環境、タイマーの遅延に依存するため8msの保証ではない。Workerへの実際の配置、ブラウザ再計測、描画、ドラッグ中の軽量仮表示はGUI側で別途実装する。ドラッグ中の描画はローカルで行い、確定時にrequestを呼ぶこと。性能比較は npm run benchmark:il で100/1000/10000件の中央値と再利用件数を出す（速度閾値は設けない）。
+
 ## 組版への統合（未実装）
 
 既存測定・分割・増分組版を活用し、ロックや手動余白、明示改ページを制約として扱う。ユーザーが許可した範囲のみ再計測・配置し、不要な全冊再組版を避ける。異なるページへ移動する提案や競合解消はプレビューで明示する。最終的にGUIとPDFは同じ検証済みPagePlanを使用する。

@@ -20,7 +20,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "npm run build && node --test tests/*.test.mjs",
     "layout-inspector": "node cli/layout-inspector.mjs",
-    "test:browser": "node tests/browser-measurement.mjs"
+    "test:browser": "node tests/browser-measurement.mjs",
+    "benchmark:il": "npm run build && node benchmarks/intelligent-layout.mjs"
   },
   "devDependencies": {
     "typescript": "5.8.3"

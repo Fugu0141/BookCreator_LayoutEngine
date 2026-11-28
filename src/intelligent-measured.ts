@@ -1,5 +1,5 @@
-import {paginateMeasured,paginateMeasuredIncremental,type PaginationCheckpointSnapshot,type MeasuredPagePlan,type PaginationInput,type PaginationDiagnostic,type Fragment,type Origin} from './pagination.js';
-import {planIntelligentLayout,planIntelligentLayoutIncremental,type IntelligentLayoutInput,type IntelligentLayoutSnapshot,type IncrementalIntelligentLayoutResult,type IntelligentBlock,type IntelligentPlacement,type IntelligentReservedRegion,type IntelligentLayoutResult,type IntelligentOptimizationOptions} from './intelligent-layout.js';
+import {paginateMeasured,paginateMeasuredIncremental,paginateMeasuredIncrementalCooperative,type PaginationWorkStage,type PaginationCheckpointSnapshot,type MeasuredPagePlan,type PaginationInput,type PaginationDiagnostic,type Fragment,type Origin} from './pagination.js';
+import {planIntelligentLayout,planIntelligentLayoutIncremental,planIntelligentLayoutIncrementalCooperative,type IntelligentWorkStage,type IntelligentLayoutInput,type IntelligentLayoutSnapshot,type IncrementalIntelligentLayoutResult,type IntelligentBlock,type IntelligentPlacement,type IntelligentReservedRegion,type IntelligentLayoutResult,type IntelligentOptimizationOptions} from './intelligent-layout.js';
 
 /** Source identity, independent of revision and fragment range. */
 export interface IntelligentMeasuredIntent {
@@ -71,6 +71,37 @@ export function planMeasuredIntelligentLayoutIncremental(input:PaginationInput,o
     placement={reusedBlocks:r.reusedBlocks,reusedSuffixBlocks:r.reusedSuffixBlocks,placedBlocks:r.placedBlocks,fullRecompute:r.fullRecompute};
     return r.layout;
   });
+  return finishMeasured(result,p,nextLayout,placement);
+}
+
+export type IntelligentMeasuredWorkStage=PaginationWorkStage|IntelligentWorkStage|'il-bridge';
+export type IntelligentMeasuredWorkCheckpoint=(stage:IntelligentMeasuredWorkStage)=>void|Promise<void>;
+/** Shared measured pagination and IL placement with cancellable checkpoints. */
+export async function planMeasuredIntelligentLayoutIncrementalCooperative(input:PaginationInput,options:IntelligentMeasuredOptions,
+  previous:IntelligentMeasuredSnapshot|undefined,checkpoint:IntelligentMeasuredWorkCheckpoint):Promise<IncrementalIntelligentMeasuredResult>{
+  const saved=previous?measuredSnapshots.get(previous):undefined;
+  const p=await paginateMeasuredIncrementalCooperative(input,saved?.pagination,checkpoint);
+  let nextLayout:IntelligentLayoutSnapshot|undefined;
+  let placement:IncrementalIntelligentMeasuredResult['placement'];
+  const work=placeMeasuredWork(input,options,p.plan);
+  try{
+    let step=work.next();
+    while(!step.done){
+      if(typeof step.value==='string'){
+        const wait=checkpoint(step.value);if(wait)await wait;
+        step=work.next();
+      }else{
+        const r=await planIntelligentLayoutIncrementalCooperative(step.value.input,saved?.layout,checkpoint,step.value.options);
+        nextLayout=r.snapshot;
+        placement={reusedBlocks:r.reusedBlocks,reusedSuffixBlocks:r.reusedSuffixBlocks,placedBlocks:r.placedBlocks,fullRecompute:r.fullRecompute};
+        step=work.next(r.layout);
+      }
+    }
+    const wait=checkpoint('il-bridge');if(wait)await wait;
+    return finishMeasured(step.value,p,nextLayout,placement);
+  }finally{work.return(undefined as never);}
+}
+function finishMeasured(result:IntelligentMeasuredResult,p:ReturnType<typeof paginateMeasuredIncremental>,nextLayout:IntelligentLayoutSnapshot|undefined,placement:IncrementalIntelligentMeasuredResult['placement']):IncrementalIntelligentMeasuredResult{
   let snapshot:IntelligentMeasuredSnapshot|undefined;
   if(result.status==='placed'&&(p.snapshot||nextLayout)){
     snapshot=Object.freeze({kind:'intelligent-measured-snapshot' as const});
@@ -81,6 +112,15 @@ export function planMeasuredIntelligentLayoutIncremental(input:PaginationInput,o
 
 function placeMeasured(input:PaginationInput,options:IntelligentMeasuredOptions,plan:MeasuredPagePlan,
   planner:(input:IntelligentLayoutInput,options?:IntelligentOptimizationOptions)=>IntelligentLayoutResult):IntelligentMeasuredResult {
+  const work=placeMeasuredWork(input,options,plan);
+  let step=work.next();
+  while(!step.done)step=work.next(typeof step.value==='string'?undefined:planner(step.value.input,step.value.options));
+  return step.value;
+}
+type BridgeRequest={input:IntelligentLayoutInput;options?:IntelligentOptimizationOptions};
+function* placeMeasuredWork(input:PaginationInput,options:IntelligentMeasuredOptions,plan:MeasuredPagePlan):
+  Generator<'il-bridge'|BridgeRequest,IntelligentMeasuredResult,IntelligentLayoutResult|undefined>{
+  yield 'il-bridge';
   const common:Common={revision:input.revision,fingerprint:input.fingerprint,publicationReady:false,
     paginationDiagnostics:plan.diagnostics.map(d=>({...d,...(d.origin?{origin:copyOrigin(d.origin)}:{})}))};
   const fail=(stage:'pagination'|'intent'|'layout',diagnostic:Extract<IntelligentMeasuredResult,{status:'conflict'}>['diagnostic']):IntelligentMeasuredResult=>
@@ -93,12 +133,16 @@ function placeMeasured(input:PaginationInput,options:IntelligentMeasuredOptions,
   if(!Array.isArray(list)||list.length>10000)
     return fail('intent',{code:'IL_MEASURED_INTENT',message:'Invalid intent list'});
   const counts=new Map<string,number>();
-  const fragments=plan.pages.flatMap(p=>p.fragments);
-  if(fragments.length>10000)
-    return fail('layout',{code:'IL_LIMIT',message:'Measured fragment limit exceeded'});
-  for(const f of fragments){const key=sourceKey(f.origin);counts.set(key,(counts.get(key)??0)+1);}
+  const fragments:Fragment[]=[];
+  for(const page of plan.pages)for(const f of page.fragments){
+    if(fragments.length>=10000)return fail('layout',{code:'IL_LIMIT',message:'Measured fragment limit exceeded'});
+    if(fragments.length%128===0)yield 'il-bridge';
+    fragments.push(f);const key=sourceKey(f.origin);counts.set(key,(counts.get(key)??0)+1);
+  }
   const intents=new Map<string,IntelligentMeasuredIntent['placement']>();
+  let scanned=0;
   for(const i of list){
+    if(scanned++%64===0)yield 'il-bridge';
     if(!i||typeof i.documentId!=='string'||!i.documentId||typeof i.blockKey!=='string'||!i.blockKey||
       !i.placement||typeof i.placement!=='object'||Array.isArray(i.placement)||
       (i.placement.startNewPage!==undefined&&typeof i.placement.startNewPage!=='boolean'))
@@ -108,21 +152,26 @@ function placeMeasured(input:PaginationInput,options:IntelligentMeasuredOptions,
       return fail('intent',{code:'IL_MEASURED_INTENT',blockId:key,message:'Intent must resolve to exactly one unsplit measured block'});
     intents.set(key,i.placement);
   }
-  const blocks:IntelligentBlock[]=fragments.map(f=>{
+  const blocks:IntelligentBlock[]=[];
+  for(const f of fragments){
+    if(blocks.length%128===0)yield 'il-bridge';
     const key=sourceKey(f.origin),i=intents.get(key);
     const id=intelligentMeasuredId(f.origin,counts.get(key)!>1?{start:f.unitStart,end:f.unitEnd}:undefined);
     // Redundant breaks are suppressed by IL, as in measured pagination.
     const hardBreak=f.breakReason==='explicit'||f.breakReason==='section'||f.breakReason==='page-top'||f.breakReason==='continuation';
-    return {id,size:{width:f.rect.width,height:f.rect.height},
+    blocks.push({id,size:{width:f.rect.width,height:f.rect.height},
       mode:i?.mode,fixed:i?.fixed,preferred:i?.preferred,sideBySide:i?.sideBySide,sizeConstraints:i?.sizeConstraints,
       spaceBefore:i?.spaceBefore,spaceAfter:i?.spaceAfter,
-      startNewPage:hardBreak||i?.startNewPage===true};
-  });
-  const layout=planner({revision:input.revision,content:input.content,gap:options.gap===undefined?0:options.gap,
-    blocks,reservedRegions:options.reservedRegions},options.optimization);
+      startNewPage:hardBreak||i?.startNewPage===true});
+  }
+  const layout=(yield {input:{revision:input.revision,content:input.content,gap:options.gap===undefined?0:options.gap,
+    blocks,reservedRegions:options.reservedRegions},options:options.optimization})!;
   if(layout.status==='conflict') return fail('layout',layout.diagnostic);
-  return {...common,status:'placed',layout,fragments:fragments.map((f,index)=>({
-    origin:copyOrigin(f.origin),unitStart:f.unitStart,unitEnd:f.unitEnd,continuationIndex:f.continuationIndex,
-    sourceBreakReason:f.breakReason,placement:layout.placements[index]
-  }))};
+  const placed:IntelligentMeasuredFragment[]=[];
+  for(const f of fragments){
+    if(placed.length%128===0)yield 'il-bridge';
+    placed.push({origin:copyOrigin(f.origin),unitStart:f.unitStart,unitEnd:f.unitEnd,continuationIndex:f.continuationIndex,
+      sourceBreakReason:f.breakReason,placement:layout.placements[placed.length]});
+  }
+  return {...common,status:'placed',layout,fragments:placed};
 }
