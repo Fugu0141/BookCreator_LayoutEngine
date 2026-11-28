@@ -580,8 +580,8 @@ export async function createRetainedTextPagePreview(document:Document,options:Te
   const saved=previous?retainedMeasurementSnapshots.get(previous):undefined;
   const result=await createTextPreview(document,options,{previousKeys,allowInlineMath:true},{previous:previous?retainedPaginationSnapshots.get(previous):undefined,measurement:saved?.inlineMathGeometry===!!options.inlineMathCache?saved.snapshot:undefined,imageKeys:previous?retainedImageSnapshots.get(previous):undefined,checkpoint,priorityPages:snapshotPagePriority(priorityPages),onPriorityPage});
   if(!result.pageDelta||!result.paginationWork||!result.measurementWork||!result.imageWork)throw Error('Missing retained preview data');
-  const {element,pageDelta,paginationWork,measurementWork,...rest}=result;
-  return {...rest,changedElement:element,pageDelta,paginationWork,measurementWork};
+  const {element,pageDelta,paginationWork,measurementWork,imageWork,...rest}=result;
+  return {...rest,changedElement:element,pageDelta,paginationWork,measurementWork,imageWork};
 }
 async function createTextPreview(document:Document,options:TextPagePreviewOptions,delta?:{previousKeys:ReadonlyMap<number,string>;allowInlineMath?:boolean},retained?:{previous?:PaginationCheckpointSnapshot;measurement?:BlockMeasurementSnapshot;imageKeys?:ReadonlyMap<string,string>;checkpoint?:PreviewCheckpoint;priorityPages?:readonly number[];onPriorityPage?:ProvisionalPageReceiver}):Promise<TextPagePreview & {pageDelta?:PageRenderDelta;paginationWork?:Readonly<RetainedPaginationWork>;measurementWork?:Readonly<BlockMeasurementWork>;imageWork?:RetainedTextPagePreview['imageWork']}>{
   live(document);
