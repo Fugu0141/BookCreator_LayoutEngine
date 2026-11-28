@@ -9,3 +9,11 @@
 成功時は候補設定、計画、前後の品質レポート、移動部品一覧、改善値を返す。失敗時は stale / invalid-goal / conflict / unsafe-change / no-improvement のいずれかを返す。自動適用・保存・印刷を行わない。GUIで改善値と影響箇所を提示し、明示承認後に同一設定で独立した実測プレビューと保存時検証を行う。取消では候補を破棄するだけ。再計算を含むため毎フレームのドラッグには使わない。
 
 ページ削減、偏り削減、固定を維持した希望回復、旧計画・同一revisionの設定不一致・無改善・無効目的の拒否、元データ非変更の試験を追加。CI・本体接続・実機速度は未確認。
+
+## IL-15D: 改善案の単回確認ハンドル
+
+prepareIntelligentOptimizationReview は既存提案APIを使い、成功した提案と同時に非永続のopaque handleを返す。内部WeakMapに元の計測入力・計画・設定のJSONとhost lease、候補の独立コピーを保持する。GUI表示用の候補を編集しても内部候補は変化しない。
+
+cancelIntelligentOptimizationReview はhandleを無効化する。confirmIntelligentOptimizationReview は現在のhost lease・元入力・元計画・元設定、および独立した完全実測プレビューの候補設定・計画がすべて一致する場合のみ、確認済み設定/計画のコピーを返す。不一致を含めて一度の確認でhandleを消費する。JSONコピーや別handleでは確認できない。host leaseの正しさは呼出元が保証し、保存直前の独立検証を省略しない。
+
+hostは確認成功後にのみ、既存の保存・Undo/Redo履歴へ設定を取り込み、印刷ticketを確定紙面から新規発行する。取消時は候補を破棄する。履歴・保存・印刷そのものはこのAPIでは行わない。分割範囲や意味情報の変更時は新しい入力とleaseで再提案する。単回利用・取消・古いlease・入力/計画/設定変更・候補改変・プレビュー不一致の回帰を追加。CI・本体接続未確認。
