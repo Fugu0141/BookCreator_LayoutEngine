@@ -59,6 +59,16 @@ planIntelligentLayout(input, options?) の第二引数 IntelligentOptimizationOp
 
 局所先読みと有限候補比較であり、全組合せ探索・均等な紙面余白の評価・部分的な希望解除・固定ブロック回り込み・旧座標を起点とした候補生成・キャッシュは後続。性能実測前なので最適化は明示 opt-in とする。
 
+## IL-06: 既存の計測・分割モデルとの接続（実験的）
+
+新設 src/intelligent-measured.ts の planMeasuredIntelligentLayout(input: PaginationInput, options?: IntelligentMeasuredOptions) は既存の paginateMeasured を実行し、得られた安全な断片を IL の不可分ブロックとして配置する。既存の行高、分割方針、反復 fragmentPadding、origin、unitStart / unitEnd / continuationIndex を維持する。厳密分割禁止・収まる avoid は既存の判定を利用し、avoid 分割の警告も返す。既存ページ計画の explicit / section / page-top / continuation は強制改ページとして継承し、通常の overflow は再配置できる。空ページの扱いは既存の冗長改ページ抑制に従う。既定 gap=0、最適化は明示指定のみ。
+
+options.intents は {documentId,blockKey,placement} の配列。placement は mode / fixed / preferred / sideBySide / sizeConstraints / spaceBefore / spaceAfter / startNewPage。指定は一意かつ単一断片の原稿ブロックに限定し、不明・重複・複数断片の指定は IL_MEASURED_INTENT で全体を拒否する。原稿の改ページ指定は false で解除できない。断片IDは intelligentMeasuredId(origin, units?) で生成する。単一断片は JSON 配列 [documentId,blockKey]、複数断片は [documentId,blockKey,unitStart,unitEnd]。分割境界が変わると断片IDも変わるため、永続的なユーザー意図は原稿IDに紐付ける。利用側は安定した blockKey と現在の revision を提供する。別文書の同じ blockKey は区別する。reservedRegions と optimization は従来のIL契約を利用する。
+
+結果は revision / fingerprint / publicationReady=false / paginationDiagnostics と status を含む。placed では layout と、原稿対応を保持する fragments（origin, unitStart, unitEnd, continuationIndex, sourceBreakReason, placement）を返す。sourceBreakReason は既存分割の由来であり、最終ILページ境界を表すものではない。conflict では stage（pagination / intent / layout）と diagnostic を返し、fragments=[]。既存の partial ページ計画を誤って適用しない。GUI は最新 revision の結果のみ表示し、競合時は最後の有効な計画を保持する。
+
+制限: 実測幅を変える再計測、配置中に分割境界を再最適化する処理、複数断片への固定・占有率指定、描画データの移送、既存ブラウザプレビューへの接続、増分・キャッシュ、正式PagePlan/PDFへの統合は未実装。初回の既存分割境界を固定するため、最適な詰め方にならない場合がある。入力は既存の型付き PaginationInput とし、外部JSONは既存の入力検証を経由する。既存の測定器やレンダラーを置換しない。
+
 ## 組版への統合（未実装）
 
 既存測定・分割・増分組版を活用し、ロックや手動余白、明示改ページを制約として扱う。ユーザーが許可した範囲のみ再計測・配置し、不要な全冊再組版を避ける。異なるページへ移動する提案や競合解消はプレビューで明示する。最終的にGUIとPDFは同じ検証済みPagePlanを使用する。

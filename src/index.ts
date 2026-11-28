@@ -47,3 +47,5 @@ export * from './image-crop.js';
 export * from './math-preview.js';
 
 export * from './intelligent-layout.js';
+
+export * from './intelligent-measured.js';
