@@ -13,7 +13,7 @@ import {layoutTree} from './tree.js';
 import {applyPreviewFont,readyPreviewFont,isPreviewFontFamily,isPreviewFontWeight} from './preview-font.js';
 import {planMeasuredIntelligentLayout,planMeasuredIntelligentLayoutIncremental,planMeasuredIntelligentLayoutIncrementalCooperative,projectIntelligentMeasuredPlan,type IntelligentMeasuredResult,type IntelligentMeasuredOptions,type IntelligentMeasuredSnapshot,type IntelligentMeasuredWorkStage,type IncrementalIntelligentMeasuredResult} from './intelligent-measured.js';
 import {inspectIntelligentLayoutQuality,type IntelligentQualityReport} from './intelligent-quality.js';
-import {inspectIntelligentOptimizationReview,type IntelligentOptimizationReviewComparison,prepareIntelligentOptimizationReview,confirmIntelligentOptimizationReview,cancelIntelligentOptimizationReview,type IntelligentOptimizationGoal,type IntelligentOptimizationScope,type IntelligentOptimizationReview,type IntelligentOptimizationReviewHandle,type IntelligentOptimizationConfirmation} from './intelligent-optimization-proposal.js';
+import {prepareIntelligentOptimizationReviewCooperative,type IntelligentOptimizationWorkStage,inspectIntelligentOptimizationReview,type IntelligentOptimizationReviewComparison,prepareIntelligentOptimizationReview,confirmIntelligentOptimizationReview,cancelIntelligentOptimizationReview,type IntelligentOptimizationGoal,type IntelligentOptimizationScope,type IntelligentOptimizationReview,type IntelligentOptimizationReviewHandle,type IntelligentOptimizationConfirmation} from './intelligent-optimization-proposal.js';
 import {paginateMeasured,paginateMeasuredIncremental,paginateMeasuredIncrementalCooperative,type PaginationWorkStage,type PaginationCheckpointSnapshot,type PaginationInput,type Origin,type MeasuredPagePlan,type SplitPolicy,type PageBreak} from './pagination.js';
 import type {PlainTextMeasureRequest,InlineStyleRun,InlineMathAtom} from './browser-measurement.js';
 
@@ -730,13 +730,7 @@ const retainedOptimizationChoices=new WeakMap<RetainedIntelligentOptimizationCho
 export function prepareRetainedIntelligentOptimizationChoices(
   document:Document,base:PageReuseSnapshot,target:Readonly<RetainedIntelligentOptimizationTarget>,lease:string,
 ):RetainedIntelligentOptimizationChoices{
-  if(!target||typeof target!=='object'||Array.isArray(target)||
-    (target.kind!=='book'&&target.kind!=='pages'&&target.kind!=='document')||
-    (target.kind==='pages'&&!target.scope)||
-    (target.kind==='document'&&(typeof target.documentId!=='string'||!target.documentId)))
-    return {status:'rejected',reason:'invalid-target'};
-  const allowed=target.kind==='book'?['kind']:target.kind==='pages'?['kind','scope']:['kind','documentId','maxMovedFragments'];
-  if(Object.keys(target).some(k=>!allowed.includes(k)))return {status:'rejected',reason:'invalid-target'};
+  if(!validRetainedOptimizationTarget(target))return {status:'rejected',reason:'invalid-target'};
   live(document);previousPageKeys(document,base);
   const reviews=new Map<IntelligentOptimizationGoal,AvailableOptimizationReview>();
   const choices:RetainedIntelligentOptimizationChoice[]=[];
@@ -745,20 +739,85 @@ export function prepareRetainedIntelligentOptimizationChoices(
       const review=target.kind==='document'?
         prepareRetainedIntelligentDocumentOptimizationReview(document,base,target.documentId,goal,lease,target.maxMovedFragments):
         prepareRetainedIntelligentOptimizationReview(document,base,goal,lease,target.kind==='pages'?target.scope:undefined);
-      if(review.status==='rejected'){choices.push({goal,...review});continue;}
-      reviews.set(goal,review);
-      const comparison=inspectRetainedIntelligentOptimizationReview(document,review.handle,base,lease);
-      if(!comparison)throw Error('Missing retained optimization comparison');
-      choices.push({goal,status:'available',comparison});
+      recordRetainedChoice(document,base,lease,goal,review,reviews,choices);
     }
   }catch(error){
     for(const review of reviews.values())cancelRetainedIntelligentOptimizationReview(review.handle);
     throw error;
   }
+  return finishRetainedChoices(base,lease,reviews,choices);
+}
+function validRetainedOptimizationTarget(target:Readonly<RetainedIntelligentOptimizationTarget>):boolean{
+  if(!target||typeof target!=='object'||Array.isArray(target)||
+    (target.kind!=='book'&&target.kind!=='pages'&&target.kind!=='document')||
+    (target.kind==='pages'&&!target.scope)||
+    (target.kind==='document'&&(typeof target.documentId!=='string'||!target.documentId)))
+    return false;
+  const allowed=target.kind==='book'?['kind']:target.kind==='pages'?['kind','scope']:['kind','documentId','maxMovedFragments'];
+  return !Object.keys(target).some(k=>!allowed.includes(k));
+}
+function recordRetainedChoice(document:Document,base:PageReuseSnapshot,lease:string,goal:IntelligentOptimizationGoal,
+  review:RetainedIntelligentDocumentOptimizationReview,reviews:RetainedChoicesState['reviews'],choices:RetainedIntelligentOptimizationChoice[]):void{
+  if(review.status==='rejected'){choices.push({goal,...review});return;}
+  reviews.set(goal,review);
+  const comparison=inspectRetainedIntelligentOptimizationReview(document,review.handle,base,lease);
+  if(!comparison)throw Error('Missing retained optimization comparison');
+  choices.push({goal,status:'available',comparison});
+}
+function finishRetainedChoices(base:PageReuseSnapshot,lease:string,reviews:RetainedChoicesState['reviews'],choices:RetainedIntelligentOptimizationChoice[]):RetainedIntelligentOptimizationChoices{
   if(!reviews.size)return {status:'empty',choices};
   const handle=Object.freeze({kind:'retained-intelligent-optimization-choices' as const});
   retainedOptimizationChoices.set(handle,{base,lease,reviews});
   return {status:'ready',handle,choices};
+}
+export type RetainedOptimizationChoicesCheckpoint=(goal:IntelligentOptimizationGoal,stage:IntelligentOptimizationWorkStage)=>void|Promise<void>;
+/** Cooperative choice generation. Host aborts obsolete generations with its
+ * own AbortController and yields to the event loop in checkpoint. No partial
+ * set is published; on any error all accumulated reviews are discarded. */
+export async function prepareRetainedIntelligentOptimizationChoicesCooperative(
+  document:Document,base:PageReuseSnapshot,target:Readonly<RetainedIntelligentOptimizationTarget>,lease:string,
+  checkpoint:RetainedOptimizationChoicesCheckpoint,signal?:AbortSignal,
+):Promise<RetainedIntelligentOptimizationChoices>{
+  if(!validRetainedOptimizationTarget(target))return {status:'rejected',reason:'invalid-target'};
+  live(document);previousPageKeys(document,base);
+  const captured=structuredClone(target);
+  const input=retainedDraftInputs.get(base),context=retainedReviewContexts.get(base);
+  let scope:Readonly<IntelligentOptimizationScope>|undefined;
+  let rejection:'stale'|'unknown-document'|'shared-pages'|undefined;
+  if(!input||!context)rejection='stale';
+  else if(captured.kind==='pages')scope=captured.scope;
+  else if(captured.kind==='document'){
+    const range=retainedDocumentReviewRanges(context.approved).find(r=>r.documentId===captured.documentId);
+    if(!range)rejection='unknown-document';
+    else if(!range.exclusiveScope)rejection='shared-pages';
+    else scope={...range.exclusiveScope,...(captured.maxMovedFragments===undefined?{}:{maxMovedFragments:captured.maxMovedFragments})};
+  }
+  const check=()=>{
+    if(signal?.aborted)throw new DOMException('Optimization choices cancelled','AbortError');
+    live(document);previousPageKeys(document,base);
+  };
+  const reviews=new Map<IntelligentOptimizationGoal,AvailableOptimizationReview>();
+  const choices:RetainedIntelligentOptimizationChoice[]=[];
+  try{
+    check();
+    for(const goal of ['compact','balance'] as const){
+      const review:RetainedIntelligentDocumentOptimizationReview=rejection||!input||!context?
+        {status:'rejected',reason:rejection??'stale'}:
+        await prepareIntelligentOptimizationReviewCooperative(input,context.approved,context.options,goal,lease,scope,
+          async stage=>{check();await checkpoint(goal,stage);check();},retainedIntelligentSnapshots.get(base));
+      if(review.status==='review'){
+        retainedReviewHandles.set(review.handle,base);
+        reviews.set(goal,review);
+      }
+      check();
+      recordRetainedChoice(document,base,lease,goal,review,reviews,choices);
+    }
+    check();
+    return finishRetainedChoices(base,lease,reviews,choices);
+  }catch(error){
+    for(const review of reviews.values())cancelRetainedIntelligentOptimizationReview(review.handle);
+    throw error;
+  }
 }
 /** Selecting transfers exactly one ordinary review to the host. It does not
  * confirm or publish it. All other reviews from this choice set are cancelled.
