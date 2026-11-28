@@ -51,3 +51,9 @@ proposeIntelligentOptimization の任意の第5引数、prepareIntelligentOptimi
 balancePageRange 指定時の増分APIで、成功済み希望尊重lookahead passのcheckpointを別の編集要求に引き継ぐ。通常greedy snapshotとは別の内部WeakMapに保持し、既存の互換context、正規化キー、lookahead依存、グループ境界、flow state一致で再利用範囲を決定する。範囲変更や評価条件変更でも基礎lookahead配置が同じなら再利用可能。候補選択・評価・全冊検証は毎回実行する。キャンセルや失敗で旧snapshotを変更しない。通常/他の最適化方式のsnapshotとの混用は行わない。
 
 増分APIのplacement作業数はこの主lookahead passについて報告し、greedy・追加候補・キー走査・コピー・評価等の全処理時間を表さない。追加balance候補のtargetedBalanceWorkは従来通り別計測。成功結果はcold計算と完全一致する必要がある。102ページ104ブロックの局所編集、範囲変更、協調処理と取消、用紙変更、通常方式とのsnapshot分離を回帰試験に追加。CI・実機速度・GUI接続未確認。
+
+## IL-16E: 長冊の範囲指定最適化ベンチマーク
+
+#128 全3系統CI成功・main統合済み。npm run benchmark:il:targeted で240ページ/480ブロックおよび1000ページ/2000ブロックの合成計測済み書籍を比較する。中央章の高さ変更と範囲のみ変更の2シナリオ、それぞれ4回ウォームアップ・16組のペア測定。同一入力・同一設定でcoldと前回snapshotを引き継ぐincrementalを交互の実行順で比較する。
+
+各ペアで完全な結果一致、成功、ページ数、選択候補、主lookaheadと追加候補の再利用件数を必須検証する。局所編集では全ブロックから9個を引いた数以上、範囲のみ変更では主lookahead全件の再利用を要求。IL_TARGETED_BENCH のJSONで中央値/p95/最小/最大・中央値比、作業数と全ペア値を出力する。時間閾値は設けず、増分処理が遅い場合も結果をそのまま報告する。Core CIに追加した。計測済み入力からの処理時間であり、フォント/DOM/Electron/実機操作/PDF出力は含まない。1000ページはcore solverの合成負荷試験であって、ブラウザプレビューの上限変更ではない。CI結果・実測値未確認。
