@@ -56,7 +56,7 @@ export interface IncrementalIntelligentMeasuredResult {
   result:IntelligentMeasuredResult;
   snapshot?:IntelligentMeasuredSnapshot;
   pagination:{reusedBlocks:number;reusedSuffixBlocks:number;placedBlocks:number;sharedSnapshotFragments:number};
-  placement?:Pick<IncrementalIntelligentLayoutResult,'reusedBlocks'|'reusedSuffixBlocks'|'placedBlocks'|'fullRecompute'>;
+  placement?:Pick<IncrementalIntelligentLayoutResult,'reusedBlocks'|'reusedSuffixBlocks'|'placedBlocks'|'sharedSnapshotPlacements'|'fullRecompute'>;
 }
 const measuredSnapshots=new WeakMap<IntelligentMeasuredSnapshot,{pagination?:PaginationCheckpointSnapshot;layout?:IntelligentLayoutSnapshot}>();
 export function planMeasuredIntelligentLayoutIncremental(input:PaginationInput,options:IntelligentMeasuredOptions={},
@@ -68,7 +68,7 @@ export function planMeasuredIntelligentLayoutIncremental(input:PaginationInput,o
   const result=placeMeasured(input,options,p.plan,(layoutInput,optimization)=>{
     const r=planIntelligentLayoutIncremental(layoutInput,saved?.layout,optimization);
     nextLayout=r.snapshot;
-    placement={reusedBlocks:r.reusedBlocks,reusedSuffixBlocks:r.reusedSuffixBlocks,placedBlocks:r.placedBlocks,fullRecompute:r.fullRecompute};
+    placement={reusedBlocks:r.reusedBlocks,reusedSuffixBlocks:r.reusedSuffixBlocks,placedBlocks:r.placedBlocks,sharedSnapshotPlacements:r.sharedSnapshotPlacements,fullRecompute:r.fullRecompute};
     return r.layout;
   });
   return finishMeasured(result,p,nextLayout,placement);
@@ -93,7 +93,7 @@ export async function planMeasuredIntelligentLayoutIncrementalCooperative(input:
       }else{
         const r=await planIntelligentLayoutIncrementalCooperative(step.value.input,saved?.layout,checkpoint,step.value.options);
         nextLayout=r.snapshot;
-        placement={reusedBlocks:r.reusedBlocks,reusedSuffixBlocks:r.reusedSuffixBlocks,placedBlocks:r.placedBlocks,fullRecompute:r.fullRecompute};
+        placement={reusedBlocks:r.reusedBlocks,reusedSuffixBlocks:r.reusedSuffixBlocks,placedBlocks:r.placedBlocks,sharedSnapshotPlacements:r.sharedSnapshotPlacements,fullRecompute:r.fullRecompute};
         step=work.next(r.layout);
       }
     }
