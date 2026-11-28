@@ -97,3 +97,11 @@ selectRetainedIntelligentOptimizationChoice(document,handle,base,lease,goal) は
 prepareRetainedIntelligentOptimizationChoicesCooperative(document,base,target,lease,checkpoint,signal?) を追加。同期版と同一の提案判定を共有し、既存の協調測定済み組版APIとretained placement checkpointを使用する。呼出時に対象を独立コピーし、各目的と処理段階をcheckpoint(goal,stage)へ通知する。hostが必要な頻度で実タスクへyieldすることで入力処理に制御を返せる。AbortSignalによる取消はAbortError、host checkpointの例外はそのまま伝播し、生成済みの未公開reviewを破棄する。途中の候補集合は公開しない。返却後の取消は既存の集合/単一review取消APIを使う。
 
 hostは最新要求への切替時に旧AbortControllerをabortし、返却直前後の世代確認と古い集合の破棄を行う。自動世代管理や保存許可は提供しない。品質集計・比較・コピー等の同期区間は残り、実機の応答時間は未測定。ブラウザ回帰で同期版との一致、呼出後の対象改変、実タスクyield、solver内取消、開始前取消、checkpoint例外、再試行、実測候補確認を追加。CI・GUI接続・実機速度未確認。
+
+## IL-17G: 選択済みの単一目的を協調生成
+
+#135 全3系統CI成功・main統合済み。GUIが目的を明示選択済みの場合は prepareRetainedIntelligentOptimizationReviewCooperative(document,base,target,goal,lease,checkpoint,signal?) を使用できる。targetは従来の候補集合と同じbook/pages/documentの明示指定。対象は呼出時に独立コピーし、不明原稿・共有ページ・不正範囲・移動予算を従来通り拒否する。別の目的や全冊への自動フォールバックを行わない。
+
+選択された目的だけを計算し、候補集合と共通の協調処理・retained checkpointを使用する。checkpointはstageのみを受け取る。hostが実タスクへyieldし、旧世代をAbortSignalで取消す。取消はAbortError、checkpoint例外はそのまま伝播し、公開前のreviewは破棄する。成功時は通常の単回reviewを返すため既存のinspect/confirm/cancelで扱える。候補の独立した完全実測と元base/lease/入力/設定/計画の照合、保存直前のhost検証は維持する。候補生成だけで原稿や保存済み紙面を更新しない。
+
+ブラウザ回帰に同期版と比較情報の一致、対象改変の隔離、一目的のみの実行、無改善/不明原稿/予算/不正対象、事前・途中取消、再試行、実測確認の単回消費を追加。CI、本体接続、実機応答時間は未確認。
