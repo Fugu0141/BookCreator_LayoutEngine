@@ -7,11 +7,22 @@ export interface IntelligentMeasuredIntent {
   blockKey:string;
   placement:Readonly<Pick<IntelligentBlock,'mode'|'fixed'|'fixedPositionOnly'|'fixedRowShare'|'preferred'|'preferredTolerance'|'sideBySide'|'sizeConstraints'|'spaceBefore'|'spaceAfter'|'startNewPage'|'keepTogetherGroup'|'keepTogetherLayout'>>;
 }
+export type IntelligentSemanticRole='heading'|'body'|'example'|'explanation'|'exercise'|'solution'|'figure'|'table'|'caption'|'other';
+/** Host-owned source semantics, not persistent geometry or hard grouping. */
+export interface IntelligentSemanticHint {
+  documentId:string;
+  blockKey:string;
+  role:IntelligentSemanticRole;
+  keepWithNext?:boolean;
+  keepWithPrevious?:boolean;
+}
 export interface IntelligentMeasuredOptions {
   gap?:number;
   intents?:readonly IntelligentMeasuredIntent[];
   reservedRegions?:readonly IntelligentReservedRegion[];
   optimization?:IntelligentOptimizationOptions;
+  /** Opt-in semantic pairing from explicitly classified source blocks. */
+  semanticHints?:readonly IntelligentSemanticHint[];
 }
 export interface IntelligentMeasuredFragment {
   origin:Origin;
@@ -36,7 +47,8 @@ export type IntelligentMeasuredResult =
 
 // Placement intent is a serialized host contract. Unknown field names are
 // rejected rather than silently treating a misspelled constraint as automatic.
-const optionKeys=['gap','intents','reservedRegions','optimization'];
+const optionKeys=['gap','intents','reservedRegions','optimization','semanticHints'];
+const semanticRoles=new Set(['heading','body','example','explanation','exercise','solution','figure','table','caption','other']);
 const intentKeys=['documentId','blockKey','placement'];
 const placementKeys=['mode','fixed','fixedPositionOnly','fixedRowShare','preferred','preferredTolerance','sideBySide','sizeConstraints','spaceBefore','spaceAfter','startNewPage','keepTogetherGroup','keepTogetherLayout'];
 const positionKeys=['page','x','y'];
@@ -268,8 +280,58 @@ function* placeMeasuredWork(input:PaginationInput,options:IntelligentMeasuredOpt
       spaceBefore:i?.spaceBefore,spaceAfter:i?.spaceAfter,keepTogetherGroup:i?.keepTogetherGroup,keepTogetherLayout:i?.keepTogetherLayout,
       startNewPage:hardBreak||i?.startNewPage===true});
   }
+  let optimization=options.optimization;
+  if(options.semanticHints!==undefined){
+    const list=options.semanticHints;
+    if(!Array.isArray(list)||list.length>10000)return fail('intent',{code:'IL_MEASURED_INTENT',message:'Invalid semantic hint list'});
+    const hints=new Map<string,IntelligentSemanticHint>();
+    const sectionBySource=new Map<string,number>();
+    for(const [index,section] of input.sections.entries())for(const b of section.blocks){
+      if(b.kind!=='block')continue;
+      const key=sourceKey(b.origin);
+      sectionBySource.set(key,sectionBySource.has(key)?-1:index);
+    }
+    for(const hint of list){
+      if(scanned++%64===0)yield 'il-bridge';
+      if(!hasOnlyKeys(hint,['documentId','blockKey','role','keepWithNext','keepWithPrevious'])||
+        typeof hint.documentId!=='string'||!hint.documentId||typeof hint.blockKey!=='string'||!hint.blockKey||
+        !semanticRoles.has(hint.role)||
+        (hint.keepWithNext!==undefined&&typeof hint.keepWithNext!=='boolean')||
+        (hint.keepWithPrevious!==undefined&&typeof hint.keepWithPrevious!=='boolean'))
+        return fail('intent',{code:'IL_MEASURED_INTENT',message:'Invalid semantic hint'});
+      const key=sourceKey(hint);
+      if(hints.has(key)||!counts.has(key)||sectionBySource.get(key)===undefined||sectionBySource.get(key)===-1)
+        return fail('intent',{code:'IL_MEASURED_INTENT',blockId:key,message:'Unknown or ambiguous semantic hint source'});
+      hints.set(key,hint);
+    }
+    const derived:string[]=[];
+    for(let j=0;j+1<fragments.length;j++){
+      if(j%128===0)yield 'il-bridge';
+      const a=fragments[j],b=fragments[j+1],ak=sourceKey(a.origin),bk=sourceKey(b.origin);
+      if(a.origin.documentId!==b.origin.documentId||ak===bk||counts.get(ak)!==1||counts.get(bk)!==1||
+        sectionBySource.get(ak)!==sectionBySource.get(bk)||blocks[j+1].startNewPage)continue;
+      const left=hints.get(ak),right=hints.get(bk);
+      if(left?.keepWithNext===false||right?.keepWithPrevious===false)continue;
+      const rolePair=left&&right&&(
+        left.role==='heading'&&['body','explanation','example','exercise'].includes(right.role)||
+        left.role==='example'&&right.role==='explanation'||
+        left.role==='exercise'&&right.role==='solution'||
+        ['figure','table'].includes(left.role)&&right.role==='caption'||
+        left.role==='caption'&&['figure','table'].includes(right.role));
+      if(left?.keepWithNext===true||right?.keepWithPrevious===true||rolePair)derived.push(blocks[j].id);
+    }
+    if(derived.length){
+      // Raw fragment-ID hints and source semantics are distinct opt-ins;
+      // reject mixed input to avoid silently overriding explicit vetoes.
+      if(optimization!==undefined&&(!hasOnlyKeys(optimization,['previousPositions','selectivePreferenceFallback','keepWithNextIds','balancePageDepths'])||
+        optimization.keepWithNextIds!==undefined))
+        return fail('intent',{code:'IL_MEASURED_INTENT',message:'Semantic hints cannot be combined with raw keep-with-next IDs'});
+      optimization={...optimization,keepWithNextIds:derived};
+    }else if(optimization?.keepWithNextIds!==undefined&&list.length)
+      return fail('intent',{code:'IL_MEASURED_INTENT',message:'Semantic hints cannot be combined with raw keep-with-next IDs'});
+  }
   const layout=(yield {input:{revision:input.revision,content:input.content,gap:options.gap===undefined?0:options.gap,
-    blocks,reservedRegions:options.reservedRegions},options:options.optimization})!;
+    blocks,reservedRegions:options.reservedRegions},options:optimization})!;
   if(layout.status==='conflict') return fail('layout',layout.diagnostic);
   const placed:IntelligentMeasuredFragment[]=[];
   for(const f of fragments){
