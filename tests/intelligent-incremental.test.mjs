@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {planIntelligentLayout as full,planIntelligentLayoutIncremental as inc,planMeasuredIntelligentLayout as measured,planMeasuredIntelligentLayoutIncremental as mi} from '../dist/index.js';
+import {planIntelligentLayout as full,planIntelligentLayoutIncremental as inc,planIntelligentLayoutIncrementalCooperative as coop,planMeasuredIntelligentLayout as measured,planMeasuredIntelligentLayoutIncremental as mi} from '../dist/index.js';
 const b=(id,height=20,extra={})=>({id,size:{width:100,height},...extra});
 const input=(blocks,extra={})=>({revision:'r1',content:{width:100,height:100},gap:0,blocks,...extra});
 test('unchanged geometry reuses all placements and returns new revision',()=>{
@@ -37,10 +37,10 @@ test('public geometry and invalid input cannot poison saved result',()=>{
  assert.deepEqual(inc(invalid,a.snapshot).layout,full(invalid));
  assert.equal(inc(invalid,a.snapshot).snapshot,undefined);
 });
-test('preferred and optimization use original full candidate planner',()=>{
+test('preferred pass reuses unchanged prefix; optimization uses original full candidate planner',()=>{
  const i=input([b('a'),b('b')]),a=inc(i);
  const n=input([b('a'),b('b',20,{preferred:{page:0,x:0,y:40}})]);
- assert.deepEqual(inc(n,a.snapshot).layout,full(n));assert.equal(inc(n,a.snapshot).fullRecompute,true);
+ const r=inc(n,a.snapshot);assert.deepEqual(r.layout,full(n));assert.equal(r.fullRecompute,false);assert.equal(r.reusedBlocks,1);assert.ok(r.snapshot);
  const opt=inc(i,a.snapshot,{});assert.equal(opt.fullRecompute,true);assert.deepEqual(opt.layout,full(i,{}));assert.equal(opt.snapshot,undefined);
 });
 test('incremental bridge reuses both layers and refreshes origin and fingerprint',()=>{
@@ -60,5 +60,49 @@ test('deterministic mixed edits agree with cold layout',()=>{
   blocks=blocks.map((v,k)=>k===j?{...v,size:{...v.size,height:10+(i%7)*5}}:v);
   const n=input(blocks,{revision:'r'+i});
   const r=inc(n,prev.snapshot);assert.deepEqual(r.layout,full(n));prev=r;
+ }
+});
+
+test('preferred drag keys include target and tolerance, reuse suffix after page boundary',async()=>{
+ const make=(x,y,tolerance)=>input([b('a'),{id:'drag',size:{width:30,height:20},preferred:{page:0,x,y},preferredTolerance:tolerance},b('break',20,{startNewPage:true}),b('d'),b('e')]);
+ const first=make(65,25,{x:0,y:0}),a=inc(first);
+ assert.deepEqual(a.layout,full(first));assert.equal(a.layout.placements[1].preference,'honored');
+ const moved=make(75,30,{x:10,y:0}),r=inc(moved,a.snapshot);
+ assert.deepEqual(r.layout,full(moved));assert.equal(r.layout.placements[1].rect.x,70);
+ assert.equal(r.reusedBlocks,3);assert.equal(r.reusedSuffixBlocks,2);assert.equal(r.placedBlocks,2);
+ const narrow=make(75,30,{x:1,y:0}),n=inc(narrow,r.snapshot);
+ assert.deepEqual(n.layout,full(narrow));assert.equal(n.layout.placements[1].preference,'fallback');
+ assert.equal(n.reusedBlocks,3);assert.equal(n.placedBlocks,2);
+ const repeat=await coop(narrow,n.snapshot,()=>{});
+ assert.deepEqual(repeat.layout,full(narrow));assert.equal(repeat.reusedBlocks,5);assert.equal(repeat.placedBlocks,0);
+ const invalid=make(75,30,{x:-1,y:0});
+ assert.deepEqual(inc(invalid,n.snapshot).layout,full(invalid));
+ assert.equal(inc(invalid,n.snapshot).snapshot,undefined);
+ await assert.rejects(coop(moved,n.snapshot,stage=>{if(stage==='il-place')throw Error('cancel drag');}),/cancel drag/);
+ assert.equal(inc(narrow,n.snapshot).reusedBlocks,5);
+});
+test('late fixed conflict retries without preferences and cannot poison honoring snapshot',()=>{
+ const make=y=>input([b('a',10),b('drag',20,{preferred:{page:0,x:0,y}}),b('pin',20,{fixed:{page:0,x:0,y:50}})]);
+ const start=make(20),a=inc(start);assert.ok(a.snapshot);
+ const moved=make(60),r=inc(moved,a.snapshot);
+ assert.deepEqual(r.layout,full(moved));assert.equal(r.layout.status,'placed');
+ assert.equal(r.layout.placements[1].preference,'fallback');
+ assert.equal(r.fullRecompute,true);assert.equal(r.snapshot,undefined);
+ assert.equal(inc(start,a.snapshot).reusedBlocks,3);
+ const later=input([b('a',10),b('drag',20,{preferred:{page:0,x:0,y:60}}),b('pin',20,{fixed:{page:0,x:0,y:15}})]);
+ const conflict=inc(later,a.snapshot);
+ assert.deepEqual(conflict.layout,full(later));assert.equal(conflict.layout.status,'conflict');assert.equal(conflict.snapshot,undefined);
+ assert.equal(inc(start,a.snapshot).reusedBlocks,3);
+});
+test('long book drag changes reuse preceding chapter placements and match cold computation',()=>{
+ const blocks=Array.from({length:1000},(_,i)=>({id:'b'+i,size:{width:30,height:10},startNewPage:i%8===0}));
+ const initial=inc(input(blocks));
+ const edit=(x,y)=>input(blocks.map((b,i)=>i===800?{...b,preferred:{page:100,x,y},preferredTolerance:{x:10,y:5}}:b));
+ let prior=initial;
+ for(let i=0;i<12;i++){
+  const n=edit(20+i*3,5+i%3),r=inc(n,prior.snapshot);
+  assert.deepEqual(r.layout,full(n));assert.ok(r.snapshot);
+  assert.ok(r.reusedBlocks>=800);assert.ok(r.placedBlocks<=200);
+  prior=r;
  }
 });
