@@ -100,3 +100,12 @@ test('fixed row sharing survives serialized measured intent and cooperative reus
  const r=plan(i,options);assert.equal(r.status,'placed');assert.deepEqual(r.fragments.map(f=>[f.placement.rect.x,f.placement.rect.y]),[[0,0],[30,0],[55,0]]);
  const a=incremental(i,options),warm=await cooperative(i,options,a.snapshot,()=>{});assert.deepEqual(warm.result,r);assert.equal(warm.placement.reusedBlocks,3);
 });
+
+test('measured keep-together groups preserve distinct source fragments and reject explicit internal breaks',async()=>{
+ const i=input([section([b('prior',20,[60]),b('example',20,[20]),b('solution',20,[20]),b('after',20,[10])])]);
+ const opts=JSON.parse(JSON.stringify({gap:5,intents:[intent('example',{keepTogetherGroup:'pair'}),intent('solution',{keepTogetherGroup:'pair'})]}));
+ const r=plan(i,opts);assert.equal(r.status,'placed');assert.deepEqual(r.fragments.map(f=>[f.origin.blockKey,f.placement.page,f.placement.rect.y]),[['prior',0,0],['example',1,0],['solution',1,25],['after',1,50]]);
+ assert.deepEqual((await cooperative(i,opts,undefined,()=>{})).result,r);
+ const broken=input([section([b('example',20,[20]),{kind:'pagebreak',origin:origin('break')},b('solution',20,[20])])]);
+ const bad=plan(broken,opts);assert.equal(bad.status,'conflict');assert.equal(bad.diagnostic.code,'IL_INVALID');assert.deepEqual(bad.fragments,[]);
+});
