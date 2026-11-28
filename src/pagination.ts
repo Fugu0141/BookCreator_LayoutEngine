@@ -19,6 +19,8 @@ export interface MeasuredBlock {
   /** Soft minimum indivisible units before and after a split, respectively. */
   minUnitsBefore?:number;
   minUnitsAfter?:number;
+  /** Opt-in minimum-page search among legal partitions satisfying both minima. */
+  optimizeSplit?:boolean;
   // Repeated overhead reserved once per fragment, not once per line.
   fragmentPadding?:{top:number;bottom:number};
   startPosition?: 'flow'|'page-top';
@@ -129,6 +131,50 @@ function finishIncremental(plan:MeasuredPagePlan,state:IncrementalState):Increme
   }
   return {plan,snapshot,reusedBlocks:state.reusedBlocks,reusedSuffixBlocks:state.reusedSuffixBlocks,placedBlocks:state.placedBlocks,sharedSnapshotFragments:state.sharedSnapshotFragments};
 }
+// Bounded O(n log n) partition search. Each suffix starts on an empty
+// page; a segment tree finds the fewest remaining pages among reachable
+// legal boundaries. Ties use the longest earlier fragment. No unit is
+// split or reordered. If no feasible partition exists, use legacy flow.
+function* searchSplit(block:MeasuredBlock,height:number,used:number,overhead:number):
+  Generator<PaginationWorkStage,{ends:number[];fresh:boolean}|undefined,void>{
+  const units=block.unitHeights,n=units.length;
+  const before=block.minUnitsBefore??1,after=block.minUnitsAfter??1;
+  if(n>100000)return undefined;
+  const sum=new Float64Array(n+1);
+  for(let i=0;i<n;i++){if(i%256===0)yield 'paginate-place';sum[i+1]=sum[i]+units[i];}
+  const pages=new Int32Array(n+1);pages.fill(-1);pages[n]=0;
+  const next=new Int32Array(n);next.fill(-1);
+  let size=1;while(size<n+1)size*=2;
+  const tree=new Int32Array(size*2);tree.fill(-1);
+  const better=(a:number,b:number)=>a<0?b:b<0?a:pages[a]<pages[b]?a:pages[b]<pages[a]?b:Math.max(a,b);
+  const put=(i:number)=>{let p=size+i;tree[p]=i;while(p>1){p>>=1;tree[p]=better(tree[p*2],tree[p*2+1]);}};
+  const query=(lo:number,hi:number)=>{let a=-1;for(lo+=size,hi+=size;lo<=hi;lo>>=1,hi>>=1){
+    if(lo%2===1)a=better(a,tree[lo++]);if(hi%2===0)a=better(a,tree[hi--]);
+  }return a;};
+  const choose=(start:number,capacity:number,first:boolean)=>{
+    let lo=start,hi=n;
+    while(lo<hi){const mid=Math.ceil((lo+hi)/2);if(sum[mid]-sum[start]<=capacity-overhead)lo=mid;else hi=mid-1;}
+    if(lo===n&&n-start>=(first?1:after))return n;
+    const minimum=first?before:Math.max(before,after),end=Math.min(lo,n-1);
+    return start+minimum<=end?query(start+minimum,end):-1;
+  };
+  put(n);
+  for(let i=n-1;i>0;i--){
+    if(i%128===0)yield 'paginate-place';
+    const end=choose(i,height,false);
+    if(end>=0){next[i]=end;pages[i]=1+pages[end];put(i);}
+  }
+  const here=choose(0,height-used,true),fresh=used>0?choose(0,height,true):here;
+  // A partial page is already counted. Moving to a fresh page costs one
+  // additional page; prefer filling the existing page on ties.
+  const move=used>0&&fresh>=0&&(here<0||pages[here]>1+pages[fresh]);
+  let end=move?fresh:here;
+  if(end<0)return undefined;
+  const ends:number[]=[];
+  while(end<n){if(ends.length%128===0)yield 'paginate-place';ends.push(end);end=next[end];}
+  ends.push(n);
+  return {ends,fresh:move};
+}
 function* runPagination(input:PaginationInput,incremental?:IncrementalState):Generator<PaginationWorkStage,MeasuredPagePlan,void> {
   const result:MeasuredPagePlan={schemaVersion:1,revision:input.revision,fingerprint:input.fingerprint,completeness:'partial',measurement:'premeasured',publicationReady:false,pages:[],diagnostics:[]};
   const fail=(code:PaginationDiagnostic['code'],message:string,origin?:Origin)=>{result.diagnostics.push({code,severity:'error',message,origin});return result;};
@@ -153,6 +199,7 @@ function* runPagination(input:PaginationInput,incremental?:IncrementalState):Gen
         (block.startPosition!==undefined&&!['flow','page-top'].includes(block.startPosition))||
         (block.startPositionSource!==undefined&&!['component','explicit'].includes(block.startPositionSource))||
         (block.startPosition==='page-top'&&!block.startPositionSource))return fail('PG_INVALID','Invalid measured block',o);
+      if(block.optimizeSplit!==undefined&&typeof block.optimizeSplit!=='boolean')return fail('PG_INVALID','Invalid split optimization option',o);
       if([block.minUnitsBefore,block.minUnitsAfter].some(n=>n!==undefined&&(!positive(n)||n>1000000)))
         return fail('PG_INVALID','Invalid split minimum',o);
       const padding=block.fragmentPadding;
@@ -209,7 +256,7 @@ function* runPagination(input:PaginationInput,incremental?:IncrementalState):Gen
         eventKeys.push(JSON.stringify(block.kind==='pagebreak'?['break',k]:[
           'block',k,suppress,block.width,block.unitHeights,block.splitPolicy,
           block.fragmentPadding?.top??0,block.fragmentPadding?.bottom??0,
-          block.startPosition??'flow',block.startPositionSource??null,block.minUnitsBefore??1,block.minUnitsAfter??1
+          block.startPosition??'flow',block.startPositionSource??null,block.minUnitsBefore??1,block.minUnitsAfter??1,block.optimizeSplit===true
         ]));
       }
     }
@@ -326,11 +373,15 @@ function* runPagination(input:PaginationInput,incremental?:IncrementalState):Gen
         result.diagnostics.push({code:'PG_AVOID_SPLIT',severity:'warning',message:'Block exceeds an empty page; safe splitting required',origin:block.origin});
       }
       const minBefore=block.minUnitsBefore??1,minAfter=block.minUnitsAfter??1;
+      const partition=block.optimizeSplit===true&&(minBefore>1||minAfter>1)&&total>height-used&&block.splitPolicy!=='strict'
+        ?yield* searchSplit(block,height,used,overhead):undefined;
+      if(partition?.fresh)newPage('overflow');
       let cursor=0, continuationIndex=0, minimumWarned=false;
       while(cursor<block.unitHeights.length){
         if(block.unitHeights[cursor]+overhead>height-used)newPage(cursor?'continuation':'overflow');
         let end=cursor,h=overhead;
-        while(end<block.unitHeights.length&&block.unitHeights[end]<=height-used-h){
+        const limit=partition?.ends[continuationIndex]??block.unitHeights.length;
+        while(end<limit&&block.unitHeights[end]<=height-used-h){
           if(placedUnits++%256===0)yield 'paginate-place';
           h+=block.unitHeights[end];end++;
         }
