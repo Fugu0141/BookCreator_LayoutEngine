@@ -12,7 +12,7 @@ export {createTextMeasurementCache,createParagraphMeasurementCache,type TextMeas
 import {layoutTree} from './tree.js';
 import {applyPreviewFont,readyPreviewFont,isPreviewFontFamily,isPreviewFontWeight} from './preview-font.js';
 import {planMeasuredIntelligentLayout,planMeasuredIntelligentLayoutIncremental,planMeasuredIntelligentLayoutIncrementalCooperative,projectIntelligentMeasuredPlan,type IntelligentMeasuredResult,type IntelligentMeasuredOptions,type IntelligentMeasuredSnapshot,type IntelligentMeasuredWorkStage,type IncrementalIntelligentMeasuredResult} from './intelligent-measured.js';
-import {paginateMeasured,paginateMeasuredIncremental,paginateMeasuredIncrementalCooperative,type PaginationWorkStage,type PaginationCheckpointSnapshot,type Origin,type MeasuredPagePlan,type SplitPolicy,type PageBreak} from './pagination.js';
+import {paginateMeasured,paginateMeasuredIncremental,paginateMeasuredIncrementalCooperative,type PaginationWorkStage,type PaginationCheckpointSnapshot,type PaginationInput,type Origin,type MeasuredPagePlan,type SplitPolicy,type PageBreak} from './pagination.js';
 import type {PlainTextMeasureRequest,InlineStyleRun,InlineMathAtom} from './browser-measurement.js';
 
 export interface MeasuredTextLine {
@@ -589,6 +589,54 @@ const retainedIntelligentSnapshots=new WeakMap<PageReuseSnapshot,IntelligentMeas
 export class IntelligentPreviewConflictError extends Error {
   constructor(readonly conflict:Extract<IntelligentMeasuredResult,{status:'conflict'}>){super('IL preview conflict: '+conflict.diagnostic.code);this.name='IntelligentPreviewConflictError';}
 }
+// Geometry-only drafts borrow a verified measurement environment, never
+// sparse page keys or DOM. Their handles cannot be used for paper rendering.
+const retainedDraftInputs=new WeakMap<PageReuseSnapshot,PaginationInput>();
+export interface IntelligentGeometryDraftSnapshot {readonly kind:'intelligent-geometry-draft-snapshot'}
+const geometryDraftSnapshots=new WeakMap<IntelligentGeometryDraftSnapshot,{base:PageReuseSnapshot;layout?:IntelligentMeasuredSnapshot}>();
+export interface IntelligentGeometryDraft {
+  readonly kind:'intelligent-geometry-draft';
+  readonly layout:Extract<IntelligentMeasuredResult,{status:'placed'}>;
+  readonly pageCount:number;
+  readonly snapshot:IntelligentGeometryDraftSnapshot;
+  readonly paginationWork:IncrementalIntelligentMeasuredResult['pagination'];
+  readonly placementWork:IncrementalIntelligentMeasuredResult['placement'];
+}
+/**
+ * Replan placement-only edits from a successful retained IL preview.
+ * The host must retain the exact base and unchanged source, paper, fonts,
+ * resources and measurement settings, and discard drafts on generation or
+ * environment changes. No measurement, resource loading, or DOM rendering.
+ * Never use a draft as an approved paper or a print/save authorization.
+ */
+export async function createIntelligentGeometryDraft(
+  document:Document,base:PageReuseSnapshot,options:IntelligentMeasuredOptions,
+  previous?:IntelligentGeometryDraftSnapshot,
+  checkpoint?:(stage:IntelligentMeasuredWorkStage|'complete')=>void|Promise<void>,
+):Promise<IntelligentGeometryDraft>{
+  live(document);
+  previousPageKeys(document,base);
+  const input=retainedDraftInputs.get(base);
+  if(!input)throw Error('Geometry draft requires a successful retained IL preview');
+  const old=previous===undefined?undefined:geometryDraftSnapshots.get(previous);
+  if(previous!==undefined&&(!old||old.base!==base))throw Error('Geometry draft snapshot belongs to another base or is invalid');
+  if(options===undefined)throw Error('Geometry draft requires IL options');
+  const captured=structuredClone(options);
+  const prior=old?old.layout:retainedIntelligentSnapshots.get(base);
+  const planned=checkpoint?await planMeasuredIntelligentLayoutIncrementalCooperative(input,captured,prior,checkpoint):
+    planMeasuredIntelligentLayoutIncremental(input,captured,prior);
+  if(planned.result.status==='conflict')throw new IntelligentPreviewConflictError(planned.result);
+  const layout=planned.result;
+  let pageCount=0;
+  for(const f of layout.fragments)pageCount=Math.max(pageCount,f.placement.page+1);
+  if(pageCount>=513)throw RangeError('IL browser page limit exceeded');
+  if(!pageCount)throw Error('No drawable content');
+  if(checkpoint)await checkpoint('complete');
+  const snapshot:IntelligentGeometryDraftSnapshot=Object.freeze({kind:'intelligent-geometry-draft-snapshot'});
+  geometryDraftSnapshots.set(snapshot,{base,layout:planned.snapshot});
+  return {kind:'intelligent-geometry-draft',layout,pageCount,snapshot,
+    paginationWork:planned.pagination,placementWork:planned.placement};
+}
 const retainedImageSnapshots=new WeakMap<PageReuseSnapshot,ReadonlyMap<string,string>>();
 const retainedMeasurementSnapshots=new WeakMap<PageReuseSnapshot,{snapshot:BlockMeasurementSnapshot;inlineMathGeometry:boolean}>();
 /** Opt-in combined placement and DOM reuse. Same complete plan/slices and
@@ -735,6 +783,7 @@ async function createTextPreview(document:Document,options:TextPagePreviewOption
   // page snapshot as the key. An unsuccessful job cannot advance a lease.
   if(incremental?.snapshot&&result.pageDelta)retainedPaginationSnapshots.set(result.pageDelta.snapshot,incremental.snapshot);
   if(ilIncremental?.snapshot&&result.pageDelta)retainedIntelligentSnapshots.set(result.pageDelta.snapshot,ilIncremental.snapshot);
+  if(il&&retained&&result.pageDelta)retainedDraftInputs.set(result.pageDelta.snapshot,structuredClone(paginationInput));
   if(measurementSnapshot&&result.pageDelta)retainedMeasurementSnapshots.set(result.pageDelta.snapshot,{snapshot:measurementSnapshot,inlineMathGeometry:!!inlineMathCache});
   if(retained&&result.pageDelta)retainedImageSnapshots.set(result.pageDelta.snapshot,imageKeys);
   const imageWork=Object.freeze({resources:imageIds.size,decodedImages:images.size,skippedDecodes:imageIds.size-images.size});
