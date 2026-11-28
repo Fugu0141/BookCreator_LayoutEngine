@@ -69,6 +69,8 @@ export interface IntelligentPreviousPosition extends IntelligentPosition { id:st
 export interface IntelligentOptimizationOptions {
   /** Soft stability hints only; never treated as saved placement intent. */
   previousPositions?: readonly Readonly<IntelligentPreviousPosition>[];
+  /** Opt-in bounded retry: skip one preceding soft position on a fixed conflict. */
+  selectivePreferenceFallback?:boolean;
 }
 export interface IntelligentCandidateScore {
   honoredPreferences:number;
@@ -80,7 +82,7 @@ export interface IntelligentCandidateScore {
 export interface IntelligentOptimizationReport {
   evaluatedCandidates:number;
   feasibleCandidates:number;
-  selected:'greedy'|'lookahead'|'greedy-fallback'|'lookahead-fallback';
+  selected:'greedy'|'lookahead'|'greedy-fallback'|'lookahead-fallback'|'greedy-selective'|'lookahead-selective';
   score:IntelligentCandidateScore;
 }
 export type IntelligentLayoutResult =
@@ -330,6 +332,8 @@ function* optimize(input:IntelligentLayoutInput,options:IntelligentOptimizationO
   const invalid=(message:string):IntelligentLayoutResult=>({status:'conflict',revision:input.revision,
     placements:[],publicationReady:false,diagnostic:{code:'IL_INVALID',message}});
   if(!options||typeof options!=='object'||Array.isArray(options)) return invalid('Invalid optimization options');
+  if(options.selectivePreferenceFallback!==undefined&&typeof options.selectivePreferenceFallback!=='boolean')
+    return invalid('Invalid selective preference fallback option');
   const hints=options.previousPositions===undefined?[]:options.previousPositions;
   if(!Array.isArray(hints)||hints.length>10000) return invalid('Invalid previous positions');
   const previous=new Map<string,IntelligentPreviousPosition>();
@@ -346,6 +350,26 @@ function* optimize(input:IntelligentLayoutInput,options:IntelligentOptimizationO
   const candidates: {name:IntelligentOptimizationReport['selected'];result:IntelligentLayoutResult}[]=[
     {name:'greedy',result:first},{name:'lookahead',result:yield* solve(input,true,true)}
   ];
+  if(options.selectivePreferenceFallback===true){
+    // At most one extra pass per normal candidate. Preserve all other soft
+    // positions, and let the existing score choose among feasible results.
+    // This heuristic does not prove which preference caused the conflict.
+    for(const candidate of candidates.slice()){
+      const failed=candidate.result;
+      if(failed.status!=='conflict'||failed.diagnostic.code!=='IL_FIXED_CONFLICT'||!failed.diagnostic.blockId)continue;
+      const end=input.blocks.findIndex(b=>b.id===failed.diagnostic.blockId);
+      let ignored:string|undefined;
+      for(let i=end-1;i>=0;i--){
+        if(i%64===0)yield 'il-score';
+        if(input.blocks[i].preferred){ignored=input.blocks[i].id;break;}
+      }
+      if(ignored!==undefined){
+        const lookahead=candidate.name==='lookahead';
+        candidates.push({name:lookahead?'lookahead-selective':'greedy-selective',
+          result:yield* solve(input,true,lookahead,undefined,ignored)});
+      }
+    }
+  }
   if(Array.isArray(input.blocks)&&input.blocks.some(b=>b?.preferred!==undefined)){
     candidates.push({name:'greedy-fallback',result:yield* solve(input,false)},
       {name:'lookahead-fallback',result:yield* solve(input,false,true)});
@@ -362,7 +386,7 @@ function* optimize(input:IntelligentLayoutInput,options:IntelligentOptimizationO
   return {...best.result,optimization:{evaluatedCandidates:candidates.length,feasibleCandidates,selected:best.name,score:best.score}};
 }
 
-function* solve(input:IntelligentLayoutInput,honorPreferences:boolean,lookahead=false,incremental?:IncrementalLayoutState):Generator<IntelligentWorkStage,IntelligentLayoutResult,void> {
+function* solve(input:IntelligentLayoutInput,honorPreferences:boolean,lookahead=false,incremental?:IncrementalLayoutState,ignoredPreference?:string):Generator<IntelligentWorkStage,IntelligentLayoutResult,void> {
   const conflict = (code: Extract<IntelligentLayoutResult,{status:'conflict'}>['diagnostic']['code'],
     message:string,blockId?:string,regionId?:string):IntelligentLayoutResult =>
       ({status:'conflict',revision:input.revision,placements:[],publicationReady:false,
@@ -644,7 +668,7 @@ function* solve(input:IntelligentLayoutInput,honorPreferences:boolean,lookahead=
       }
       if(!slot || naturalPage>=MAX_PAGES) return conflict('IL_LIMIT','Page limit exceeded',b.id);
       const targetMinY=target?.page===page?minY:before;
-      const chosen=honorPreferences&&target&&target.page===naturalPage
+      const chosen=honorPreferences&&b.id!==ignoredPreference&&target&&target.page===naturalPage
         ?yield* preferredSlot(regionsAt(target.page),target,b.preferredTolerance??{x:0,y:0},targetMinY,w,h,width,height)
         :undefined;
       if(chosen && target){
