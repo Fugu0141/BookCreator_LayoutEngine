@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {planIntelligentLayout as plan} from '../dist/index.js';
+import {planIntelligentLayout as plan,planIntelligentLayoutIncremental as incremental,planIntelligentLayoutIncrementalCooperative as cooperative} from '../dist/index.js';
 const b=(id,width,height,extra={})=>({id,size:{width,height},...extra});
 const pair=(id,w,h)=>b(id,w,h,{sideBySide:true});
 const input=(blocks,extra={})=>({revision:'r5',content:{width:100,height:100},gap:5,blocks,...extra});
@@ -62,4 +62,32 @@ test('default remains opt-in and ties preserve greedy order',()=>{
  const old=plan(i),r=plan(i,{});
  assert.equal(old.optimization,undefined);assert.equal(r.optimization.selected,'greedy');
  assert.deepEqual(r.placements,old.placements);
+});
+
+test('selective fallback preserves independent wishes before and after a fixed conflict',async()=>{
+ const i=input([b('earlier',20,20,{preferred:{page:0,x:10,y:5}}),
+   b('conflicting',20,20,{preferred:{page:0,x:0,y:70}}),
+   b('pin',20,20,{fixed:{page:0,x:0,y:60}}),
+   b('later',20,20,{startNewPage:true,preferred:{page:1,x:40,y:20}})]);
+ const original=JSON.stringify(i),old=plan(i,{}),options={selectivePreferenceFallback:true};
+ const r=plan(i,options);
+ assert.equal(old.status,'placed');assert.equal(old.optimization.score.honoredPreferences,0);
+ assert.equal(r.status,'placed');assert.equal(r.optimization.selected,'greedy-selective');
+ assert.equal(r.optimization.evaluatedCandidates,6);assert.equal(r.optimization.score.honoredPreferences,2);
+ assert.deepEqual(r.placements.map(p=>[p.id,p.page,p.rect.x,p.rect.y,p.preference]),[
+   ['earlier',0,10,5,'honored'],['conflicting',0,0,30,'fallback'],
+   ['pin',0,0,60,undefined],['later',1,40,20,'honored']]);
+ assert.equal(JSON.stringify(i),original);
+ assert.deepEqual(plan(i,{selectivePreferenceFallback:false}).placements,old.placements);
+ assert.deepEqual(incremental(i,undefined,options).layout,r);
+ assert.deepEqual((await cooperative(i,undefined,()=>{},options)).layout,r);
+});
+test('bounded selective retry retains hard-only fallback and rejects invalid flags',()=>{
+ const i=input([b('a',20,20,{preferred:{page:0,x:0,y:60}}),b('b',20,20,{preferred:{page:0,x:0,y:90}}),b('pin',20,20,{fixed:{page:0,x:0,y:60}})]);
+ const r=plan(i,{selectivePreferenceFallback:true}),old=plan(i,{});
+ assert.equal(r.status,'placed');assert.deepEqual(r.placements,old.placements);
+ assert.ok(r.optimization.evaluatedCandidates<=6);
+ const impossible=input([b('a',20,30,{preferred:{page:0,x:0,y:70}}),b('pin',20,20,{fixed:{page:0,x:0,y:10}})]);
+ const bad=plan(impossible,{selectivePreferenceFallback:true});assert.equal(bad.status,'conflict');assert.deepEqual(bad.placements,[]);
+ assert.equal(plan(i,{selectivePreferenceFallback:'yes'}).diagnostic.code,'IL_INVALID');
 });
