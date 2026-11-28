@@ -646,17 +646,36 @@ function* solve(input:IntelligentLayoutInput,honorPreferences:boolean,lookahead=
         ? findX(regionsAt(page),right+gap,rowY,w,h,width):undefined;
       // One-block lookahead: avoid pairing a short row with a tall block
       // when the two following neighbors fit together more compactly.
-      // Only choose this on unobstructed pages and for opt-in normal flow.
-      if(lookahead&&shareX!==undefined&&!target&&regionsAt(page).length===0){
+      // The existing no-obstacle calculation stays unchanged. For an
+      // obstructed page, compare actual legal shelf slots, not free area.
+      // This is still opt-in via the existing optimization candidate.
+      if(lookahead&&shareX!==undefined&&!target){
         const next=input.blocks[i+1];
         if(next&&next.sideBySide&&!next.fixed&&!next.preferred&&!next.startNewPage&&!next.keepTogetherGroup&&
           !next.spaceBefore&&!next.spaceAfter){
-          const n=footprints[i+1];
-          const oldHeight=bottom-rowY;
-          const paired=Math.max(oldHeight,h)+gap+n.height;
-          const separate=oldHeight+gap+Math.max(h,n.height);
-          if(shareX+w+gap+n.width>width&&w+gap+n.width<=width&&
-             minY+Math.max(h,n.height)<=height&&separate<paired) shareX=undefined;
+          const n=footprints[i+1],regions=regionsAt(page);
+          if(!regions.length){
+            const oldHeight=bottom-rowY;
+            const paired=Math.max(oldHeight,h)+gap+n.height;
+            const separate=oldHeight+gap+Math.max(h,n.height);
+            if(shareX+w+gap+n.width>width&&w+gap+n.width<=width&&
+               minY+Math.max(h,n.height)<=height&&separate<paired) shareX=undefined;
+          }else{
+            // If all three can share the current row, keep it. Otherwise
+            // test whether the next two can share a fresh row on this page.
+            const nextOnCurrent=rowY+n.height<=height?
+              findX(regions,shareX+w+gap,rowY,n.width,n.height,width):undefined;
+            if(nextOnCurrent===undefined){
+              const fresh=yield* findRow(regions,minY,w,h,width,height);
+              if(fresh&&fresh.y+n.height<=height&&
+                findX(regions,fresh.x+w+gap,fresh.y,n.width,n.height,width)!==undefined){
+                const pairedBottom=Math.max(bottom,rowY+h);
+                const afterPair=yield* findRow(regions,pairedBottom+gap,n.width,n.height,width,height);
+                const freshBottom=fresh.y+Math.max(h,n.height);
+                if(!afterPair||freshBottom<afterPair.y+n.height)shareX=undefined;
+              }
+            }
+          }
         }
       }
       let naturalPage=page;
