@@ -178,6 +178,14 @@ assertIntelligentPrintTicketMatchesPlan(ticket, expectedPlan, paper) はブラ�
 
 これはLinux Chromiumの本体形式に近い受入試験であり、実Electron IPC・保存照合・Windows実機・正式出版の代替ではない。本体コード変更なし。CI未確認。
 
+## IL本体受入: Windows CIの追加
+
+#89のLinux CI run 46128193968 は全冊JSON移送後の英字・混合実PDF試験に成功。4ページ、3ページ目空白、英字4件の位置とページ所属、日本語・数式・画像の独立検査に合格。mainへ統合済み。
+
+Windows runnerでもNode 22型検査と全単体試験を行い、ChromeとPopplerを用いて同じ英字4ページの実PDF受入試験を実行する独立workflowを追加する。Windowsの改行を許容するDevToolsポート読み取りと、試験専用Chromeプロセスツリーの終了・プロファイル削除を調整。Popplerのインストール・実行失敗を成功扱いしない。既存Linux混合試験は維持する。
+
+Windowsの日本語フォント・混合PDF検査は今回追加しない。Windows CIの結果は未確認であり、本体Electronでの実際の保存・IPC・GUI操作・PDF出力や利用者のWindows実機での検証を代替しない。正式出版は未許可。本体コードは変更しない。
+
 ## 組版への統合（正式出版経路は未実装）
 
 既存測定・分割・増分組版を活用し、ロックや手動余白、明示改ページを制約として扱う。ユーザーが許可した範囲のみ再計測・配置し、不要な全冊再組版を避ける。異なるページへ移動する提案や競合解消はプレビューで明示する。最終的にGUIとPDFは同じ検証済みPagePlanを使用する。

@@ -35,7 +35,7 @@ try{
  chrome=spawn(process.env.CHROME_BIN??'google-chrome',args);
  chrome.stdout.resume();chrome.stderr.on('data',b=>stderr=(stderr+b).slice(-4000));
  let spawnError;chrome.on('error',e=>{spawnError=e;});
- const port=await waitFor(async()=>{if(spawnError)throw spawnError;try{return (await readFile(join(temp,'DevToolsActivePort'),'utf8')).split('\n')[0];}catch{return undefined;}},'DevTools port');
+ const port=await waitFor(async()=>{if(spawnError)throw spawnError;try{return (await readFile(join(temp,'DevToolsActivePort'),'utf8')).split(/\r?\n/)[0].trim();}catch{return undefined;}},'DevTools port');
  assert.match(port,/^\d+$/);
  const target=await waitFor(async()=>{
   try{const response=await fetch('http://127.0.0.1:'+port+'/json/list',{signal:AbortSignal.timeout(1000)});
@@ -141,7 +141,14 @@ try{
 }finally{
  socket?.close();
  if(chrome&&chrome.exitCode===null&&chrome.signalCode===null){
-  const closed=new Promise(resolve=>chrome.once('close',resolve));chrome.kill('SIGKILL');await Promise.race([closed,delay(3000)]);
+  const closed=new Promise(resolve=>chrome.once('close',resolve));
+  if(process.platform==='win32'&&chrome.pid){
+   // Chrome creates child processes that can hold the private profile open.
+   // Terminate only the process tree started for this fixture.
+   try{execFileSync('taskkill',['/PID',String(chrome.pid),'/T','/F'],{timeout:10000,stdio:'ignore'});}
+   catch{if(chrome.exitCode===null&&chrome.signalCode===null)chrome.kill();}
+  }else chrome.kill('SIGKILL');
+  await Promise.race([closed,delay(3000)]);
  }
- server.close();await rm(temp,{recursive:true,force:true,maxRetries:10,retryDelay:100});
+ server.close();await rm(temp,{recursive:true,force:true,maxRetries:process.platform==='win32'?20:10,retryDelay:100});
 }
