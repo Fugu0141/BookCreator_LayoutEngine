@@ -240,6 +240,12 @@ keepTogetherLayout は vertical（既定）または rows。グループ内の�
 
 #100 全3系統CI成功・main統合済み。既存PDF fixtureを残し、独立したadvanced fixtureを追加。全冊2章・4ページ（中間空白1枚）、予約領域横の適応グループ、位置のみ固定と横並び・占有幅、希望許容範囲、固定ページを組み合わせる。未確定完全retained計測から確定計画を生成し、sparse計画と一致、JSON移送したticketで独立印刷Documentを再生成する。変更済み配置・ticket不一致は拒否。Chromium実PDFをPopplerで検査し、ページ所属、テキスト、物理座標（1mm許容）、用紙寸法を確認する。LinuxとWindows CIに追加し既存混合日本語/数式/PNG fixtureは維持する。新fixtureは英字、Electron本体のIPC/保存/GUI出力や正式出版は未検証。CI未確認。
 
+## IL-12B: 全冊固定意図の競合復旧対象
+
+#101 は Core checks / Browser measurement smoke test / IL Windows acceptance の全3系統成功、main統合済み。BookCreator #266 の全冊絶対位置固定に合わせ、findIntelligentFixedConflictTarget(result, options, expected) を追加する。IntelligentPreviewConflictError.conflict または計測済み計画の競合を受け取り、revision/fingerprintの一致と明示固定intentの一意なdocumentId/blockKeyの完全一致を確認する。対象を特定できない場合、重複、旧計画、成功結果、一般的なページ組版エラーはundefined。固定境界・予約領域・サイズ・順序の競合や分割等で無効になった単一固定intentの対象を返す。座標の移動、設定削除、再計画、保存は行わない。返値は原因の唯一性や解除後の成立を保証しない。
+
+本体は対象を保存済み永続IDに再照合し、全冊リース・設定revisionを検証し、ユーザーに明示解除を確認したうえで固定関連フィールドのみ解除する。占有率・前後余白・他の固定を維持し、全冊再計測が成功してから確定する。競合中の紙面がなくても保存済み設定から対象を特定できる復旧UIを用意する。現在の本体コードは変更しない。通常/増分/協調・JSON往復・異なる原稿の同名キー・復旧後の制約維持を回帰検証する。CI未確認。
+
 ## 組版への統合（正式出版経路は未実装）
 
 既存測定・分割・増分組版を活用し、ロックや手動余白、明示改ページを制約として扱う。ユーザーが許可した範囲のみ再計測・配置し、不要な全冊再組版を避ける。異なるページへ移動する提案や競合解消はプレビューで明示する。最終的にGUIとPDFは同じ検証済みPagePlanを使用する。
