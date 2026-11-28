@@ -285,6 +285,77 @@ try{
     bench.close();
     assert(approved.element.shadowRoot.innerHTML===original,'session leaves approved DOM untouched');
   }
+  await phase("IL textbook semantic quality and print parity");
+  {
+    const paper={width:100000,height:100000,top:10000,bottom:10000,inner:12000,outer:8000,firstSide:'right'};
+    const key=(blockKey,documentId='quality-a')=>({documentId,blockKey});
+    const block=(blockKey,text,width=60000,extra={},documentId='quality-a')=>({
+      origin:{...key(blockKey,documentId),revision:'source-r',persistentId:documentId+'-'+blockKey},
+      request:{text,width,fontSize:3000,fontFamily:'sans-serif',lineHeight:1.4},splitPolicy:'strict',...extra});
+    const long=Array.from({length:55},(_,i)=>'定義と計算の手順 '+(i+1)+'。').join('\n');
+    const text=block('body',long,60000,{splitPolicy:'allow',minUnitsBefore:2,minUnitsAfter:2,optimizeSplit:true});
+    text.request.multiline=true;
+    const formula=block('formula','\\frac{-b+\\sqrt{b^2-4ac}}{2a}',60000,{displayMath:true,equationNumber:'1.1'});
+    const box={direction:'column',gap:1000,padding:1000,background:'#eeeeee',textColor:'#224466',children:[{id:'content',type:'content'}]};
+  const imageId='a'.repeat(64),png=new Blob([Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAAAQAAAACCAIAAADwyuo0AAAAGUlEQVR4nGP4z8DA8J+BgeH/////mRiQAABryAX9SqklXwAAAABJRU5ErkJggg=='),c=>c.charCodeAt(0))],{type:'image/png'});
+    const imageNode={id:'art',type:'image',assetId:imageId,width:20000,height:10000,fit:'contain',alt:'Sample illustration'};
+    const figure=block('figure','図 1',30000,{component:{...box,children:[{...imageNode,width:20000,height:10000},{id:'content',type:'content'}]}});
+    const blocks=[block('heading','二次方程式'),text,formula,block('example','例題：方程式を解く。',60000,{component:box}),
+      block('explanation','解説：公式を適用する。'),figure,block('caption','図の説明',30000),
+      block('exercise','練習問題',60000,{component:box}),block('solution','解答')];
+    const roles={heading:'heading',body:'body',example:'example',explanation:'explanation',figure:'figure',caption:'caption',exercise:'exercise',solution:'solution'};
+    const group={keepTogetherGroup:'figure-pair',keepTogetherLayout:'rows',sideBySide:true};
+    const options={revision:'quality-book',fingerprint:'quality-fp',paper,width:80000,height:80000,
+      sections:[{id:'quality-a',startOn:'continuous',blocks},{id:'quality-b',startOn:'page',blocks:[block('heading','確認問題',30000,{},'quality-b'),block('pin','固定されたメモ',30000,{},'quality-b')]}],
+      resolveImage:async id=>{assert(id===imageId,'quality image identity');return png;},
+      intelligentLayout:{gap:2000,semanticHints:Object.entries(roles).map(([id,role])=>({...key(id),role})),
+        semanticSplitStarts:true,optimization:{selectivePreferenceFallback:true,balancePageDepths:true},
+        intents:[{...key('figure'),placement:group},{...key('caption'),placement:group},
+          {...key('exercise'),placement:{sizeConstraints:{minHeightPercent:25},spaceAfter:1000}},
+          {...key('pin','quality-b'),placement:{fixed:{page:12,x:5000,y:10000}}}]}};
+    const saved=JSON.stringify(options.intelligentLayout);
+    const approved=await createFullRetainedTextPagePreview(document,options);
+    const cold=await createPlainTextPagePreview(document,options);
+    assert(JSON.stringify(approved.plan)===JSON.stringify(cold.plan)&&JSON.stringify(approved.intelligentLayout)===JSON.stringify(cold.intelligentLayout),'quality full/cold parity');
+    const il=approved.intelligentLayout,fs=il.fragments;
+    const byId=(id,doc='quality-a')=>fs.find(f=>f.origin.documentId===doc&&f.origin.blockKey===id);
+    assert(il.layout.optimization.score.keptWithNext>=1,'semantic score used');
+    const body=fs.filter(f=>f.origin.blockKey==='body');
+    assert(body.length>=2&&body.every(f=>f.unitEnd-f.unitStart>=2),'long body has no isolated measured units');
+    assert(body.every((f,i)=>f.continuationIndex===i&&f.unitStart===(i?body[i-1].unitEnd:0)),'body units contiguous');
+    assert(byId('figure').placement.page===byId('caption').placement.page,'figure group stays together');
+    assert(byId('exercise').placement.occupiedRect.height>=21000,'explicit vertical occupancy and gap kept');
+    assert(byId('pin','quality-b').placement.page===12&&byId('pin','quality-b').placement.rect.x===5000&&byId('pin','quality-b').placement.rect.y===10000,'other chapter fixed position kept');
+    assert(approved.element.shadowRoot.querySelectorAll('math').length>=1&&approved.element.shadowRoot.querySelectorAll('canvas').length>=1,'math and raster actually rendered');
+    for(const f of fs){
+      const p=f.placement,r=p.occupiedRect??p.rect;
+      assert(r.x>=0&&r.y>=0&&r.x+r.width<=80000&&r.y+r.height<=80000,'occupied rectangle within body');
+    }
+    for(let i=0;i<fs.length;i++)for(let j=i+1;j<fs.length;j++){
+      const a=fs[i].placement,b=fs[j].placement;
+      if(a.page!==b.page)continue;
+      const x=a.occupiedRect??a.rect,y=b.occupiedRect??b.rect;
+      assert(x.x+x.width<=y.x||y.x+y.width<=x.x||x.y+x.height<=y.y||y.y+y.height<=x.y,'no occupied overlap');
+    }
+    const change=structuredClone(options.intelligentLayout);
+    change.intents.find(i=>i.blockKey==='exercise').placement.sizeConstraints.minHeightPercent=35;
+    const draft=await createIntelligentGeometryDraft(document,approved.snapshot,change);
+    const edited=await createFullRetainedTextPagePreview(document,{...options,intelligentLayout:change},approved.snapshot);
+    assert(edited.measurementWork.reusedBlocks===11&&edited.measurementWork.measuredBlocks===0,'occupancy edit retains all measurements');
+    assert(JSON.stringify(draft.layout)===JSON.stringify(edited.intelligentLayout),'quality geometry matches drawn proposal');
+    const original=approved.element.shadowRoot.innerHTML;
+    const ticket=JSON.parse(JSON.stringify(createIntelligentPrintTicket(approved,paper)));
+    const frame=document.createElement('iframe');document.body.append(frame);
+    try{
+      const printed=await createVerifiedIntelligentPrintPreview(frame.contentDocument,options,ticket);
+      assert(JSON.stringify(printed.plan)===JSON.stringify(approved.plan)&&JSON.stringify(printed.intelligentLayout)===JSON.stringify(il),'quality print matches screen');
+      assert(printed.element.shadowRoot.querySelectorAll('math').length>=1&&printed.element.shadowRoot.querySelectorAll('canvas').length>=1,'print math and raster rendered');
+      let rejected=false;
+      try{await createVerifiedIntelligentPrintPreview(frame.contentDocument,{...options,intelligentLayout:change},ticket);}catch{rejected=true;}
+      assert(rejected,'changed occupancy cannot use approved ticket');
+    }finally{frame.remove();}
+    assert(approved.element.shadowRoot.innerHTML===original&&JSON.stringify(options.intelligentLayout)===saved,'draft and print preserve approved input and DOM');
+  }
   await phase("IL verified print preview");
   {
     const paper={width:100000,height:100000,top:10000,bottom:10000,inner:12000,outer:8000,firstSide:'right'};
