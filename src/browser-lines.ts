@@ -12,6 +12,7 @@ export {createTextMeasurementCache,createParagraphMeasurementCache,type TextMeas
 import {layoutTree} from './tree.js';
 import {applyPreviewFont,readyPreviewFont,isPreviewFontFamily,isPreviewFontWeight} from './preview-font.js';
 import {planMeasuredIntelligentLayout,planMeasuredIntelligentLayoutIncremental,planMeasuredIntelligentLayoutIncrementalCooperative,projectIntelligentMeasuredPlan,type IntelligentMeasuredResult,type IntelligentMeasuredOptions,type IntelligentMeasuredSnapshot,type IntelligentMeasuredWorkStage,type IncrementalIntelligentMeasuredResult} from './intelligent-measured.js';
+import {prepareIntelligentOptimizationReview,confirmIntelligentOptimizationReview,cancelIntelligentOptimizationReview,type IntelligentOptimizationGoal,type IntelligentOptimizationScope,type IntelligentOptimizationReview,type IntelligentOptimizationReviewHandle,type IntelligentOptimizationConfirmation} from './intelligent-optimization-proposal.js';
 import {paginateMeasured,paginateMeasuredIncremental,paginateMeasuredIncrementalCooperative,type PaginationWorkStage,type PaginationCheckpointSnapshot,type PaginationInput,type Origin,type MeasuredPagePlan,type SplitPolicy,type PageBreak} from './pagination.js';
 import type {PlainTextMeasureRequest,InlineStyleRun,InlineMathAtom} from './browser-measurement.js';
 
@@ -595,6 +596,51 @@ export class IntelligentPreviewConflictError extends Error {
 // Geometry-only drafts borrow a verified measurement environment, never
 // sparse page keys or DOM. Their handles cannot be used for paper rendering.
 const retainedDraftInputs=new WeakMap<PageReuseSnapshot,PaginationInput>();
+type RetainedReviewContext={options:IntelligentMeasuredOptions;approved:Extract<IntelligentMeasuredResult,{status:'placed'}>};
+const retainedReviewContexts=new WeakMap<PageReuseSnapshot,RetainedReviewContext>();
+const retainedReviewHandles=new WeakMap<IntelligentOptimizationReviewHandle,PageReuseSnapshot>();
+/** Start a review from an actual retained IL paper. No public mutable measured
+ * input is required. The host still owns saved intent and currentness checks. */
+export function prepareRetainedIntelligentOptimizationReview(
+  document:Document,base:PageReuseSnapshot,goal:IntelligentOptimizationGoal,lease:string,scope?:Readonly<IntelligentOptimizationScope>,
+):IntelligentOptimizationReview{
+  live(document);previousPageKeys(document,base);
+  const input=retainedDraftInputs.get(base),context=retainedReviewContexts.get(base);
+  if(!input||!context)return {status:'rejected',reason:'stale'};
+  const review=prepareIntelligentOptimizationReview(input,context.approved,context.options,goal,lease,scope);
+  if(review.status==='review')retainedReviewHandles.set(review.handle,base);
+  return review;
+}
+/** Discard a retained review without publishing a new paper. */
+export function cancelRetainedIntelligentOptimizationReview(handle:IntelligentOptimizationReviewHandle):boolean{
+  if(!retainedReviewHandles.delete(handle))return false;
+  return cancelIntelligentOptimizationReview(handle);
+}
+/** Compare the real rendered candidate snapshot, not the public proposal
+ * result. Both snapshots must belong to the same live Document, and the
+ * current base must be the exact snapshot from which review was prepared.
+ * Measurement input must match; host checks source/resources/fonts, full
+ * preview publication, generation and persisted options independently. */
+export function confirmRetainedIntelligentOptimizationReview(
+  document:Document,handle:IntelligentOptimizationReviewHandle,base:PageReuseSnapshot,
+  candidate:PageReuseSnapshot,lease:string,
+):IntelligentOptimizationConfirmation{
+  const expected=retainedReviewHandles.get(handle);
+  if(!expected)return {status:'rejected',reason:'invalid-handle'};
+  retainedReviewHandles.delete(handle);
+  const reject=(reason:'stale'|'preview-mismatch'):IntelligentOptimizationConfirmation=>{
+    cancelIntelligentOptimizationReview(handle);return {status:'rejected',reason};
+  };
+  if(expected!==base)return reject('stale');
+  try{live(document);previousPageKeys(document,base);previousPageKeys(document,candidate);}
+  catch{return reject('stale');}
+  const input=retainedDraftInputs.get(base),context=retainedReviewContexts.get(base);
+  const nextInput=retainedDraftInputs.get(candidate),next=retainedReviewContexts.get(candidate);
+  if(!input||!context)return reject('stale');
+  if(candidate===base||!nextInput||!next||JSON.stringify(input)!==JSON.stringify(nextInput))return reject('preview-mismatch');
+  return confirmIntelligentOptimizationReview(handle,{input,approved:context.approved,options:context.options,lease},
+    {result:next.approved,options:next.options});
+}
 export interface IntelligentGeometryDraftSnapshot {readonly kind:'intelligent-geometry-draft-snapshot'}
 const geometryDraftSnapshots=new WeakMap<IntelligentGeometryDraftSnapshot,{base:PageReuseSnapshot;layout?:IntelligentMeasuredSnapshot}>();
 export interface IntelligentGeometryDraft {
@@ -839,7 +885,10 @@ async function createTextPreview(document:Document,options:TextPagePreviewOption
   // page snapshot as the key. An unsuccessful job cannot advance a lease.
   if(incremental?.snapshot&&result.pageDelta)retainedPaginationSnapshots.set(result.pageDelta.snapshot,incremental.snapshot);
   if(ilIncremental?.snapshot&&result.pageDelta)retainedIntelligentSnapshots.set(result.pageDelta.snapshot,ilIncremental.snapshot);
-  if(il&&retained&&result.pageDelta)retainedDraftInputs.set(result.pageDelta.snapshot,structuredClone(paginationInput));
+  if(il&&retained&&result.pageDelta){
+    retainedDraftInputs.set(result.pageDelta.snapshot,structuredClone(paginationInput));
+    retainedReviewContexts.set(result.pageDelta.snapshot,{approved:structuredClone(il),options:structuredClone(ilOptions!)});
+  }
   if(measurementSnapshot&&result.pageDelta)retainedMeasurementSnapshots.set(result.pageDelta.snapshot,{snapshot:measurementSnapshot,inlineMathGeometry:!!inlineMathCache});
   if(retained&&result.pageDelta)retainedImageSnapshots.set(result.pageDelta.snapshot,imageKeys);
   const imageWork=Object.freeze({resources:imageIds.size,decodedImages:images.size,skippedDecodes:imageIds.size-images.size});
