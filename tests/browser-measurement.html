@@ -79,16 +79,22 @@ try{
       intelligentLayout:{intents:[{documentId:'print-doc',blockKey:'pinned',placement:{fixed:{page:2,x:5000,y:10000}}}]}};
     const screen=await createRetainedTextPagePreview(document,options);
     const ticket=JSON.parse(JSON.stringify(createIntelligentPrintTicket(screen,paper)));
-    const print=await createVerifiedIntelligentPrintPreview(document,options,ticket);
-    assert(!print.element.isConnected&&print.element.shadowRoot.querySelectorAll('[data-page]').length===3,'verified complete print DOM including blank page');
+    const printDocumentFrame=document.createElement('iframe');
+    document.body.append(printDocumentFrame);
+    try{
+    const printDocument=printDocumentFrame.contentDocument;
+    assert(printDocument!==document,'independent print document');
+    const print=await createVerifiedIntelligentPrintPreview(printDocument,options,ticket);
+    assert(print.element.ownerDocument===printDocument&&!print.element.isConnected&&print.element.shadowRoot.querySelectorAll('[data-page]').length===3,'verified complete print DOM including blank page');
     assert(!print.publicationReady&&JSON.stringify(print.plan)===JSON.stringify(screen.plan),'print plan matches screen');
-    const rejects=async(o,t)=>{let failed=false;try{await createVerifiedIntelligentPrintPreview(document,o,t);}catch{failed=true;}assert(failed,'reject mismatched IL print');};
+    const rejects=async(o,t)=>{let failed=false;try{await createVerifiedIntelligentPrintPreview(printDocument,o,t);}catch{failed=true;}assert(failed,'reject mismatched IL print');};
     await rejects({...options,revision:'stale'},ticket);
     await rejects({...options,intelligentLayout:undefined},ticket);
     await rejects({...options,paper:{...paper,firstSide:'left'}},ticket);
     await rejects({...options,intelligentLayout:{intents:[{documentId:'print-doc',blockKey:'pinned',placement:{fixed:{page:2,x:6000,y:10000}}}]}},ticket);
     await rejects(options,{...ticket,layoutSignature:'invalid'});
     await rejects(options,{...ticket,planSignature:'invalid'});
+    }finally{printDocumentFrame.remove();}
   }
   await phase("text measurement cache");
   {
