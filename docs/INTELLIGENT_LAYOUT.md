@@ -170,6 +170,14 @@ assertIntelligentPrintTicketMatchesPlan(ticket, expectedPlan, paper) はブラ�
 
 これは計画のみの事前検査であり、占有領域の違い（内容矩形が同じ場合を含む）、原稿・素材・フォントの同一性、出力中の変更、PDF実体は検証しない。必ず createTrialPrintPreviewForLayout で再計測後の layoutSignature を比較し、本体側の保存照合とPDF検証を維持する。#87 の Core checks / Browser measurement smoke test は成功し、main にマージ済み。本体コードは変更しない。
 
+## IL本体受入: 全冊のIPC移送から実PDFまでの回帰
+
+#88 Core checks / Browser measurement smoke test は成功、mainにマージ済み。本体 #250 の現行印刷側は未接続ILを明示的に拒否しているため、その拒否は維持する。
+
+既存の英字・混合実PDF fixtureを、本体と同じsections形式に変更。英字fixtureは2文書の明示章改ページ、永続ID、横並びと固定ページを含む。混合fixtureも永続ID付きsections形式とし、画像リゾルバ関数はJSON移送せず印刷Document側に再注入する。別Documentでretained previewを2回生成し、全ページ再利用時の完全planとチケット・optionsをJSON往復させる。DOM非依存事前照合、欠落チケット・誤モード・改変チケット拒否、印刷ディスパッチ、確定planとの比較を経て実PDFを生成する。PDFの位置検査基準は印刷側結果ではなく移送された承認済みplanから作る。
+
+これはLinux Chromiumの本体形式に近い受入試験であり、実Electron IPC・保存照合・Windows実機・正式出版の代替ではない。本体コード変更なし。CI未確認。
+
 ## 組版への統合（正式出版経路は未実装）
 
 既存測定・分割・増分組版を活用し、ロックや手動余白、明示改ページを制約として扱う。ユーザーが許可した範囲のみ再計測・配置し、不要な全冊再組版を避ける。異なるページへ移動する提案や競合解消はプレビューで明示する。最終的にGUIとPDFは同じ検証済みPagePlanを使用する。
