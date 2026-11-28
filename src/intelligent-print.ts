@@ -60,15 +60,37 @@ export function createIntelligentPrintTicket(preview:Pick<TextPagePreview,'plan'
   return Object.freeze({schemaVersion:1,revision:preview.plan.revision,fingerprint:preview.plan.fingerprint,
     paper:Object.freeze({...paper}),planSignature:signature,layoutSignature:layoutSignature(il),publicationReady:false});
 }
+/** Check the IPC comparison record without a browser or measurement work.
+ * This validates the approved full plan and paper, not the saved content,
+ * resource identity or occupied layout. The print renderer still verifies
+ * layoutSignature against a fresh IL calculation before producing a PDF. */
+export function assertIntelligentPrintTicketMatchesPlan(ticket:unknown,plan:MeasuredPagePlan,paper:Paper):asserts ticket is IntelligentPrintTicket{
+  validatePaper(paper);
+  validateTicketHeader(ticket);
+  if(ticket.revision!==plan?.revision||ticket.fingerprint!==plan?.fingerprint)
+    throw Error('Stale IL trial print ticket');
+  if(paperKey(ticket.paper)!==paperKey(paper))throw Error('IL trial paper changed');
+  if(ticket.planSignature!==planSignature(plan,paper))
+    throw Error('IL trial ticket differs from the approved page plan');
+}
+function validateTicketHeader(ticket:unknown):asserts ticket is IntelligentPrintTicket{
+  if(!ticket||typeof ticket!=='object'||Array.isArray(ticket))throw Error('Invalid IL trial print ticket');
+  const t=ticket as Partial<IntelligentPrintTicket>;
+  if(t.schemaVersion!==1||t.publicationReady!==false||
+    typeof t.revision!=='string'||!t.revision||typeof t.fingerprint!=='string'||!t.fingerprint||
+    typeof t.planSignature!=='string'||!t.planSignature||typeof t.layoutSignature!=='string'||!t.layoutSignature||!t.paper)
+    throw Error('Invalid IL trial print ticket');
+  validatePaper(t.paper);
+}
+
 /** Reproduce a complete detached preview in the dedicated print Document.
  * The existing BookCreator print adapter consumes this DOM; it must still
  * verify saved input, resources/fonts, currentness and the resulting PDF. */
 export async function createVerifiedIntelligentPrintPreview(document:Document,options:TextPagePreviewOptions,ticket:IntelligentPrintTicket):Promise<TextPagePreview>{
-  if(!ticket||ticket.schemaVersion!==1||ticket.publicationReady!==false||options.intelligentLayout===undefined||
-    !options.paper||ticket.revision!==options.revision||ticket.fingerprint!==options.fingerprint||
-    typeof ticket.planSignature!=='string'||typeof ticket.layoutSignature!=='string')
+  validateTicketHeader(ticket);
+  if(options.intelligentLayout===undefined||!options.paper||ticket.revision!==options.revision||ticket.fingerprint!==options.fingerprint)
     throw Error('Stale or invalid IL trial print ticket');
-  validatePaper(ticket.paper);validatePaper(options.paper);
+  validatePaper(options.paper);
   if(paperKey(ticket.paper)!==paperKey(options.paper))throw Error('IL trial paper changed');
   const expectedPlan=ticket.planSignature,expectedLayout=ticket.layoutSignature,paper={...ticket.paper};
   // No sparse DOM or host-owned measurement caches are used for printing.

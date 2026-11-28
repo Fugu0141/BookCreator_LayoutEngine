@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {planMeasuredIntelligentLayout,projectIntelligentMeasuredPlan,createIntelligentPrintTicket} from '../dist/index.js';
+import {planMeasuredIntelligentLayout,projectIntelligentMeasuredPlan,createIntelligentPrintTicket,assertIntelligentPrintTicketMatchesPlan} from '../dist/index.js';
 const paper={width:100000,height:100000,top:10000,bottom:10000,inner:10000,outer:10000,firstSide:'right'};
 const input={schemaVersion:1,revision:'r',fingerprint:'fp',content:{width:80000,height:80000},sections:[{id:'s',startOn:'continuous',blocks:[{kind:'block',origin:{documentId:'d',blockKey:'a',revision:'r'},width:20000,unitHeights:[10000],splitPolicy:'strict'}]}]};
 function preview(options={}){const intelligentLayout=planMeasuredIntelligentLayout(input,options);return {intelligentLayout,plan:projectIntelligentMeasuredPlan(intelligentLayout),publicationReady:false};}
@@ -19,4 +19,23 @@ test('mismatched or stale source geometry is rejected',()=>{
  }
  assert.throws(()=>createIntelligentPrintTicket({...preview(),intelligentLayout:undefined},paper));
  assert.throws(()=>createIntelligentPrintTicket(preview(),{...paper,width:100}));
+});
+
+test('host can preflight a transported ticket against its approved full plan without DOM',()=>{
+ const p=preview();
+ const ticket=JSON.parse(JSON.stringify(createIntelligentPrintTicket(p,paper)));
+ assert.doesNotThrow(()=>assertIntelligentPrintTicketMatchesPlan(ticket,p.plan,paper));
+ for(const bad of [null,[],{}, {...ticket,schemaVersion:2}, {...ticket,publicationReady:true},
+  {...ticket,revision:'old'}, {...ticket,fingerprint:'old'}, {...ticket,planSignature:'bad'},
+  {...ticket,layoutSignature:''}, {...ticket,paper:null}, {...ticket,paper:{...paper,firstSide:'left'}}])
+   assert.throws(()=>assertIntelligentPrintTicketMatchesPlan(bad,p.plan,paper));
+ for(const mutate of [p=>p.revision='old',p=>p.fingerprint='old',p=>p.completeness='partial',
+  p=>p.pages[0].fragments[0].rect.x=1,p=>p.pages[0].fragments[0].origin.blockKey='other']){
+   const changed=structuredClone(p.plan);mutate(changed);
+   assert.throws(()=>assertIntelligentPrintTicketMatchesPlan(ticket,changed,paper));
+ }
+ assert.throws(()=>assertIntelligentPrintTicketMatchesPlan(ticket,p.plan,{...paper,firstSide:'left'}));
+ // A plan-only check cannot authorize occupied-area changes. The renderer
+ // must still compare the layout signature against the recalculated IL.
+ assert.doesNotThrow(()=>assertIntelligentPrintTicketMatchesPlan({...ticket,layoutSignature:'different'},p.plan,paper));
 });
