@@ -19,10 +19,13 @@ jobs:
       - run: npm install --ignore-scripts --no-audit --no-fund
       - run: npm run build
       # Exercise native delimiter assemblies with a real OpenType MATH font.
-      - run: sudo apt-get update && sudo apt-get install -y fonts-texgyre-math
+      - run: sudo apt-get update && sudo apt-get install -y fonts-texgyre-math poppler-utils
       - name: Select a real OpenType MATH fixture
         run: |
           FONT="$(fc-match -f '%{file}' 'TeX Gyre Termes Math')"
           test -f "$FONT"
           echo "BC_TEST_MATH_FONT=$FONT" >> "$GITHUB_ENV"
       - run: google-chrome --version && npm run test:browser
+
+      - name: IL actual PDF geometry acceptance
+        run: npm run test:il:pdf
