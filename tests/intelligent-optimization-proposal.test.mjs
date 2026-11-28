@@ -124,8 +124,8 @@ test('scoped improvement preserves an unrelated chapter and rejects a protected 
  assert.equal(p.status,'proposed');assert.deepEqual(p.scope,scope);
  assert.deepEqual(p.result.fragments.at(-1),approved.fragments.at(-1));
  assert.deepEqual(p.result.fragments.map(f=>f.placement.page),[0,0,1,1,2]);
- assert.deepEqual(propose(i,approved,o,'balance',{firstPage:0,lastPage:0}),{status:'rejected',reason:'outside-scope'});
- assert.deepEqual(propose(i,approved,o,'balance',{firstPage:1,lastPage:2}),{status:'rejected',reason:'outside-scope'});
+ assert.deepEqual(propose(i,approved,o,'balance',{firstPage:0,lastPage:0}),{status:'rejected',reason:'no-improvement'});
+ assert.deepEqual(propose(i,approved,o,'balance',{firstPage:1,lastPage:2}),{status:'rejected',reason:'no-improvement'});
  assert.deepEqual(propose(i,approved,o,'balance',{...scope,maxMovedFragments:1}),{status:'rejected',reason:'movement-budget'});
  const bounded=propose(i,approved,o,'balance',{...scope,maxMovedFragments:2});
  assert.equal(bounded.status,'proposed');assert.equal(bounded.impact.movedFragments,2);
@@ -154,4 +154,45 @@ test('scope preserves every later page in a 22-page measured book',()=>{
  assert.equal(p.before.pageCount,22);assert.equal(p.after.pageCount,22);
  assert.deepEqual(p.result.fragments.slice(4),approved.fragments.slice(4));
  assert.deepEqual(p.after.pages.slice(2),p.before.pages.slice(2));
+});
+
+test('targeted balance chooses a smaller eligible improvement inside the selected chapter',()=>{
+ const i=input([...['a','b','c','d'].map(id=>b(id,80,28)),...['e','f','g','h'].map(id=>b(id,80,30))]);
+ const options={gap:5,intents:[intent('e',{startNewPage:true})]};
+ const approved=plan(i,options);
+ assert.deepEqual(approved.fragments.map(f=>f.placement.page),[0,0,0,1,2,2,2,3]);
+ const global=propose(i,approved,options,'balance');
+ assert.equal(global.status,'proposed');
+ assert.deepEqual(global.result.fragments.map(f=>f.placement.page),[0,0,0,1,2,2,3,3]);
+ const scope={firstPage:0,lastPage:1,maxMovedFragments:2};
+ const local=propose(i,approved,options,'balance',scope);
+ assert.equal(local.status,'proposed');
+ assert.deepEqual(local.options.optimization.balancePageRange,{firstPage:0,lastPage:1});
+ assert.equal(local.improvement.depthImbalanceReduction,66);
+ assert.equal(local.result.layout.optimization.score.pageDepthImbalance,0);
+ assert.deepEqual(local.result.fragments.map(f=>f.placement.page),[0,0,1,1,2,2,2,3]);
+ assert.deepEqual(local.result.fragments.slice(4),approved.fragments.slice(4));
+ assert.deepEqual(plan(i,JSON.parse(JSON.stringify(local.options))),local.result);
+ const review=prepare(i,approved,options,'balance','targeted-lease',scope);
+ assert.equal(review.status,'review');
+ assert.equal(confirm(review.handle,{input:i,approved,options,lease:'targeted-lease'},
+   {options:local.options,result:local.result}).status,'confirmed');
+});
+test('balance range validates bounds and preserves the non-targeted mode',()=>{
+ const i=input(['a','b','c','d'].map(id=>b(id,80,30)));
+ for(const range of [null,[],{}, {firstPage:-1,lastPage:1},{firstPage:1,lastPage:0},{firstPage:0,lastPage:10000},{firstPage:0,lastPage:1,extra:1}]){
+  const r=plan(i,{gap:5,optimization:{balancePageDepths:true,balancePageRange:range}});
+  assert.equal(r.status,'conflict');assert.equal(r.diagnostic.code,'IL_INVALID');
+ }
+ assert.equal(plan(i,{optimization:{balancePageRange:{firstPage:0,lastPage:1}}}).status,'conflict');
+ const r=plan(i,{gap:5,optimization:{balancePageDepths:true,balancePageRange:{firstPage:0,lastPage:0}}});
+ assert.deepEqual(r.fragments.map(f=>f.placement.page),[0,0,0,1]);
+ assert.equal(r.layout.optimization.score.pageDepthImbalance,0);
+});
+test('targeted balance settings are compatible with source semantic hints',()=>{
+ const i=input(['a','b','c','d'].map(id=>b(id,80,30)));
+ const options={gap:5,semanticHints:[{documentId:'doc',blockKey:'a',role:'heading'},{documentId:'doc',blockKey:'b',role:'body'}],
+   optimization:{balancePageDepths:true,balancePageRange:{firstPage:0,lastPage:1}}};
+ const r=plan(i,options);assert.equal(r.status,'placed');assert.equal(r.layout.optimization.score.keptWithNext,1);
+ assert.equal(r.layout.optimization.selected,'page-balance');
 });

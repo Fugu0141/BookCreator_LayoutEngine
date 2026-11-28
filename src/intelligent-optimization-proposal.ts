@@ -43,7 +43,7 @@ export function proposeIntelligentOptimization(
     return {status:'rejected',reason:'stale'};
   const next=structuredClone(options);
   next.optimization={...next.optimization,
-    ...(goal==='compact'?{selectivePreferenceFallback:true}:{balancePageDepths:true})};
+    ...(goal==='compact'?{selectivePreferenceFallback:true}:{balancePageDepths:true,...(scope?{balancePageRange:{firstPage:scope.firstPage,lastPage:scope.lastPage}}:{})})};
   const result=planMeasuredIntelligentLayout(input,next);
   if(result.status!=='placed')return {status:'rejected',reason:'conflict'};
   const after=inspectIntelligentLayoutQuality(result,input);
@@ -76,7 +76,7 @@ export function proposeIntelligentOptimization(
     let value=0;
     for(let i=1;i<r.pages.length;i++){
       const a=r.pages[i-1],b=r.pages[i];
-      if(simple(a)&&simple(b)&&!b.explicitBoundary)value+=Math.abs(a.occupiedDepth-b.occupiedDepth);
+      if((!scope||goal!=='balance'||(a.page>=scope.firstPage&&b.page<=scope.lastPage))&&simple(a)&&simple(b)&&!b.explicitBoundary)value+=Math.abs(a.occupiedDepth-b.occupiedDepth);
     }
     return value;
   };

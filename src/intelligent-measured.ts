@@ -332,7 +332,7 @@ function* placeMeasuredWork(input:PaginationInput,options:IntelligentMeasuredOpt
     if(derived.length){
       // Raw fragment-ID hints and source semantics are distinct opt-ins;
       // reject mixed input to avoid silently overriding explicit vetoes.
-      if(optimization!==undefined&&(!hasOnlyKeys(optimization,['previousPositions','selectivePreferenceFallback','keepWithNextIds','balancePageDepths'])||
+      if(optimization!==undefined&&(!hasOnlyKeys(optimization,['previousPositions','selectivePreferenceFallback','keepWithNextIds','balancePageDepths','balancePageRange'])||
         optimization.keepWithNextIds!==undefined))
         return fail('intent',{code:'IL_MEASURED_INTENT',message:'Semantic hints cannot be combined with raw keep-with-next IDs'});
       optimization={...optimization,keepWithNextIds:derived};
