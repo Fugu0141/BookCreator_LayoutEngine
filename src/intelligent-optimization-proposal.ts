@@ -43,7 +43,7 @@ export function proposeIntelligentOptimization(
     return {status:'rejected',reason:'stale'};
   const next=structuredClone(options);
   next.optimization={...next.optimization,
-    ...(goal==='compact'?{selectivePreferenceFallback:true}:{balancePageDepths:true})};
+    ...(goal==='compact'?{selectivePreferenceFallback:true}:{balancePageDepths:true,...(scope?{balancePageRange:{firstPage:scope.firstPage,lastPage:scope.lastPage}}:{})})};
   const result=planMeasuredIntelligentLayout(input,next);
   if(result.status!=='placed')return {status:'rejected',reason:'conflict'};
   const after=inspectIntelligentLayoutQuality(result,input);
