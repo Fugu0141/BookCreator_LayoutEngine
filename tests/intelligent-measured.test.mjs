@@ -174,3 +174,37 @@ test('unknown, malformed and ambiguous semantic metadata is rejected',()=>{
   const r=plan(i,options);assert.equal(r.status,'conflict');assert.equal(r.stage,'intent');assert.deepEqual(r.fragments,[]);
  }
 });
+
+test('opt-in split-start semantics keep heading with first measured text fragment without changing unit boundaries',async()=>{
+ const i=input([section([b('intro',80,[30]),b('heading',80,[10]),b('body',80,[20,20,20,20,20],{splitPolicy:'allow'})])]);
+ const hints=[semantic('heading','heading'),semantic('body','body')];
+ const baseline=plan(i,{gap:5,semanticHints:hints});
+ assert.equal(baseline.status,'placed');
+ assert.deepEqual(baseline.fragments.map(f=>[f.origin.blockKey,f.unitStart,f.unitEnd,f.placement.page]),[['intro',0,1,0],['heading',0,1,0],['body',0,3,1],['body',3,5,2]]);
+ const options={gap:5,semanticHints:hints,semanticSplitStarts:true};
+ const r=plan(i,options);
+ assert.equal(r.status,'placed');assert.equal(r.layout.optimization.selected,'keep-next');assert.equal(r.layout.optimization.score.keptWithNext,1);
+ assert.deepEqual(r.fragments.map(f=>[f.origin.blockKey,f.unitStart,f.unitEnd,f.placement.page]),[['intro',0,1,0],['heading',0,1,1],['body',0,3,1],['body',3,5,2]]);
+ assert.deepEqual(r.fragments.map(f=>[f.placement.id,f.origin,f.unitStart,f.unitEnd,f.continuationIndex,f.placement.rect.width,f.placement.rect.height]),baseline.fragments.map(f=>[f.placement.id,f.origin,f.unitStart,f.unitEnd,f.continuationIndex,f.placement.rect.width,f.placement.rect.height]));
+ assert.equal(r.fragments[3].sourceBreakReason,'continuation');
+ assert.deepEqual(plan(i,JSON.parse(JSON.stringify(options))),r);
+ const a=incremental(i,options),c=await cooperative(i,options,a.snapshot,()=>{});
+ assert.deepEqual(a.result,r);assert.deepEqual(c.result,r);
+});
+test('split-start semantics do not link continuations, split non-text or explicit vetoes',()=>{
+ const i=input([section([b('intro',80,[30]),b('heading',80,[10]),b('body',80,[20,20,20,20,20],{splitPolicy:'allow'}),b('tail',80,[10])])]);
+ const baseline=plan(i,{gap:5});
+ for(const semanticHints of [
+   [semantic('heading','heading',{keepWithNext:false}),semantic('body','body')],
+   [semantic('heading','heading'),semantic('body','body',{keepWithPrevious:false})],
+   [semantic('heading','caption',{keepWithNext:true}),semantic('body','figure')],
+   [semantic('body','body',{keepWithNext:true}),semantic('tail','other')]
+ ]){
+  assert.deepEqual(plan(i,{gap:5,semanticHints,semanticSplitStarts:true}),baseline);
+ }
+ const invalid=plan(i,{semanticSplitStarts:'yes'});
+ assert.equal(invalid.status,'conflict');assert.equal(invalid.stage,'intent');
+ const broken=input([section([b('heading',80,[10]),{kind:'pagebreak',origin:origin('break')},b('body',80,[60,60],{splitPolicy:'allow'})])]);
+ const hints=[semantic('heading','heading'),semantic('body','body')];
+ assert.deepEqual(plan(broken,{semanticHints:hints,semanticSplitStarts:true}),plan(broken));
+});
