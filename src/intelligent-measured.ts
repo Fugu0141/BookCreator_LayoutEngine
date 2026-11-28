@@ -34,6 +34,24 @@ export type IntelligentMeasuredResult =
   | (Common & {status:'placed';layout:Placed;fragments:IntelligentMeasuredFragment[]})
   | (Common & {status:'conflict';stage:'pagination'|'intent'|'layout';fragments:[];diagnostic:Conflict['diagnostic']|{code:'IL_MEASURED_PAGINATION'|'IL_MEASURED_INTENT';message:string;blockId?:string}});
 
+// Placement intent is a serialized host contract. Unknown field names are
+// rejected rather than silently treating a misspelled constraint as automatic.
+const optionKeys=['gap','intents','reservedRegions','optimization'];
+const intentKeys=['documentId','blockKey','placement'];
+const placementKeys=['mode','fixed','preferred','sideBySide','sizeConstraints','spaceBefore','spaceAfter','startNewPage'];
+const positionKeys=['page','x','y'];
+const constraintKeys=['minWidth','minHeight','maxWidth','maxHeight','minWidthPercent','minHeightPercent'];
+function hasOnlyKeys(value:unknown,keys:readonly string[]):boolean{
+  return !!value&&typeof value==='object'&&!Array.isArray(value)&&Object.keys(value).every(key=>keys.includes(key));
+}
+function validIntentShape(i:IntelligentMeasuredIntent):boolean{
+  if(!hasOnlyKeys(i,intentKeys)||!hasOnlyKeys(i.placement,placementKeys))return false;
+  const p=i.placement;
+  return (p.fixed===undefined||hasOnlyKeys(p.fixed,positionKeys))&&
+    (p.preferred===undefined||hasOnlyKeys(p.preferred,positionKeys))&&
+    (p.sizeConstraints===undefined||hasOnlyKeys(p.sizeConstraints,constraintKeys));
+}
+
 const sourceKey=(o:Pick<Origin,'documentId'|'blockKey'>)=>JSON.stringify([o.documentId,o.blockKey]);
 /** Single fragments use a stable source key. Continuations have unit-range IDs. */
 export function intelligentMeasuredId(origin:Pick<Origin,'documentId'|'blockKey'>,units?:Readonly<{start:number;end:number}>):string {
@@ -127,7 +145,7 @@ function* placeMeasuredWork(input:PaginationInput,options:IntelligentMeasuredOpt
     ({...common,status:'conflict',stage,diagnostic,fragments:[]});
   if(plan.completeness!=='full'||plan.diagnostics.some(d=>d.severity==='error'))
     return fail('pagination',{code:'IL_MEASURED_PAGINATION',message:'Measured pagination failed; partial fragments discarded'});
-  if(!options||typeof options!=='object'||Array.isArray(options))
+  if(!hasOnlyKeys(options,optionKeys))
     return fail('intent',{code:'IL_MEASURED_INTENT',message:'Invalid bridge options'});
   const list=options.intents===undefined?[]:options.intents;
   if(!Array.isArray(list)||list.length>10000)
@@ -148,6 +166,8 @@ function* placeMeasuredWork(input:PaginationInput,options:IntelligentMeasuredOpt
       (i.placement.startNewPage!==undefined&&typeof i.placement.startNewPage!=='boolean'))
       return fail('intent',{code:'IL_MEASURED_INTENT',message:'Invalid source placement intent'});
     const key=sourceKey(i);
+    if(!validIntentShape(i))
+      return fail('intent',{code:'IL_MEASURED_INTENT',blockId:key,message:'Unsupported source placement intent field'});
     if(intents.has(key)||counts.get(key)!==1)
       return fail('intent',{code:'IL_MEASURED_INTENT',blockId:key,message:'Intent must resolve to exactly one unsplit measured block'});
     intents.set(key,i.placement);

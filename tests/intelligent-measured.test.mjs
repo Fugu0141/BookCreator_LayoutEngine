@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {planMeasuredIntelligentLayout as plan,intelligentMeasuredId,paginateMeasured} from '../dist/index.js';
+import {planMeasuredIntelligentLayout as plan,intelligentMeasuredId,paginateMeasured,planMeasuredIntelligentLayoutIncremental as incremental,planMeasuredIntelligentLayoutIncrementalCooperative as cooperative} from '../dist/index.js';
 const origin=(blockKey,documentId='doc')=>({documentId,blockKey,revision:'source-r',range:{start:0,end:10}});
 const b=(id,width,unitHeights,extra={})=>({kind:'block',origin:origin(id),width,unitHeights,splitPolicy:'strict',...extra});
 const section=(blocks,startOn='continuous',id='s')=>({id,startOn,blocks});
@@ -59,4 +59,29 @@ test('optimization remains explicit and retains measured source association',()=
  const r=plan(i,{gap:5,intents:['a','b','c'].map(id=>intent(id,{sideBySide:true})),optimization:{}});
  assert.equal(r.status,'placed');assert.equal(r.layout.optimization.selected,'lookahead');
  assert.deepEqual(r.fragments.map(f=>[f.origin.blockKey,f.placement.page,f.unitStart,f.unitEnd]),[['a',0,0,1],['b',0,0,1],['c',0,0,1]]);
+});
+
+test('transported unsupported intent fields fail closed on all measured paths',async()=>{
+ const i=input([section([b('a',20,[10]),b('b',20,[10])])]);
+ const first=incremental(i,{intents:[intent('a',{sizeConstraints:{minHeightPercent:50}})]});
+ assert.equal(first.result.status,'placed');assert.ok(first.snapshot);
+ const bad=[
+  {intent:[intent('a',{spaceAfter:30})]},
+  {intents:[{...intent('a',{}),persistentID:'a'}]},
+  {intents:[intent('a',{spaceAfer:30})]},
+  {intents:[intent('a',{sizeConstraints:{minHeightPercentage:50}})]},
+  {intents:[intent('a',{fixed:{page:0,x:0,y:0,z:1}})]},
+  {intents:[intent('a',{preferred:{page:0,x:0,y:0,tolerance:10}})]}
+ ];
+ for(const options of bad){
+  const transported=JSON.parse(JSON.stringify(options));
+  const cold=plan(i,transported),warm=incremental(i,transported,first.snapshot),
+    asyncResult=await cooperative(i,transported,first.snapshot,()=>{});
+  assert.equal(cold.status,'conflict');assert.equal(cold.stage,'intent');
+  assert.equal(cold.diagnostic.code,'IL_MEASURED_INTENT');assert.deepEqual(cold.fragments,[]);
+  assert.deepEqual(warm.result,cold);assert.deepEqual(asyncResult.result,cold);
+  assert.equal(warm.snapshot,undefined);assert.equal(asyncResult.snapshot,undefined);
+ }
+ const restored=incremental(i,{intents:[intent('a',{sizeConstraints:{minHeightPercent:50}})]},first.snapshot);
+ assert.deepEqual(restored.result,first.result);assert.equal(restored.placement.reusedBlocks,2);
 });
