@@ -158,6 +158,43 @@ export function planIntelligentLayout(input: IntelligentLayoutInput, options?:In
 
 type Placed = Extract<IntelligentLayoutResult,{status:'placed'}>;
 
+/** Opaque, process-local snapshot of a successful deterministic shelf pass. */
+export interface IntelligentLayoutSnapshot {readonly kind:'intelligent-layout-snapshot'}
+export interface IncrementalIntelligentLayoutResult {
+  layout:IntelligentLayoutResult;
+  snapshot?:IntelligentLayoutSnapshot;
+  /** Placement work only; input validation and result copying still run. */
+  reusedBlocks:number;
+  reusedSuffixBlocks:number;
+  placedBlocks:number;
+  /** Global candidate selection cannot safely reuse a single shelf pass. */
+  fullRecompute:boolean;
+}
+type FlowState=readonly [number,number,number,number,boolean,boolean];
+type SavedLayout={context:string;keys:string[];states:FlowState[];placements:IntelligentPlacement[]};
+type IncrementalLayoutState={previous?:SavedLayout;next?:SavedLayout;reusedBlocks:number;reusedSuffixBlocks:number;placedBlocks:number};
+const layoutSnapshots=new WeakMap<IntelligentLayoutSnapshot,SavedLayout>();
+const copyPlacement=(p:IntelligentPlacement):IntelligentPlacement=>({...p,rect:{...p.rect},
+  ...(p.occupiedRect?{occupiedRect:{...p.occupiedRect}}:{})});
+
+/** Opt-in incremental placement. Preferred/fallback and optimized candidate
+ * searches deliberately use the full planner until per-candidate snapshots exist. */
+export function planIntelligentLayoutIncremental(input:IntelligentLayoutInput,previous?:IntelligentLayoutSnapshot,
+  options?:IntelligentOptimizationOptions):IncrementalIntelligentLayoutResult {
+  if(options!==undefined||!Array.isArray(input.blocks)||input.blocks.some(b=>b?.preferred!==undefined)){
+    const layout=planIntelligentLayout(input,options);
+    return {layout,reusedBlocks:0,reusedSuffixBlocks:0,placedBlocks:0,fullRecompute:true};
+  }
+  const state:IncrementalLayoutState={previous:previous?layoutSnapshots.get(previous):undefined,reusedBlocks:0,reusedSuffixBlocks:0,placedBlocks:0};
+  const layout=solve(input,true,false,state);
+  let snapshot:IntelligentLayoutSnapshot|undefined;
+  if(state.next){
+    snapshot=Object.freeze({kind:'intelligent-layout-snapshot' as const});
+    layoutSnapshots.set(snapshot,state.next);
+  }
+  return {layout,snapshot,reusedBlocks:state.reusedBlocks,reusedSuffixBlocks:state.reusedSuffixBlocks,placedBlocks:state.placedBlocks,fullRecompute:false};
+}
+
 function scoreCandidate(result:Placed,previous:ReadonlyMap<string,IntelligentPreviousPosition>):IntelligentCandidateScore {
   let honoredPreferences=0,pageCount=0,previousPageDistance=0,previousPositionDistance=0;
   const depths=new Map<number,number>();
@@ -218,7 +255,7 @@ function optimize(input:IntelligentLayoutInput,options:IntelligentOptimizationOp
   return {...best.result,optimization:{evaluatedCandidates:candidates.length,feasibleCandidates,selected:best.name,score:best.score}};
 }
 
-function solve(input:IntelligentLayoutInput,honorPreferences:boolean,lookahead=false):IntelligentLayoutResult {
+function solve(input:IntelligentLayoutInput,honorPreferences:boolean,lookahead=false,incremental?:IncrementalLayoutState):IntelligentLayoutResult {
   const conflict = (code: Extract<IntelligentLayoutResult,{status:'conflict'}>['diagnostic']['code'],
     message:string,blockId?:string,regionId?:string):IntelligentLayoutResult =>
       ({status:'conflict',revision:input.revision,placements:[],publicationReady:false,
@@ -280,7 +317,48 @@ function solve(input:IntelligentLayoutInput,honorPreferences:boolean,lookahead=f
   function nextPage(p:number){
     page=p;rowY=0;bottom=0;right=0;rowOpen=false;rowShare=false;
   }
-  for(let i=0;i<input.blocks.length;i++){
+  const capture=():FlowState=>[page,rowY,bottom,right,rowOpen,rowShare];
+  const restore=(s:FlowState)=>{[page,rowY,bottom,right,rowOpen,rowShare]=s;};
+  const states:FlowState[]=[];
+  let context='',keys:string[]=[],prefix=0,suffix=0,previous:SavedLayout|undefined;
+  if(incremental){
+    // Build keys only AFTER full validation. Project every geometry-affecting
+    // field into primitives; revision and origin metadata are not geometry.
+    context=JSON.stringify([width,height,gap,reserved.map(r=>[r.id,r.page,r.rect.x,r.rect.y,r.rect.width,r.rect.height])]);
+    keys=input.blocks.map(b=>{
+      const f=b.fixed,c=b.sizeConstraints;
+      return JSON.stringify([b.id,b.size.width,b.size.height,b.mode??null,
+        f?[f.page,f.x,f.y]:null,b.sideBySide??false,b.spaceBefore??0,b.spaceAfter??0,b.startNewPage??false,
+        c?[c.minWidth,c.minHeight,c.maxWidth,c.maxHeight,c.minWidthPercent,c.minHeightPercent]:null]);
+    });
+    previous=incremental.previous?.context===context?incremental.previous:undefined;
+    if(previous){
+      while(prefix<keys.length&&prefix<previous.keys.length&&keys[prefix]===previous.keys[prefix])prefix++;
+      while(suffix<keys.length-prefix&&suffix<previous.keys.length-prefix&&
+        keys[keys.length-1-suffix]===previous.keys[previous.keys.length-1-suffix])suffix++;
+      for(let i=0;i<prefix;i++){
+        states.push(previous.states[i]);placements.push(copyPlacement(previous.placements[i]));
+      }
+      restore(previous.states[prefix]);incremental.reusedBlocks=prefix;
+    }
+  }
+  for(let i=prefix;i<input.blocks.length;i++){
+    if(incremental){
+      const now=capture();
+      if(previous&&suffix&&i>=keys.length-suffix){
+        const oldIndex=previous.keys.length-(keys.length-i);
+        if(now.every((v,j)=>v===previous!.states[oldIndex][j])){
+          for(let j=oldIndex;j<previous.keys.length;j++){
+            states.push(previous.states[j]);placements.push(copyPlacement(previous.placements[j]));
+          }
+          restore(previous.states[previous.keys.length]);
+          incremental.reusedSuffixBlocks=keys.length-i;
+          incremental.reusedBlocks+=keys.length-i;
+          break;
+        }
+      }
+      states.push(now);incremental.placedBlocks++;
+    }
     const b=input.blocks[i];
     const {width:w,height:h}=footprints.get(b.id)!, before=b.spaceBefore??0, after=b.spaceAfter??0;
     if(b.startNewPage && rowOpen) nextPage(page+1);
@@ -341,6 +419,10 @@ function solve(input:IntelligentLayoutInput,honorPreferences:boolean,lookahead=f
     placements.push({id:b.id,page,rect:{x,y,width:b.size.width,height:b.size.height},fixed:!!b.fixed,
       ...(w!==b.size.width||h!==b.size.height?{occupiedRect:{x,y,width:w,height:h}}:{}),
       ...(preference!==undefined?{preference}:{})});
+  }
+  if(incremental){
+    states.push(capture());
+    incremental.next={context,keys,states,placements:placements.map(copyPlacement)};
   }
   return {status:'placed',revision:input.revision,placements,publicationReady:false};
 }

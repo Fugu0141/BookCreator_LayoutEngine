@@ -1,5 +1,5 @@
-import {paginateMeasured,type PaginationInput,type PaginationDiagnostic,type Fragment,type Origin} from './pagination.js';
-import {planIntelligentLayout,type IntelligentBlock,type IntelligentPlacement,type IntelligentReservedRegion,type IntelligentLayoutResult,type IntelligentOptimizationOptions} from './intelligent-layout.js';
+import {paginateMeasured,paginateMeasuredIncremental,type PaginationCheckpointSnapshot,type MeasuredPagePlan,type PaginationInput,type PaginationDiagnostic,type Fragment,type Origin} from './pagination.js';
+import {planIntelligentLayout,planIntelligentLayoutIncremental,type IntelligentLayoutInput,type IntelligentLayoutSnapshot,type IncrementalIntelligentLayoutResult,type IntelligentBlock,type IntelligentPlacement,type IntelligentReservedRegion,type IntelligentLayoutResult,type IntelligentOptimizationOptions} from './intelligent-layout.js';
 
 /** Source identity, independent of revision and fragment range. */
 export interface IntelligentMeasuredIntent {
@@ -47,7 +47,40 @@ const copyOrigin=(o:Origin):Origin=>({...o,...(o.range?{range:{...o.range}}:{})}
  * invokes a measurement adapter, renders content or produces a PagePlan.
  */
 export function planMeasuredIntelligentLayout(input:PaginationInput,options:IntelligentMeasuredOptions={}):IntelligentMeasuredResult {
-  const plan=paginateMeasured(input);
+  return placeMeasured(input,options,paginateMeasured(input),planIntelligentLayout);
+}
+
+/** Both layers retain private, successful checkpoints; callers own the handle. */
+export interface IntelligentMeasuredSnapshot {readonly kind:'intelligent-measured-snapshot'}
+export interface IncrementalIntelligentMeasuredResult {
+  result:IntelligentMeasuredResult;
+  snapshot?:IntelligentMeasuredSnapshot;
+  pagination:{reusedBlocks:number;reusedSuffixBlocks:number;placedBlocks:number};
+  placement?:Pick<IncrementalIntelligentLayoutResult,'reusedBlocks'|'reusedSuffixBlocks'|'placedBlocks'|'fullRecompute'>;
+}
+const measuredSnapshots=new WeakMap<IntelligentMeasuredSnapshot,{pagination?:PaginationCheckpointSnapshot;layout?:IntelligentLayoutSnapshot}>();
+export function planMeasuredIntelligentLayoutIncremental(input:PaginationInput,options:IntelligentMeasuredOptions={},
+  previous?:IntelligentMeasuredSnapshot):IncrementalIntelligentMeasuredResult {
+  const saved=previous?measuredSnapshots.get(previous):undefined;
+  const p=paginateMeasuredIncremental(input,saved?.pagination);
+  let nextLayout:IntelligentLayoutSnapshot|undefined;
+  let placement:IncrementalIntelligentMeasuredResult['placement'];
+  const result=placeMeasured(input,options,p.plan,(layoutInput,optimization)=>{
+    const r=planIntelligentLayoutIncremental(layoutInput,saved?.layout,optimization);
+    nextLayout=r.snapshot;
+    placement={reusedBlocks:r.reusedBlocks,reusedSuffixBlocks:r.reusedSuffixBlocks,placedBlocks:r.placedBlocks,fullRecompute:r.fullRecompute};
+    return r.layout;
+  });
+  let snapshot:IntelligentMeasuredSnapshot|undefined;
+  if(result.status==='placed'&&(p.snapshot||nextLayout)){
+    snapshot=Object.freeze({kind:'intelligent-measured-snapshot' as const});
+    measuredSnapshots.set(snapshot,{pagination:p.snapshot,layout:nextLayout});
+  }
+  return {result,snapshot,pagination:{reusedBlocks:p.reusedBlocks,reusedSuffixBlocks:p.reusedSuffixBlocks,placedBlocks:p.placedBlocks},placement};
+}
+
+function placeMeasured(input:PaginationInput,options:IntelligentMeasuredOptions,plan:MeasuredPagePlan,
+  planner:(input:IntelligentLayoutInput,options?:IntelligentOptimizationOptions)=>IntelligentLayoutResult):IntelligentMeasuredResult {
   const common:Common={revision:input.revision,fingerprint:input.fingerprint,publicationReady:false,
     paginationDiagnostics:plan.diagnostics.map(d=>({...d,...(d.origin?{origin:copyOrigin(d.origin)}:{})}))};
   const fail=(stage:'pagination'|'intent'|'layout',diagnostic:Extract<IntelligentMeasuredResult,{status:'conflict'}>['diagnostic']):IntelligentMeasuredResult=>
@@ -85,7 +118,7 @@ export function planMeasuredIntelligentLayout(input:PaginationInput,options:Inte
       spaceBefore:i?.spaceBefore,spaceAfter:i?.spaceAfter,
       startNewPage:hardBreak||i?.startNewPage===true};
   });
-  const layout=planIntelligentLayout({revision:input.revision,content:input.content,gap:options.gap===undefined?0:options.gap,
+  const layout=planner({revision:input.revision,content:input.content,gap:options.gap===undefined?0:options.gap,
     blocks,reservedRegions:options.reservedRegions},options.optimization);
   if(layout.status==='conflict') return fail('layout',layout.diagnostic);
   return {...common,status:'placed',layout,fragments:fragments.map((f,index)=>({
