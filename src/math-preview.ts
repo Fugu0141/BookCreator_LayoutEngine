@@ -283,6 +283,12 @@ type DisplayMathArtifactData={document:Document;source:string;availableWidth:num
 const artifactData=new WeakMap<DisplayMathArtifact,DisplayMathArtifactData>();
 const measuredArtifacts=new WeakMap<MeasuredDisplayMath,DisplayMathArtifact>();
 export function displayMathArtifact(measured:MeasuredDisplayMath):DisplayMathArtifact|undefined{return measuredArtifacts.get(measured);}
+/** Render identity for a verified native equation, independent of the live DOM.
+ * Includes exact measured CSS and numbering, not merely bounding dimensions. */
+export function displayMathRenderKey(measured:MeasuredDisplayMath):string|undefined{
+  const artifact=measuredArtifacts.get(measured),data=artifact&&artifactData.get(artifact);
+  return data?JSON.stringify([data.source,data.availableWidth,data.fontSize,data.equationNumber??null,data.family,data.width,data.height,data.styleText]):undefined;
+}
 function createDisplayMathElement(document:Document,source:string,width:number,fontSize:number,equationNumber:string|undefined,family:PreviewMathFontFamily,cache?:MathCompilationCache){
   const px=(v:number)=>v*96/25400;
   const element=document.createElement('div');
