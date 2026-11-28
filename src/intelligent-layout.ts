@@ -244,10 +244,11 @@ export interface IncrementalIntelligentLayoutResult {
 type FlowState=readonly [number,number,number,number,boolean,boolean];
 // Normalized, validated geometry only. All fields are primitive, and the
 // tuple never retains any caller-owned object. No per-block JSON encoding.
-type LayoutKey=readonly [string,number,number,number,number,number,number,boolean,boolean,number,number,number,boolean];
+type LayoutKey=readonly [string,number,number,number,number,number,number,boolean,boolean,number,number,number,boolean,number,number,number,number,number];
 const equalKey=(a:LayoutKey,b:LayoutKey)=>a[0]===b[0]&&a[1]===b[1]&&a[2]===b[2]&&
   a[3]===b[3]&&a[4]===b[4]&&a[5]===b[5]&&a[6]===b[6]&&a[7]===b[7]&&
-  a[8]===b[8]&&a[9]===b[9]&&a[10]===b[10]&&a[11]===b[11]&&a[12]===b[12];
+  a[8]===b[8]&&a[9]===b[9]&&a[10]===b[10]&&a[11]===b[11]&&a[12]===b[12]&&a[13]===b[13]&&a[14]===b[14]&&
+  a[15]===b[15]&&a[16]===b[16]&&a[17]===b[17];
 type SavedLayout={context:string;keys:LayoutKey[];states:FlowState[];placements:IntelligentPlacement[]};
 type IncrementalLayoutState={previous?:SavedLayout;next?:SavedLayout;reusedBlocks:number;reusedSuffixBlocks:number;placedBlocks:number;sharedSnapshotPlacements:number};
 const layoutSnapshots=new WeakMap<IntelligentLayoutSnapshot,SavedLayout>();
@@ -258,8 +259,8 @@ function copyPlacement(p:IntelligentPlacement):IntelligentPlacement{
   return value;
 }
 
-/** Opt-in incremental placement. Preferred/fallback and optimized candidate
- * searches deliberately use the full planner until per-candidate snapshots exist. */
+/** Opt-in incremental placement of the ordinary preference-honoring pass.
+ * Groups, optimized candidates and the hard-only retry remain full calculations. */
 export function planIntelligentLayoutIncremental(input:IntelligentLayoutInput,previous?:IntelligentLayoutSnapshot,
   options?:IntelligentOptimizationOptions):IncrementalIntelligentLayoutResult {
   return finishIntelligentWork(incrementalWork(input,previous,options));
@@ -274,12 +275,21 @@ export function planIntelligentLayoutIncrementalCooperative(input:IntelligentLay
 function* incrementalWork(input:IntelligentLayoutInput,previous?:IntelligentLayoutSnapshot,
   options?:IntelligentOptimizationOptions):Generator<IntelligentWorkStage,IncrementalIntelligentLayoutResult,void>{
   yield 'il-validate';
-  if(options!==undefined||!Array.isArray(input.blocks)||input.blocks.some(b=>b?.preferred!==undefined||b?.keepTogetherGroup!==undefined)){
+  if(options!==undefined||!Array.isArray(input.blocks)||input.blocks.some(b=>b?.keepTogetherGroup!==undefined)){
     const layout=yield* planWork(input,options);
     return {layout,reusedBlocks:0,reusedSuffixBlocks:0,placedBlocks:0,fullRecompute:true};
   }
   const state:IncrementalLayoutState={previous:previous?layoutSnapshots.get(previous):undefined,reusedBlocks:0,reusedSuffixBlocks:0,placedBlocks:0,sharedSnapshotPlacements:0};
   const layout=yield* solve(input,true,false,state);
+  // A late fixed conflict can invalidate earlier soft choices. Retry from
+  // scratch exactly as the cold planner does. Never store a hard-only pass
+  // as a preference-honoring checkpoint (even if its geometry is identical).
+  if(layout.status==='conflict'&&
+    (layout.diagnostic.code==='IL_FIXED_CONFLICT'||layout.diagnostic.code==='IL_LIMIT')&&
+    input.blocks.some(b=>b?.preferred!==undefined)){
+    const fallback=yield* solve(input,false);
+    return {layout:fallback,reusedBlocks:0,reusedSuffixBlocks:0,placedBlocks:0,fullRecompute:true};
+  }
   let snapshot:IntelligentLayoutSnapshot|undefined;
   if(state.next){
     snapshot=Object.freeze({kind:'intelligent-layout-snapshot' as const});
@@ -427,7 +437,8 @@ function* solve(input:IntelligentLayoutInput,honorPreferences:boolean,lookahead=
       if(keys.length%64===0)yield 'il-key';
       const f=b.fixed;
       keys.push([b.id,b.size.width,b.size.height,occupied.width,occupied.height,b.spaceBefore??0,b.spaceAfter??0,
-        !!b.sideBySide,!!b.startNewPage,f?.page??-1,f?.x??0,f?.y??0,b.fixedRowShare===true]);
+        !!b.sideBySide,!!b.startNewPage,f?.page??-1,f?.x??0,f?.y??0,b.fixedRowShare===true,
+        b.preferred?.page??-1,b.preferred?.x??0,b.preferred?.y??0,b.preferredTolerance?.x??0,b.preferredTolerance?.y??0]);
     }
   }
   // A group reserves one conservative enclosing rectangle. Its members retain

@@ -73,7 +73,7 @@ options.intents は {documentId,blockKey,placement} の配列。placement は mo
 
 planIntelligentLayoutIncremental(input, previous?, options?) は成功した配置と不透明なプロセス内 snapshot を返す。入力全体の検証後、本文寸法・gap・予約領域が一致するときだけ、同一ブロックキーの前方範囲を再利用する。後続の同一キー列はページ・行起点・下端・右端・行共有状態がすべて一致した地点から再利用する。追加・削除もキー列と状態が一致すれば対応する。revision は常に現在の入力を返す。キーはID、実測寸法、モード、固定位置、占有制約、明示余白、横並び許可、改ページを含む。出力矩形の変更は保存済み状態に影響しない。競合は全候補を破棄し、新しいsnapshotを発行しない。
 
-希望配置・候補最適化が指定された場合は、全体候補選択が変わり得るため従来の全体計算にフォールバックし、fullRecompute=true（配置作業カウンタは未計測のため0）。通常の配置では reusedBlocks / reusedSuffixBlocks / placedBlocks を返す。これらは配置作業の件数であり、入力検証やコピーの時間を含まない。
+希望配置の通常パスは増分計算対象。後続の固定競合またはページ上限で希望無効化の再試行が必要な場合、およびグループ・候補最適化指定時は従来の全体計算にフォールバックし、fullRecompute=true（配置作業カウンタは未計測のため0）。通常の配置では reusedBlocks / reusedSuffixBlocks / placedBlocks を返す。これらは配置作業の件数であり、入力検証やコピーの時間を含まない。
 
 planMeasuredIntelligentLayoutIncremental(input, options?, previous?) は既存 paginateMeasuredIncremental と上記ILキャッシュを独立して使用する。原稿ID・現在のorigin・fingerprintを再構築し、既存の断片・警告・競合契約を保つ。成功時のみ新しいsnapshotを発行する。GUIは文書ごとに最後の成功ハンドルを保持し、競合・古いrevisionを採用しない。保存ファイルにsnapshotを書き込まない。
 
@@ -251,6 +251,14 @@ keepTogetherLayout は vertical（既定）または rows。グループ内の�
 #102 全3系統CI成功・main統合済み。describeIntelligentPreferredPlacement(result, options, expected, source) は一意な単一断片の希望位置について exact / within-tolerance / fallback、要求座標、実際の座標、許容差、同一ページでのみ符号付き差分µmを返す。別ページの場合はoffsetなし。固定・非希望・旧revision/fingerprint・重複・競合結果・判定と幾何の不整合はundefined。返値は独立した値で、設定を上書きせず、保存を許可しない。GUIは計測要求の正確なoptionsと世代番号を保持し、最新要求だけ採用する（revision/fingerprintだけでは異なる未確定提案を区別できない）。ドラッグのゴーストと実紙面の差を提示し、範囲外の場合は明示する。希望位置を実際の配置で自動上書きしない。
 
 実ブラウザで全冊2原稿の同名ブロックを固定し、競合した未確定提案が型付きエラーを返すこと、解除対象が正しい原稿に限られること、成功済みDOM・leaseを保持すること、明示解除後に別の固定・占有領域・余白が維持されること、cold計画との一致、希望位置の差分・計測再利用を確認する。通常/増分/協調・JSON往復のフィードバック単体試験も追加。Electron GUI・保存接続は本体担当、CI未確認。
+
+## IL-13A: 希望位置編集の増分配置
+
+#107 全3系統CI成功・main統合済み。本体 #270 の希望位置・横縦許容範囲の操作に合わせ、通常の希望優先パスを増分計算対象とする。検証済みキーに希望ページ/x/yと横縦許容差を加える。希望なしのpageは-1、許容差なしは0。従来どおり全入力の検証後だけ再利用し、同一前方キー列と同一flow stateに収束した後方キー列を再利用する。希望結果も既存の非公開snapshotに保持する。
+
+希望優先パスで固定競合またはページ上限が生じたときはcold計算と同じ希望無効化パスを全体実行し、その結果を希望優先パスのsnapshotとして保存しない。グループ・候補最適化は引き続き全体計算。キャンセル・競合は以前の成功ハンドルを保持する。
+
+希望座標/許容差の変更、前後再利用、固定競合からのfallback、協調取消、1000件中index800の12回編集で800件以上の配置再利用とcold一致を回帰試験に追加。配置件数の検証であって時間の改善量は未計測。本体コードは変更しない。CI未確認。
 
 ## 組版への統合（正式出版経路は未実装）
 
