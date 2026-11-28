@@ -67,7 +67,8 @@ export function planMeasuredIntelligentLayout(input:PaginationInput,options:Inte
   const intents=new Map<string,IntelligentMeasuredIntent['placement']>();
   for(const i of list){
     if(!i||typeof i.documentId!=='string'||!i.documentId||typeof i.blockKey!=='string'||!i.blockKey||
-      !i.placement||typeof i.placement!=='object'||Array.isArray(i.placement))
+      !i.placement||typeof i.placement!=='object'||Array.isArray(i.placement)||
+      (i.placement.startNewPage!==undefined&&typeof i.placement.startNewPage!=='boolean'))
       return fail('intent',{code:'IL_MEASURED_INTENT',message:'Invalid source placement intent'});
     const key=sourceKey(i);
     if(intents.has(key)||counts.get(key)!==1)
