@@ -3,7 +3,7 @@
 import {prioritizePages} from './preview-page-priority.js';
 import {createProvisionalPageDelivery,type ProvisionalPageReceiver} from './preview-page-delivery.js';
 import {imageSourceRect} from './image-crop.js';
-import type {MeasuredDisplayMath} from './math-preview.js';
+import {displayMathRenderKey,type MeasuredDisplayMath} from './math-preview.js';
 import type {MeasuredPagePlan,MeasuredPage,Origin} from './pagination.js';
 import type {PlainTextMeasureRequest} from './browser-measurement.js';
 import type {MeasuredTextLine,MeasuredTextLines,PreviewTextBlock,PreviewTextSlice,PreviewComponentChild,PreviewListItem,TextPagePreview,PreviewCheckpoint} from './browser-lines.js';
@@ -80,13 +80,19 @@ function keepPage(state:PageCacheState,key:string,page:HTMLElement){
 }
 /** Serialize only fields consumed by the renderer. Exclude revisions and raw
  * source ranges, which affect slices/navigation, not the template. */
-function pageKey(p:MeasuredPage,width:number,height:number,paper:PreviewPaper|undefined,byKey:ReadonlyMap<string,MeasuredPreviewBlock>,plainOnly=false):string|undefined{
+function pageKey(p:MeasuredPage,width:number,height:number,paper:PreviewPaper|undefined,byKey:ReadonlyMap<string,MeasuredPreviewBlock>,plainOnly=false,allowDisplayMath=false):string|undefined{
   const fragments=[];
   for(const f of p.fragments){
     const entry=byKey.get(previewBlockKey(f.origin));
     if(!entry)throw Error('Missing preview block');
     const {block,measurement,math}=entry;
-    if(math||block.component||block.listItem||measurement.lines.some(l=>l.displayMath)||(plainOnly&&measurement.request.inlineMath!==undefined))return undefined;
+    if(block.component||block.listItem||measurement.lines.some(l=>l.displayMath)||(plainOnly&&measurement.request.inlineMath!==undefined))return undefined;
+    if(math){
+      const key=allowDisplayMath?displayMathRenderKey(math):undefined;
+      if(key===undefined)return undefined;
+      fragments.push([f.origin.documentId,f.origin.blockKey,[f.rect.x,f.rect.y,f.rect.width,f.rect.height],'display-math',key,block.request.text.length]);
+      continue;
+    }
     const r=measurement.request,lines=measurement.lines.slice(f.unitStart,f.unitEnd);
     if(!lines.length)throw Error('Missing preview lines');
     fragments.push([f.origin.documentId,f.origin.blockKey,[f.rect.x,f.rect.y,f.rect.width,f.rect.height],
@@ -114,9 +120,10 @@ export async function renderMeasuredPreview(document:Document,plan:MeasuredPageP
   function admitKey(p:MeasuredPage){
     // Inline atoms are recreated from their source and font family by frozenText.
     // The existing render key already includes both plus the measured line geometry.
-    // Keep legacy sparse eligibility unchanged; isolated display nodes, components
-    // and lists remain excluded in either mode.
-    const deltaKey=delta?pageKey(p,width,height,paper,byKey,!delta.allowInlineMath):undefined;
+    // Verified standalone equations also carry a complete node-free render key.
+    // Keep legacy sparse/template eligibility unchanged; components, lists and
+    // embedded display rows remain excluded in either mode.
+    const deltaKey=delta?pageKey(p,width,height,paper,byKey,!delta.allowInlineMath,delta.allowInlineMath===true):undefined;
     if(deltaKey!==undefined&&nextKeys.size<pageLimits.entries&&keyCharacters+deltaKey.length<=pageLimits.characters){
       nextKeys.set(p.index,deltaKey);keyCharacters+=deltaKey.length;
     }
