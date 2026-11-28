@@ -2,7 +2,7 @@
 <html lang="en"><meta charset="utf-8"><title>Browser measurement smoke test</title>
 <body><pre id="result">RUNNING</pre>
 <script type="module">
-import {prepareRetainedIntelligentDocumentOptimizationReview,inspectRetainedIntelligentLayoutQuality,prepareRetainedIntelligentOptimizationReview,confirmRetainedIntelligentOptimizationReview,cancelRetainedIntelligentOptimizationReview,createIntelligentGeometryDraftSession,createIntelligentGeometryDraft,proposeIntelligentGroup,proposeIntelligentGroupEdit,compareIntelligentPlacementImpact,IntelligentPreviewConflictError,findIntelligentFixedConflictTarget,describeIntelligentPreferredPlacement,createFullRetainedTextPagePreview,createTrialPrintPreviewForLayout,createIntelligentPrintTicket,createVerifiedIntelligentPrintPreview,measurePlainText,paginateMeasured,measurePlainTextLines,createPlainTextPagePreview,createIncrementalTextPagePreview,createRetainedTextPagePreview,measureDisplayMath,displayMathArtifact,restoreDisplayMathArtifact,createPreviewMath,createTextMeasurementCache,createParagraphMeasurementCache,createPageRenderCache,parsePreviewMath,parseDisplayMath,readyPreviewMathFont,createMathCompilationCache,createDisplayMathGeometryCache,createInlineMathGeometryCache,measureInlineMathGeometry,createInlineMathAtom} from '/dist/index.js';
+import {inspectRetainedIntelligentOptimizationReview,prepareRetainedIntelligentDocumentOptimizationReview,inspectRetainedIntelligentLayoutQuality,prepareRetainedIntelligentOptimizationReview,confirmRetainedIntelligentOptimizationReview,cancelRetainedIntelligentOptimizationReview,createIntelligentGeometryDraftSession,createIntelligentGeometryDraft,proposeIntelligentGroup,proposeIntelligentGroupEdit,compareIntelligentPlacementImpact,IntelligentPreviewConflictError,findIntelligentFixedConflictTarget,describeIntelligentPreferredPlacement,createFullRetainedTextPagePreview,createTrialPrintPreviewForLayout,createIntelligentPrintTicket,createVerifiedIntelligentPrintPreview,measurePlainText,paginateMeasured,measurePlainTextLines,createPlainTextPagePreview,createIncrementalTextPagePreview,createRetainedTextPagePreview,measureDisplayMath,displayMathArtifact,restoreDisplayMathArtifact,createPreviewMath,createTextMeasurementCache,createParagraphMeasurementCache,createPageRenderCache,parsePreviewMath,parseDisplayMath,readyPreviewMathFont,createMathCompilationCache,createDisplayMathGeometryCache,createInlineMathGeometryCache,measureInlineMathGeometry,createInlineMathAtom} from '/dist/index.js';
 const result=document.querySelector('#result');
 const assert=(condition,message)=>{if(!condition)throw Error(message);};
 const phase=async name=>{await fetch('/test-progress',{method:'POST',body:name});};
@@ -349,12 +349,34 @@ try{
     assert(review.status==='review'&&review.proposal.improvement.depthImbalanceReduction>0,'review generated from private measured input');
     assert(explicit.status==='review'&&JSON.stringify(explicit.proposal)===JSON.stringify(review.proposal),'manuscript review derives exact scope independently of displayed diagnostics');
     assert(cancelRetainedIntelligentOptimizationReview(explicit.handle),'cancel explicit comparison review');
+    const inspect=()=>inspectRetainedIntelligentOptimizationReview(document,review.handle,approved.snapshot,'lease');
+    const comparison=inspect();
+    assert(comparison.beforePageCount===review.proposal.before.pageCount&&comparison.afterPageCount===review.proposal.after.pageCount,'comparison page counts');
+    assert(comparison.movedFragments===review.proposal.impact.movedFragments&&comparison.pageChangedFragments===review.proposal.impact.pageChangedFragments,'comparison movement counts');
+    assert(JSON.stringify(comparison.changes)===JSON.stringify(review.proposal.impact.changed),'absolute before and after rectangles');
+    assert(comparison.pages.length===2&&comparison.pages.map(p=>p.page).join(',')==='0,1','affected pages sorted');
+    for(const change of comparison.changes){
+      assert(comparison.pages.find(p=>p.page===change.before.page).changedBefore.includes(change.before.id),'source page movement index');
+      assert(comparison.pages.find(p=>p.page===change.after.page).changedAfter.includes(change.after.id),'destination page movement index');
+    }
+    const comparisonJSON=JSON.stringify(comparison);
+    comparison.pages[0].before.occupiedDepth=999;
+    comparison.changes[0].before.rect.x=999;
+    review.proposal.before.pages[0].occupiedDepth=999;
+    assert(JSON.stringify(inspect())===comparisonJSON,'comparison isolated from public review and prior result');
+    assert(inspectRetainedIntelligentOptimizationReview(document,review.handle,approved.snapshot,'wrong-lease')===undefined,'wrong lease cannot inspect');
+    assert(inspectRetainedIntelligentOptimizationReview(document,explicit.handle,approved.snapshot,'lease')===undefined,'cancelled review cannot inspect');
+    const otherDocument=document.implementation.createHTMLDocument('foreign');
+    assert(inspectRetainedIntelligentOptimizationReview(otherDocument,review.handle,approved.snapshot,'lease')===undefined,'foreign document cannot inspect');
     const next={...base,intelligentLayout:structuredClone(review.proposal.options)};
     const candidate=await createFullRetainedTextPagePreview(document,next,approved.snapshot);
     assert(candidate.measurementWork.reusedBlocks===4,'retained candidate reuses measured blocks');
     assert(JSON.stringify(candidate.intelligentLayout)===JSON.stringify(review.proposal.result),'rendered candidate matches proposal');
     const ticket=JSON.parse(JSON.stringify(createIntelligentPrintTicket(candidate,paper)));
+    assert(inspectRetainedIntelligentOptimizationReview(document,review.handle,candidate.snapshot,'lease')===undefined,'candidate is not the original review base');
+    assert(JSON.stringify(inspect())===comparisonJSON,'failed inspections do not consume review');
     const confirmed=confirmRetainedIntelligentOptimizationReview(document,review.handle,approved.snapshot,candidate.snapshot,'lease');
+    assert(inspect()===undefined,'confirmed review cannot be inspected again');
     assert(confirmed.status==='confirmed'&&JSON.stringify(confirmed.options)===JSON.stringify(next.intelligentLayout),'confirm actual rendered snapshot');
     assert(confirmRetainedIntelligentOptimizationReview(document,review.handle,approved.snapshot,candidate.snapshot,'lease').reason==='invalid-handle','single use');
     const cancelled=select();assert(cancelRetainedIntelligentOptimizationReview(cancelled.handle),'cancel manuscript review');
