@@ -73,6 +73,8 @@ export interface IntelligentOptimizationOptions {
   selectivePreferenceFallback?:boolean;
   /** Soft semantic hint: keep this block and its immediate successor on one page when feasible. */
   keepWithNextIds?:readonly string[];
+  /** Prefer less uneven occupied depths on adjacent natural-flow pages. */
+  balancePageDepths?:boolean;
 }
 export interface IntelligentCandidateScore {
   honoredPreferences:number;
@@ -81,11 +83,13 @@ export interface IntelligentCandidateScore {
   previousPositionDistance:number;
   occupiedDepth:number;
   keptWithNext?:number;
+  /** Sum of absolute adjacent occupied-depth differences in µm. */
+  pageDepthImbalance?:number;
 }
 export interface IntelligentOptimizationReport {
   evaluatedCandidates:number;
   feasibleCandidates:number;
-  selected:'greedy'|'lookahead'|'greedy-fallback'|'lookahead-fallback'|'greedy-selective'|'lookahead-selective'|'keep-next';
+  selected:'greedy'|'lookahead'|'greedy-fallback'|'lookahead-fallback'|'greedy-selective'|'lookahead-selective'|'keep-next'|'page-balance';
   score:IntelligentCandidateScore;
 }
 export type IntelligentLayoutResult =
@@ -303,7 +307,7 @@ function* incrementalWork(input:IntelligentLayoutInput,previous?:IntelligentLayo
   return {layout,snapshot,reusedBlocks:state.reusedBlocks,reusedSuffixBlocks:state.reusedSuffixBlocks,placedBlocks:state.placedBlocks,sharedSnapshotPlacements:state.sharedSnapshotPlacements,fullRecompute:false};
 }
 
-function* scoreCandidate(result:Placed,previous:ReadonlyMap<string,IntelligentPreviousPosition>,keep?:ReadonlySet<string>):Generator<IntelligentWorkStage,IntelligentCandidateScore,void> {
+function* scoreCandidate(result:Placed,previous:ReadonlyMap<string,IntelligentPreviousPosition>,keep?:ReadonlySet<string>,balanceInput?:IntelligentLayoutInput):Generator<IntelligentWorkStage,IntelligentCandidateScore,void> {
   let honoredPreferences=0,pageCount=0,previousPageDistance=0,previousPositionDistance=0;
   const depths=new Map<number,number>();
   let scanned=0;
@@ -325,8 +329,23 @@ function* scoreCandidate(result:Placed,previous:ReadonlyMap<string,IntelligentPr
     if(i%128===0)yield 'il-score';
     if(keep.has(result.placements[i].id)&&result.placements[i].page===result.placements[i+1].page)keptWithNext++;
   }
+  let pageDepthImbalance=0;
+  if(balanceInput){
+    const excluded=new Set((balanceInput.reservedRegions??[]).map(r=>r.page));
+    const hardStarts=new Set<number>();
+    for(let i=0;i<result.placements.length;i++){
+      if(i%128===0)yield 'il-score';
+      const p=result.placements[i],b=balanceInput.blocks[i];
+      if(b.fixed||b.preferred)excluded.add(p.page);
+      if(b.startNewPage)hardStarts.add(p.page);
+    }
+    for(const [page,depth] of depths){
+      if(!excluded.has(page)&&!excluded.has(page+1)&&!hardStarts.has(page+1)&&depths.has(page+1))
+        pageDepthImbalance+=Math.abs(depth-depths.get(page+1)!);
+    }
+  }
   return {honoredPreferences,pageCount,previousPageDistance,previousPositionDistance,occupiedDepth,
-    ...(keep?{keptWithNext}:{})};
+    ...(keep?{keptWithNext}:{}),...(balanceInput?{pageDepthImbalance}:{})};
 }
 
 function better(a:IntelligentCandidateScore,b:IntelligentCandidateScore):boolean {
@@ -335,6 +354,7 @@ function better(a:IntelligentCandidateScore,b:IntelligentCandidateScore):boolean
   if((a.keptWithNext??0)!==(b.keptWithNext??0))return (a.keptWithNext??0)>(b.keptWithNext??0);
   if(a.previousPageDistance!==b.previousPageDistance) return a.previousPageDistance<b.previousPageDistance;
   if(a.previousPositionDistance!==b.previousPositionDistance) return a.previousPositionDistance<b.previousPositionDistance;
+  if((a.pageDepthImbalance??0)!==(b.pageDepthImbalance??0))return (a.pageDepthImbalance??0)<(b.pageDepthImbalance??0);
   return a.occupiedDepth<b.occupiedDepth;
 }
 
@@ -344,6 +364,8 @@ function* optimize(input:IntelligentLayoutInput,options:IntelligentOptimizationO
   if(!options||typeof options!=='object'||Array.isArray(options)) return invalid('Invalid optimization options');
   if(options.selectivePreferenceFallback!==undefined&&typeof options.selectivePreferenceFallback!=='boolean')
     return invalid('Invalid selective preference fallback option');
+  if(options.balancePageDepths!==undefined&&typeof options.balancePageDepths!=='boolean')return invalid('Invalid page balance option');
+  const balanceInput=options.balancePageDepths===true?input:undefined;
   const hints=options.previousPositions===undefined?[]:options.previousPositions;
   if(!Array.isArray(hints)||hints.length>10000) return invalid('Invalid previous positions');
   const previous=new Map<string,IntelligentPreviousPosition>();
@@ -399,7 +421,7 @@ function* optimize(input:IntelligentLayoutInput,options:IntelligentOptimizationO
   for(const {name,result} of candidates){
     if(result.status!=='placed') continue;
     feasibleCandidates++;
-    const score=yield* scoreCandidate(result,previous,keep);
+    const score=yield* scoreCandidate(result,previous,keep,balanceInput);
     if(!best||better(score,best.score)) best={name,result,score};
   }
   if(!best) return first;
@@ -423,8 +445,45 @@ function* optimize(input:IntelligentLayoutInput,options:IntelligentOptimizationO
       candidates.push({name:'keep-next',result:alternate});
       if(alternate.status==='placed'){
         feasibleCandidates++;
-        const score=yield* scoreCandidate(alternate,previous,keep);
+        const score=yield* scoreCandidate(alternate,previous,keep,balanceInput);
         if(better(score,best.score))best={name:'keep-next',result:alternate,score};
+      }
+    }
+  }
+  // One bounded extra candidate: move the last independent block of a
+  // fuller page to its natural successor. No scaling, reordering, or edits
+  // to explicit whitespace. Compare the complete legal result, not the
+  // local estimate, and never trade away higher-priority score fields.
+  if(balanceInput){
+    const p=best.result.placements,excluded=new Set((input.reservedRegions??[]).map(r=>r.page));
+    const pages=new Map<number,{first:number;last:number;depth:number;simple:boolean}>();
+    for(let i=0;i<p.length;i++){
+      if(i%64===0)yield 'il-score';
+      const b=input.blocks[i],r=p[i].occupiedRect??p[i].rect;
+      const simple=!b.fixed&&!b.preferred&&!b.keepTogetherGroup&&!b.sideBySide;
+      const old=pages.get(p[i].page);
+      if(old){old.last=i;old.depth=Math.max(old.depth,r.y+r.height);old.simple&&=simple;}
+      else pages.set(p[i].page,{first:i,last:i,depth:r.y+r.height,simple});
+    }
+    let chosen:string|undefined,gain=0;
+    for(const [page,a] of pages){
+      const b=pages.get(page+1),last=input.blocks[a.last];
+      if(!b||!a.simple||!b.simple||a.first===a.last||excluded.has(page)||excluded.has(page+1)||
+        last.startNewPage||input.blocks[b.first].startNewPage||a.depth<=b.depth)continue;
+      const prior=p[a.last-1].occupiedRect??p[a.last-1].rect;
+      const moved=p[a.last].occupiedRect??p[a.last].rect;
+      const nextDepth=b.depth+moved.height+(last.spaceBefore??0)+input.gap;
+      if(nextDepth>input.content.height)continue;
+      const estimate=a.depth-b.depth-Math.abs(prior.y+prior.height-nextDepth);
+      if(estimate>gain){gain=estimate;chosen=last.id;}
+    }
+    if(chosen!==undefined){
+      const alternate=yield* solve({...input,blocks:input.blocks.map(b=>b.id===chosen?{...b,startNewPage:true}:b)},true,true);
+      candidates.push({name:'page-balance',result:alternate});
+      if(alternate.status==='placed'){
+        feasibleCandidates++;
+        const score=yield* scoreCandidate(alternate,previous,keep,balanceInput);
+        if(better(score,best.score))best={name:'page-balance',result:alternate,score};
       }
     }
   }
