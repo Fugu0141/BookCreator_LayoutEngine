@@ -187,15 +187,27 @@ export interface IncrementalIntelligentLayoutResult {
   reusedBlocks:number;
   reusedSuffixBlocks:number;
   placedBlocks:number;
+  /** Private placement values reused by reference, never exposed to callers. */
+  sharedSnapshotPlacements?:number;
   /** Global candidate selection cannot safely reuse a single shelf pass. */
   fullRecompute:boolean;
 }
 type FlowState=readonly [number,number,number,number,boolean,boolean];
-type SavedLayout={context:string;keys:string[];states:FlowState[];placements:IntelligentPlacement[]};
-type IncrementalLayoutState={previous?:SavedLayout;next?:SavedLayout;reusedBlocks:number;reusedSuffixBlocks:number;placedBlocks:number};
+// Normalized, validated geometry only. All fields are primitive, and the
+// tuple never retains any caller-owned object. No per-block JSON encoding.
+type LayoutKey=readonly [string,number,number,number,number,number,number,boolean,boolean,number,number,number];
+const equalKey=(a:LayoutKey,b:LayoutKey)=>a[0]===b[0]&&a[1]===b[1]&&a[2]===b[2]&&
+  a[3]===b[3]&&a[4]===b[4]&&a[5]===b[5]&&a[6]===b[6]&&a[7]===b[7]&&
+  a[8]===b[8]&&a[9]===b[9]&&a[10]===b[10]&&a[11]===b[11];
+type SavedLayout={context:string;keys:LayoutKey[];states:FlowState[];placements:IntelligentPlacement[]};
+type IncrementalLayoutState={previous?:SavedLayout;next?:SavedLayout;reusedBlocks:number;reusedSuffixBlocks:number;placedBlocks:number;sharedSnapshotPlacements:number};
 const layoutSnapshots=new WeakMap<IntelligentLayoutSnapshot,SavedLayout>();
-const copyPlacement=(p:IntelligentPlacement):IntelligentPlacement=>({...p,rect:{...p.rect},
-  ...(p.occupiedRect?{occupiedRect:{...p.occupiedRect}}:{})});
+function copyPlacement(p:IntelligentPlacement):IntelligentPlacement{
+  const value:IntelligentPlacement={id:p.id,page:p.page,rect:{...p.rect},fixed:p.fixed};
+  if(p.occupiedRect)value.occupiedRect={...p.occupiedRect};
+  if(p.preference!==undefined)value.preference=p.preference;
+  return value;
+}
 
 /** Opt-in incremental placement. Preferred/fallback and optimized candidate
  * searches deliberately use the full planner until per-candidate snapshots exist. */
@@ -217,14 +229,14 @@ function* incrementalWork(input:IntelligentLayoutInput,previous?:IntelligentLayo
     const layout=yield* planWork(input,options);
     return {layout,reusedBlocks:0,reusedSuffixBlocks:0,placedBlocks:0,fullRecompute:true};
   }
-  const state:IncrementalLayoutState={previous:previous?layoutSnapshots.get(previous):undefined,reusedBlocks:0,reusedSuffixBlocks:0,placedBlocks:0};
+  const state:IncrementalLayoutState={previous:previous?layoutSnapshots.get(previous):undefined,reusedBlocks:0,reusedSuffixBlocks:0,placedBlocks:0,sharedSnapshotPlacements:0};
   const layout=yield* solve(input,true,false,state);
   let snapshot:IntelligentLayoutSnapshot|undefined;
   if(state.next){
     snapshot=Object.freeze({kind:'intelligent-layout-snapshot' as const});
     layoutSnapshots.set(snapshot,state.next);
   }
-  return {layout,snapshot,reusedBlocks:state.reusedBlocks,reusedSuffixBlocks:state.reusedSuffixBlocks,placedBlocks:state.placedBlocks,fullRecompute:false};
+  return {layout,snapshot,reusedBlocks:state.reusedBlocks,reusedSuffixBlocks:state.reusedSuffixBlocks,placedBlocks:state.placedBlocks,sharedSnapshotPlacements:state.sharedSnapshotPlacements,fullRecompute:false};
 }
 
 function* scoreCandidate(result:Placed,previous:ReadonlyMap<string,IntelligentPreviousPosition>):Generator<IntelligentWorkStage,IntelligentCandidateScore,void> {
@@ -317,8 +329,10 @@ function* solve(input:IntelligentLayoutInput,honorPreferences:boolean,lookahead=
     list.push(region);byPage.set(region.page,list);
   }
   for(const list of byPage.values()) list.sort((a,b)=>a.rect.x-b.rect.x);
-  const regionsAt=(p:number):readonly IntelligentReservedRegion[]=>byPage.get(p)??[];
-  const footprints=new Map<string,Size>();
+  const emptyRegions:readonly IntelligentReservedRegion[]=[];
+  const regionsAt=(p:number):readonly IntelligentReservedRegion[]=>byPage.get(p)??emptyRegions;
+  const footprints:Size[]=[];
+  const keys:LayoutKey[]=[];
   for(const b of input.blocks){
     if(scanned++%64===0)yield 'il-validate';
     if(!b || typeof b.id!=='string' || !b.id || ids.has(b.id) || !validSize(b.size) ||
@@ -338,7 +352,7 @@ function* solve(input:IntelligentLayoutInput,honorPreferences:boolean,lookahead=
     const footprint=resolveFootprint(b,input.content);
     if('code' in footprint) return conflict(footprint.code,footprint.message,b.id);
     const occupied=footprint.size;
-    footprints.set(b.id,occupied);
+    footprints.push(occupied);
     if(occupied.width>width || occupied.height+(b.spaceBefore??0)>height)
       return conflict('IL_TOO_LARGE','Measured block or reserved space exceeds page',b.id);
     if(b.fixed!==undefined){
@@ -350,6 +364,12 @@ function* solve(input:IntelligentLayoutInput,honorPreferences:boolean,lookahead=
       const hit=regionsAt(f.page).find(r=>overlaps(r.rect,{x:f.x,y:f.y,width:occupied.width,height:occupied.height}));
       if(hit) return conflict('IL_RESERVED_CONFLICT','Fixed block intersects reserved region',b.id,hit.id);
     }
+    if(incremental){
+      if(keys.length%64===0)yield 'il-key';
+      const f=b.fixed;
+      keys.push([b.id,b.size.width,b.size.height,occupied.width,occupied.height,b.spaceBefore??0,b.spaceAfter??0,
+        !!b.sideBySide,!!b.startNewPage,f?.page??-1,f?.x??0,f?.y??0]);
+    }
   }
   const placements:IntelligentPlacement[]=[];
   let page=0, rowY=0, bottom=0, right=0, rowOpen=false, rowShare=false;
@@ -359,32 +379,30 @@ function* solve(input:IntelligentLayoutInput,honorPreferences:boolean,lookahead=
   const capture=():FlowState=>[page,rowY,bottom,right,rowOpen,rowShare];
   const restore=(s:FlowState)=>{[page,rowY,bottom,right,rowOpen,rowShare]=s;};
   const states:FlowState[]=[];
-  let context='',keys:string[]=[],prefix=0,suffix=0,previous:SavedLayout|undefined;
+  let context='',prefix=0,suffix=0,previous:SavedLayout|undefined;
+  const savedPlacements:IntelligentPlacement[]=[];
   if(incremental){
-    // Build keys only AFTER full validation. Project every geometry-affecting
-    // field into primitives; revision and origin metadata are not geometry.
+    // All blocks and constraints were validated before any reuse. Keys use
+    // effective footprint, not the equivalent spelling of minimum constraints.
     context=JSON.stringify([width,height,gap,reserved.map(r=>[r.id,r.page,r.rect.x,r.rect.y,r.rect.width,r.rect.height])]);
-    for(const b of input.blocks){
-      if(keys.length%64===0)yield 'il-key';
-      const f=b.fixed,c=b.sizeConstraints;
-      keys.push(JSON.stringify([b.id,b.size.width,b.size.height,b.mode??null,
-        f?[f.page,f.x,f.y]:null,b.sideBySide??false,b.spaceBefore??0,b.spaceAfter??0,b.startNewPage??false,
-        c?[c.minWidth,c.minHeight,c.maxWidth,c.maxHeight,c.minWidthPercent,c.minHeightPercent]:null]));
-    }
     previous=incremental.previous?.context===context?incremental.previous:undefined;
     if(previous){
-      while(prefix<keys.length&&prefix<previous.keys.length&&keys[prefix]===previous.keys[prefix]){
+      while(prefix<keys.length&&prefix<previous.keys.length&&equalKey(keys[prefix],previous.keys[prefix])){
         if(prefix%128===0)yield 'il-match';prefix++;
       }
       while(suffix<keys.length-prefix&&suffix<previous.keys.length-prefix&&
-        keys[keys.length-1-suffix]===previous.keys[previous.keys.length-1-suffix]){
+        equalKey(keys[keys.length-1-suffix],previous.keys[previous.keys.length-1-suffix])){
         if(suffix%128===0)yield 'il-match';suffix++;
       }
       for(let i=0;i<prefix;i++){
         if(i%128===0)yield 'il-reuse';
-        states.push(previous.states[i]);placements.push(copyPlacement(previous.placements[i]));
+        states.push(previous.states[i]);savedPlacements.push(previous.placements[i]);placements.push(copyPlacement(previous.placements[i]));
       }
-      restore(previous.states[prefix]);incremental.reusedBlocks=prefix;
+      restore(previous.states[prefix]);incremental.reusedBlocks=prefix;incremental.sharedSnapshotPlacements=prefix;
+      if(prefix===keys.length&&prefix===previous.keys.length){
+        incremental.next=previous;
+        return {status:'placed',revision:input.revision,placements,publicationReady:false};
+      }
     }
   }
   for(let i=prefix;i<input.blocks.length;i++){
@@ -396,18 +414,19 @@ function* solve(input:IntelligentLayoutInput,honorPreferences:boolean,lookahead=
         if(now.every((v,j)=>v===previous!.states[oldIndex][j])){
           for(let j=oldIndex;j<previous.keys.length;j++){
             if(j%128===0)yield 'il-reuse';
-            states.push(previous.states[j]);placements.push(copyPlacement(previous.placements[j]));
+            states.push(previous.states[j]);savedPlacements.push(previous.placements[j]);placements.push(copyPlacement(previous.placements[j]));
           }
           restore(previous.states[previous.keys.length]);
           incremental.reusedSuffixBlocks=keys.length-i;
           incremental.reusedBlocks+=keys.length-i;
+          incremental.sharedSnapshotPlacements+=keys.length-i;
           break;
         }
       }
       states.push(now);incremental.placedBlocks++;
     }
     const b=input.blocks[i];
-    const {width:w,height:h}=footprints.get(b.id)!, before=b.spaceBefore??0, after=b.spaceAfter??0;
+    const {width:w,height:h}=footprints[i], before=b.spaceBefore??0, after=b.spaceAfter??0;
     if(b.startNewPage && rowOpen) nextPage(page+1);
     if(page>=MAX_PAGES) return conflict('IL_LIMIT','Page limit exceeded',b.id);
     let x=0,y=0;
@@ -432,7 +451,7 @@ function* solve(input:IntelligentLayoutInput,honorPreferences:boolean,lookahead=
         const next=input.blocks[i+1];
         if(next&&next.sideBySide&&!next.fixed&&!next.preferred&&!next.startNewPage&&
           !next.spaceBefore&&!next.spaceAfter){
-          const n=footprints.get(next.id)!;
+          const n=footprints[i+1];
           const oldHeight=bottom-rowY;
           const paired=Math.max(oldHeight,h)+gap+n.height;
           const separate=oldHeight+gap+Math.max(h,n.height);
@@ -465,15 +484,18 @@ function* solve(input:IntelligentLayoutInput,honorPreferences:boolean,lookahead=
       }
     }
     if(target && page===target.page && x===target.x && y===target.y) preference='honored';
-    placements.push({id:b.id,page,rect:{x,y,width:b.size.width,height:b.size.height},fixed:!!b.fixed,
+    const placement:IntelligentPlacement={id:b.id,page,rect:{x,y,width:b.size.width,height:b.size.height},fixed:!!b.fixed,
       ...(w!==b.size.width||h!==b.size.height?{occupiedRect:{x,y,width:w,height:h}}:{}),
-      ...(preference!==undefined?{preference}:{})});
+      ...(preference!==undefined?{preference}:{})};
+    placements.push(placement);
+    if(incremental){
+      if(i%128===0)yield 'il-snapshot';
+      savedPlacements.push(copyPlacement(placement));
+    }
   }
   if(incremental){
     states.push(capture());
-    const saved:IntelligentPlacement[]=[];
-    for(const p of placements){if(saved.length%128===0)yield 'il-snapshot';saved.push(copyPlacement(p));}
-    incremental.next={context,keys,states,placements:saved};
+    incremental.next={context,keys,states,placements:savedPlacements};
   }
   return {status:'placed',revision:input.revision,placements,publicationReady:false};
 }

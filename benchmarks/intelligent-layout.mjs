@@ -16,5 +16,5 @@ for(const count of [100,1000,10000]){
   result=w.result;
  }
  console.log(JSON.stringify({blocks:count,coldMedianMs:median(cold),incrementalMedianMs:median(warm),unchangedMedianMs:median(unchanged),
-  reusedBlocks:result.reusedBlocks,reusedSuffixBlocks:result.reusedSuffixBlocks,placedBlocks:result.placedBlocks}));
+  reusedBlocks:result.reusedBlocks,reusedSuffixBlocks:result.reusedSuffixBlocks,placedBlocks:result.placedBlocks,sharedSnapshotPlacements:result.sharedSnapshotPlacements}));
 }
