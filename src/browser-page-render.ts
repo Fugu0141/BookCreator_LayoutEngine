@@ -87,7 +87,7 @@ function pageKey(p:MeasuredPage,width:number,height:number,paper:PreviewPaper|un
     const entry=byKey.get(previewBlockKey(f.origin));
     if(!entry)throw Error('Missing preview block');
     const {block,measurement,math,marker}=entry;
-    if((block.listItem&&(!retained||!marker))||measurement.lines.some(l=>l.displayMath)||(plainOnly&&measurement.request.inlineMath!==undefined))return undefined;
+    if((block.listItem&&(!retained||!marker))||(!block.component&&measurement.lines.some(l=>l.displayMath))||(plainOnly&&measurement.request.inlineMath!==undefined))return undefined;
     if(block.component){
       const key=retained?componentPageRenderKey(entry):undefined;
       if(key===undefined)return undefined;
@@ -134,7 +134,7 @@ export async function renderMeasuredPreview(document:Document,plan:MeasuredPageP
     // Verified standalone equations also carry a complete node-free render key.
     // Resource-free components also have a separate render identity.
     // Lists carry marker/indent identity. Legacy sparse/template eligibility
-    // stays unchanged; images and embedded display rows remain excluded.
+    // stays unchanged; images and non-component embedded display rows remain excluded.
     const deltaKey=delta?pageKey(p,width,height,paper,byKey,!delta.allowInlineMath,delta.allowInlineMath===true):undefined;
     if(deltaKey!==undefined&&nextKeys.size<pageLimits.entries&&keyCharacters+deltaKey.length<=pageLimits.characters){
       nextKeys.set(p.index,deltaKey);keyCharacters+=deltaKey.length;

@@ -2,6 +2,7 @@
 // keys deliberately omit visual fields; they cannot prove DOM equivalence.
 import type {MeasuredPreviewBlock} from './browser-page-render.js';
 import type {MeasuredTextLines,PreviewComponentChild} from './browser-lines.js';
+import {displayMathRenderKey} from './math-preview.js';
 
 function containsImage(children:readonly PreviewComponentChild[]):boolean{
   return children.some(c=>c.type==='image'||c.type==='group'&&containsImage(c.children));
@@ -18,20 +19,25 @@ function childKey(c:PreviewComponentChild):unknown{
     case 'image':throw Error('Resource-backed component cannot be keyed');
   }
 }
-function textKey(m:MeasuredTextLines):unknown{
-  const r=m.request;
+function textKey(m:MeasuredTextLines):unknown[]|undefined{
+  const r=m.request,lines=[];
+  for(const l of m.lines){
+    const key=l.displayMath?displayMathRenderKey(l.displayMath):null;
+    if(key===undefined)return undefined;
+    lines.push([l.start,l.end,l.height,key]);
+  }
   return [r.text,r.width,r.fontSize,r.fontFamily,r.fontWeight??400,r.lineHeight,r.mathFontFamily??'auto',
     r.inlineStyles?.map(s=>[s.start,s.end,s.fontFamily,s.fontWeight,s.italic,s.underline,s.color,s.fontSize,s.baseline]),
     r.inlineMath?.map(a=>[a.start,a.formula,a.display,a.equationNumber]),
-    m.lines.map(l=>[l.start,l.end,l.height])];
+    lines];
 }
-/** Only deterministic, resource-free components. Do not use a key if any
- * embedded native display row or external raster resource is present. */
+/** Only deterministic, resource-free components. Native display rows must
+ * have verified artifacts; external raster resources remain excluded. */
 export function componentPageRenderKey(entry:MeasuredPreviewBlock):string|undefined{
   const {block,measurement,labels,slots,placement,math,marker}=entry,c=block.component;
   if(!c||math||marker||block.listItem||containsImage(c.children))return undefined;
-  if([measurement,...labels.values(),...slots.values()].some(m=>m.lines.some(l=>l.displayMath)))return undefined;
+  const primary=textKey(measurement),labelKeys=Array.from(labels,([id,m])=>[id,textKey(m)]),slotKeys=Array.from(slots,([name,m])=>[name,textKey(m)]);
+  if(primary===undefined||labelKeys.some(([,key])=>key===undefined)||slotKeys.some(([,key])=>key===undefined))return undefined;
   return JSON.stringify([c.direction,c.gap,c.padding,c.background,c.textColor,c.children.map(childKey),
-    placement??null,textKey(measurement),Array.from(labels,([id,m])=>[id,textKey(m)]),
-    Array.from(slots,([name,m])=>[name,textKey(m)])]);
+    placement??null,primary,labelKeys,slotKeys]);
 }
