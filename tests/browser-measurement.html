@@ -1339,7 +1339,7 @@ try{
     assert(next.measurementWork.measuredBlocks===0&&next.measurementWork.reusedBlocks===3,'component color and both formula types reuse measurements');
     assert(next.measurementWork.sharedSnapshotEntries===3,'component and formula snapshots shared without retaining live DOM');
     assert(JSON.stringify(next.plan)===JSON.stringify(full.plan)&&JSON.stringify(next.slices)===JSON.stringify(full.slices),'mixed retained plan and slices parity');
-    assert(next.pageDelta.reusedPageIndices.length===0,'all mixed pages generated');
+    assert(JSON.stringify(next.pageDelta.reusedPageIndices)===JSON.stringify([1]),'unchanged inline math page omitted; component and display math generated');
     function firstDifference(a,b,path){
       if(!a||!b)return path+': missing node';
       if(a.nodeName!==b.nodeName||a.nodeValue!==b.nodeValue)return path+': node differs '+a.nodeName+' / '+b.nodeName;
@@ -1354,11 +1354,12 @@ try{
       return '';
     }
     for(const [i,n] of Array.from(full.element.shadowRoot.children).entries()){
-      const actual=next.changedElement.shadowRoot.children[i];
+      const actual=next.pageDelta.reusedPageIndices.includes(i)?first.changedElement.shadowRoot.children[i]:Array.from(next.changedElement.shadowRoot.children).find(page=>Number(page.dataset.page)===i);
       assert(n.isEqualNode(actual),'mixed retained DOM parity, page '+i+': '+firstDifference(n,actual,'page'));
     }
     const changed=await createRetainedTextPagePreview(document,make('3','#eeeeee','変更した例題'),next.pageDelta.snapshot);
     assert(changed.measurementWork.measuredBlocks===1&&changed.measurementWork.reusedBlocks===2,'component label invalidates only its measurement');
+    assert(JSON.stringify(changed.pageDelta.reusedPageIndices)===JSON.stringify([1]),'inline page remains reusable across successive generations');
     const before=document.body.children.length,formulaEdit=make('4','#eeeeee','変更した例題','x^3'),stages=[];
     const cooperative=await createRetainedTextPagePreview(document,formulaEdit,changed.pageDelta.snapshot,stage=>{
       stages.push(stage);
@@ -1367,6 +1368,7 @@ try{
     const oracle=await createPlainTextPagePreview(document,formulaEdit);
     assert(stages.includes('measure-variable-graphemes')&&stages.includes('measure-variable-line'),'native inline math measurement yields within glyphs and rows');
     assert(cooperative.measurementWork.measuredBlocks===1&&cooperative.measurementWork.reusedBlocks===2,'cooperative inline edit retains unchanged measurements');
+    assert(cooperative.pageDelta.reusedPageIndices.length===0,'inline formula source change invalidates its page even at identical source length');
     assert(JSON.stringify(cooperative.plan)===JSON.stringify(oracle.plan)&&JSON.stringify(cooperative.slices)===JSON.stringify(oracle.slices),'cooperative inline edit plan/slice parity');
     assert(Array.from(oracle.element.shadowRoot.children).every((node,i)=>node.isEqualNode(cooperative.changedElement.shadowRoot.children[i])),'cooperative inline edit DOM parity');
     for(const stop of ['measure-variable-graphemes','measure-variable-line']){

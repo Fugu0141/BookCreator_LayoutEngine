@@ -576,12 +576,12 @@ export async function createRetainedTextPagePreview(document:Document,options:Te
   if(onPriorityPage!==undefined&&typeof onPriorityPage!=='function')throw TypeError('Invalid provisional page receiver');
   const previousKeys=previousPageKeys(document,previous);
   const saved=previous?retainedMeasurementSnapshots.get(previous):undefined;
-  const result=await createTextPreview(document,options,{previousKeys},{previous:previous?retainedPaginationSnapshots.get(previous):undefined,measurement:saved?.inlineMathGeometry===!!options.inlineMathCache?saved.snapshot:undefined,checkpoint,priorityPages:snapshotPagePriority(priorityPages),onPriorityPage});
+  const result=await createTextPreview(document,options,{previousKeys,allowInlineMath:true},{previous:previous?retainedPaginationSnapshots.get(previous):undefined,measurement:saved?.inlineMathGeometry===!!options.inlineMathCache?saved.snapshot:undefined,checkpoint,priorityPages:snapshotPagePriority(priorityPages),onPriorityPage});
   if(!result.pageDelta||!result.paginationWork||!result.measurementWork)throw Error('Missing retained preview data');
   const {element,pageDelta,paginationWork,measurementWork,...rest}=result;
   return {...rest,changedElement:element,pageDelta,paginationWork,measurementWork};
 }
-async function createTextPreview(document:Document,options:TextPagePreviewOptions,delta?:{previousKeys:ReadonlyMap<number,string>},retained?:{previous?:PaginationCheckpointSnapshot;measurement?:BlockMeasurementSnapshot;checkpoint?:PreviewCheckpoint;priorityPages?:readonly number[];onPriorityPage?:ProvisionalPageReceiver}):Promise<TextPagePreview & {pageDelta?:PageRenderDelta;paginationWork?:Readonly<RetainedPaginationWork>;measurementWork?:Readonly<BlockMeasurementWork>}>{
+async function createTextPreview(document:Document,options:TextPagePreviewOptions,delta?:{previousKeys:ReadonlyMap<number,string>;allowInlineMath?:boolean},retained?:{previous?:PaginationCheckpointSnapshot;measurement?:BlockMeasurementSnapshot;checkpoint?:PreviewCheckpoint;priorityPages?:readonly number[];onPriorityPage?:ProvisionalPageReceiver}):Promise<TextPagePreview & {pageDelta?:PageRenderDelta;paginationWork?:Readonly<RetainedPaginationWork>;measurementWork?:Readonly<BlockMeasurementWork>}>{
   live(document);
   const pageCache=options.pageCache,pageCacheEpoch=pageCache?pageRenderCacheEpoch(document,pageCache):undefined;
   // Snapshot the opt-in before any asynchronous work. The clock is never read otherwise.
