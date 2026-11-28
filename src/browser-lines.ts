@@ -771,6 +771,50 @@ function finishRetainedChoices(base:PageReuseSnapshot,lease:string,reviews:Retai
   return {status:'ready',handle,choices};
 }
 export type RetainedOptimizationChoicesCheckpoint=(goal:IntelligentOptimizationGoal,stage:IntelligentOptimizationWorkStage)=>void|Promise<void>;
+export type RetainedIntelligentTargetOptimizationReview=RetainedIntelligentDocumentOptimizationReview|
+  {status:'rejected';reason:'invalid-target'};
+/** Generate only the explicitly selected goal, with the same review lifecycle
+ * as the synchronous API. The host must yield to tasks and abort stale work. */
+export async function prepareRetainedIntelligentOptimizationReviewCooperative(
+  document:Document,base:PageReuseSnapshot,target:Readonly<RetainedIntelligentOptimizationTarget>,
+  goal:IntelligentOptimizationGoal,lease:string,
+  checkpoint:(stage:IntelligentOptimizationWorkStage)=>void|Promise<void>,signal?:AbortSignal,
+):Promise<RetainedIntelligentTargetOptimizationReview>{
+  if(!validRetainedOptimizationTarget(target))return {status:'rejected',reason:'invalid-target'};
+  return prepareRetainedTargetReviewCooperative(document,base,structuredClone(target),goal,lease,checkpoint,signal);
+}
+function checkRetainedOptimizationWork(document:Document,base:PageReuseSnapshot,signal?:AbortSignal):void{
+  if(signal?.aborted)throw new DOMException('Optimization review cancelled','AbortError');
+  live(document);previousPageKeys(document,base);
+}
+async function prepareRetainedTargetReviewCooperative(
+  document:Document,base:PageReuseSnapshot,target:Readonly<RetainedIntelligentOptimizationTarget>,
+  goal:IntelligentOptimizationGoal,lease:string,
+  checkpoint:(stage:IntelligentOptimizationWorkStage)=>void|Promise<void>,signal?:AbortSignal,
+):Promise<RetainedIntelligentDocumentOptimizationReview>{
+  const check=()=>checkRetainedOptimizationWork(document,base,signal);
+  check();
+  const input=retainedDraftInputs.get(base),context=retainedReviewContexts.get(base);
+  if(!input||!context)return {status:'rejected',reason:'stale'};
+  let scope:Readonly<IntelligentOptimizationScope>|undefined;
+  if(target.kind==='pages')scope=target.scope;
+  else if(target.kind==='document'){
+    const range=retainedDocumentReviewRanges(context.approved).find(r=>r.documentId===target.documentId);
+    if(!range)return {status:'rejected',reason:'unknown-document'};
+    if(!range.exclusiveScope)return {status:'rejected',reason:'shared-pages'};
+    scope={...range.exclusiveScope,...(target.maxMovedFragments===undefined?{}:{maxMovedFragments:target.maxMovedFragments})};
+  }
+  const review=await prepareIntelligentOptimizationReviewCooperative(input,context.approved,context.options,goal,lease,scope,
+    async stage=>{check();await checkpoint(stage);check();},retainedIntelligentSnapshots.get(base));
+  try{
+    check();
+    if(review.status==='review')retainedReviewHandles.set(review.handle,base);
+    return review;
+  }catch(error){
+    if(review.status==='review')cancelIntelligentOptimizationReview(review.handle);
+    throw error;
+  }
+}
 /** Cooperative choice generation. Host aborts obsolete generations with its
  * own AbortController and yields to the event loop in checkpoint. No partial
  * set is published; on any error all accumulated reviews are discarded. */
@@ -779,36 +823,15 @@ export async function prepareRetainedIntelligentOptimizationChoicesCooperative(
   checkpoint:RetainedOptimizationChoicesCheckpoint,signal?:AbortSignal,
 ):Promise<RetainedIntelligentOptimizationChoices>{
   if(!validRetainedOptimizationTarget(target))return {status:'rejected',reason:'invalid-target'};
-  live(document);previousPageKeys(document,base);
   const captured=structuredClone(target);
-  const input=retainedDraftInputs.get(base),context=retainedReviewContexts.get(base);
-  let scope:Readonly<IntelligentOptimizationScope>|undefined;
-  let rejection:'stale'|'unknown-document'|'shared-pages'|undefined;
-  if(!input||!context)rejection='stale';
-  else if(captured.kind==='pages')scope=captured.scope;
-  else if(captured.kind==='document'){
-    const range=retainedDocumentReviewRanges(context.approved).find(r=>r.documentId===captured.documentId);
-    if(!range)rejection='unknown-document';
-    else if(!range.exclusiveScope)rejection='shared-pages';
-    else scope={...range.exclusiveScope,...(captured.maxMovedFragments===undefined?{}:{maxMovedFragments:captured.maxMovedFragments})};
-  }
-  const check=()=>{
-    if(signal?.aborted)throw new DOMException('Optimization choices cancelled','AbortError');
-    live(document);previousPageKeys(document,base);
-  };
+  const check=()=>checkRetainedOptimizationWork(document,base,signal);
   const reviews=new Map<IntelligentOptimizationGoal,AvailableOptimizationReview>();
   const choices:RetainedIntelligentOptimizationChoice[]=[];
   try{
     check();
     for(const goal of ['compact','balance'] as const){
-      const review:RetainedIntelligentDocumentOptimizationReview=rejection||!input||!context?
-        {status:'rejected',reason:rejection??'stale'}:
-        await prepareIntelligentOptimizationReviewCooperative(input,context.approved,context.options,goal,lease,scope,
-          async stage=>{check();await checkpoint(goal,stage);check();},retainedIntelligentSnapshots.get(base));
-      if(review.status==='review'){
-        retainedReviewHandles.set(review.handle,base);
-        reviews.set(goal,review);
-      }
+      const review=await prepareRetainedTargetReviewCooperative(document,base,captured,goal,lease,stage=>checkpoint(goal,stage),signal);
+      if(review.status==='review')reviews.set(goal,review);
       check();
       recordRetainedChoice(document,base,lease,goal,review,reviews,choices);
     }
