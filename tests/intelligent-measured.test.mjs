@@ -85,3 +85,11 @@ test('transported unsupported intent fields fail closed on all measured paths',a
  const restored=incremental(i,{intents:[intent('a',{sizeConstraints:{minHeightPercent:50}})]},first.snapshot);
  assert.deepEqual(restored.result,first.result);assert.equal(restored.placement.reusedBlocks,2);
 });
+
+test('serialized tolerance and position-only locks preserve intent in measured paths',async()=>{
+ const i=input([section([b('a',20,[10]),b('b',20,[10]),b('pin',20,[10])])]);
+ const options=JSON.parse(JSON.stringify({intents:[intent('b',{preferred:{page:0,x:85,y:5},preferredTolerance:{x:10,y:5}}),intent('pin',{fixed:{page:0,x:0,y:40},fixedPositionOnly:true,sizeConstraints:{minWidthPercent:40}})]}));
+ const r=plan(i,options);assert.equal(r.status,'placed');assert.equal(r.fragments[1].placement.preference,'honored');assert.equal(r.fragments[1].placement.rect.x,80);assert.equal(r.fragments[1].placement.rect.y,10);
+ assert.equal(r.fragments[2].placement.occupiedRect.width,40);assert.equal(r.fragments[2].placement.rect.y,40);
+ const a=incremental(i,options),bResult=await cooperative(i,options,a.snapshot,()=>{});assert.deepEqual(a.result,r);assert.deepEqual(bResult.result,r);
+});
