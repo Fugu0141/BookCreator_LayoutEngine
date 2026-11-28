@@ -51,3 +51,5 @@ export * from './intelligent-layout.js';
 export * from './intelligent-measured.js';
 
 export * from './intelligent-preview.js';
+
+export * from './intelligent-print.js';
