@@ -5,9 +5,20 @@ import type { Rect, Size } from './index.js';
 export type IntelligentPlacementMode = 'auto' | 'preferred' | 'fixed';
 export interface IntelligentPosition { page:number; x:number; y:number }
 
+/** Hard constraints on the occupied footprint, never instructions to scale content. */
+export interface IntelligentSizeConstraints {
+  minWidth?:number;
+  minHeight?:number;
+  maxWidth?:number;
+  maxHeight?:number;
+  // Integer 1–100, relative to the full content area.
+  minWidthPercent?:number;
+  minHeightPercent?:number;
+}
 export interface IntelligentBlock {
   id: string;
   size: Readonly<Size>;
+  sizeConstraints?: Readonly<IntelligentSizeConstraints>;
   // Only consecutive opt-in blocks may share a row.
   sideBySide?: boolean;
   // An exact user constraint; never silently moved or resized.
@@ -17,6 +28,8 @@ export interface IntelligentBlock {
   preferred?: Readonly<IntelligentPosition>;
   // Preserve intentionally reserved whitespace.
   spaceBefore?: number;
+  // Explicit trailing row space; cannot be reused by later blocks.
+  spaceAfter?: number;
   startNewPage?: boolean;
 }
 /** Hard exclusion, independent of semantic document blocks. */
@@ -36,13 +49,15 @@ export interface IntelligentPlacement {
   id: string;
   page: number;
   rect: Rect;
+  // Present only if the reserved footprint exceeds measured content.
+  occupiedRect?: Rect;
   fixed: boolean;
   preference?: 'honored' | 'fallback';
 }
 export type IntelligentLayoutResult =
   | {status:'placed'; revision:string; placements: IntelligentPlacement[]; publicationReady:false}
   | {status:'conflict'; revision:string; placements: []; publicationReady:false;
-      diagnostic:{code:'IL_INVALID'|'IL_TOO_LARGE'|'IL_FIXED_CONFLICT'|'IL_RESERVED_CONFLICT'|'IL_LIMIT'; blockId?:string; regionId?:string; message:string}};
+      diagnostic:{code:'IL_INVALID'|'IL_TOO_LARGE'|'IL_FIXED_CONFLICT'|'IL_RESERVED_CONFLICT'|'IL_SIZE_CONFLICT'|'IL_LIMIT'; blockId?:string; regionId?:string; message:string}};
 
 const MAX = 1_000_000_000;
 const MAX_PAGES = 10000;
@@ -52,6 +67,26 @@ const natural = (n:number) => Number.isSafeInteger(n) && n>=0 && n<=MAX;
 const positive = (n:number) => natural(n) && n>0;
 const validSize = (s:Size) => !!s && positive(s.width) && positive(s.height);
 const validPosition = (p:IntelligentPosition) => !!p && natural(p.page) && p.page<MAX_PAGES && natural(p.x) && natural(p.y);
+const percent = (n:number) => Number.isInteger(n)&&n>=1&&n<=100;
+type SizeResolution = {size:Size}|{code:'IL_INVALID'|'IL_SIZE_CONFLICT';message:string};
+
+function resolveFootprint(b:IntelligentBlock,content:Readonly<Size>):SizeResolution {
+  const c=b.sizeConstraints;
+  if(c!==undefined){
+    if(!c||typeof c!=='object'||Array.isArray(c)||
+      [c.minWidth,c.minHeight,c.maxWidth,c.maxHeight].some(v=>v!==undefined&&!positive(v))||
+      [c.minWidthPercent,c.minHeightPercent].some(v=>v!==undefined&&!percent(v)))
+      return {code:'IL_INVALID',message:'Invalid size constraints'};
+  }
+  // Round minimum percentages up: never under-reserve a requested fraction.
+  const w=Math.max(b.size.width,c?.minWidth??0,Math.ceil(content.width*(c?.minWidthPercent??0)/100));
+  const h=Math.max(b.size.height,c?.minHeight??0,Math.ceil(content.height*(c?.minHeightPercent??0)/100));
+  if(w>(c?.maxWidth??MAX)||h>(c?.maxHeight??MAX))
+    return {code:'IL_SIZE_CONFLICT',message:'Measured or minimum footprint exceeds maximum'};
+  if(b.fixed&&(w!==b.size.width||h!==b.size.height))
+    return {code:'IL_SIZE_CONFLICT',message:'Minimum footprint conflicts with fixed size'};
+  return {size:{width:w,height:h+(b.spaceAfter??0)}};
+}
 
 // Rectangles are half-open; edge contact is legal. Gap applies between blocks.
 function overlaps(a:Readonly<Rect>,b:Readonly<Rect>):boolean {
@@ -127,9 +162,11 @@ function solve(input:IntelligentLayoutInput,honorPreferences:boolean):Intelligen
   }
   for(const list of byPage.values()) list.sort((a,b)=>a.rect.x-b.rect.x);
   const regionsAt=(p:number):readonly IntelligentReservedRegion[]=>byPage.get(p)??[];
+  const footprints=new Map<string,Size>();
   for(const b of input.blocks){
     if(!b || typeof b.id!=='string' || !b.id || ids.has(b.id) || !validSize(b.size) ||
       (b.spaceBefore!==undefined&&!natural(b.spaceBefore)) ||
+      (b.spaceAfter!==undefined&&!natural(b.spaceAfter)) ||
       (b.sideBySide!==undefined&&typeof b.sideBySide!=='boolean') ||
       (b.startNewPage!==undefined&&typeof b.startNewPage!=='boolean'))
       return conflict('IL_INVALID','Invalid or duplicate block',b?.id);
@@ -141,15 +178,19 @@ function solve(input:IntelligentLayoutInput,honorPreferences:boolean):Intelligen
       (b.preferred!==undefined&&!validPosition(b.preferred)))
       return conflict('IL_INVALID','Invalid or contradictory placement mode',b.id);
     ids.add(b.id);
-    if(b.size.width>width || b.size.height+(b.spaceBefore??0)>height)
+    const footprint=resolveFootprint(b,input.content);
+    if('code' in footprint) return conflict(footprint.code,footprint.message,b.id);
+    const occupied=footprint.size;
+    footprints.set(b.id,occupied);
+    if(occupied.width>width || occupied.height+(b.spaceBefore??0)>height)
       return conflict('IL_TOO_LARGE','Measured block or reserved space exceeds page',b.id);
     if(b.fixed!==undefined){
       const f=b.fixed;
       if(!validPosition(f))
         return conflict('IL_INVALID','Invalid fixed position',b.id);
-      if(f.x+b.size.width>width||f.y+b.size.height>height)
+      if(f.x+occupied.width>width||f.y+occupied.height>height)
         return conflict('IL_FIXED_CONFLICT','Fixed block exceeds content area',b.id);
-      const hit=regionsAt(f.page).find(r=>overlaps(r.rect,{x:f.x,y:f.y,width:b.size.width,height:b.size.height}));
+      const hit=regionsAt(f.page).find(r=>overlaps(r.rect,{x:f.x,y:f.y,width:occupied.width,height:occupied.height}));
       if(hit) return conflict('IL_RESERVED_CONFLICT','Fixed block intersects reserved region',b.id,hit.id);
     }
   }
@@ -159,7 +200,7 @@ function solve(input:IntelligentLayoutInput,honorPreferences:boolean):Intelligen
     page=p;rowY=0;bottom=0;right=0;rowOpen=false;rowShare=false;
   }
   for(const b of input.blocks){
-    const {width:w,height:h}=b.size, before=b.spaceBefore??0;
+    const {width:w,height:h}=footprints.get(b.id)!, before=b.spaceBefore??0, after=b.spaceAfter??0;
     if(b.startNewPage && rowOpen) nextPage(page+1);
     if(page>=MAX_PAGES) return conflict('IL_LIMIT','Page limit exceeded',b.id);
     let x=0,y=0;
@@ -175,7 +216,7 @@ function solve(input:IntelligentLayoutInput,honorPreferences:boolean):Intelligen
       rowY=y;bottom=y+h;right=x+w;rowOpen=true;rowShare=false;
     }else{
       const minY=(rowOpen?bottom+gap:0)+before;
-      const shareX=rowOpen && rowShare && b.sideBySide && before===0 && rowY+h<=height
+      const shareX=rowOpen && rowShare && b.sideBySide && before===0 && after===0 && rowY+h<=height
         ? findX(regionsAt(page),right+gap,rowY,w,h,width):undefined;
       let naturalPage=page;
       let slot=shareX!==undefined?{x:shareX,y:rowY}:findRow(regionsAt(page),minY,w,h,width,height);
@@ -196,11 +237,12 @@ function solve(input:IntelligentLayoutInput,honorPreferences:boolean):Intelligen
       }else{
         if(naturalPage!==page) nextPage(naturalPage);
         x=slot.x;y=slot.y;
-        rowY=y;bottom=y+h;right=x+w;rowOpen=true;rowShare=!!b.sideBySide&&before===0;
+        rowY=y;bottom=y+h;right=x+w;rowOpen=true;rowShare=!!b.sideBySide&&before===0&&after===0;
       }
     }
     if(target && page===target.page && x===target.x && y===target.y) preference='honored';
-    placements.push({id:b.id,page,rect:{x,y,width:w,height:h},fixed:!!b.fixed,
+    placements.push({id:b.id,page,rect:{x,y,width:b.size.width,height:b.size.height},fixed:!!b.fixed,
+      ...(w!==b.size.width||h!==b.size.height?{occupiedRect:{x,y,width:w,height:h}}:{}),
       ...(preference!==undefined?{preference}:{})});
   }
   return {status:'placed',revision:input.revision,placements,publicationReady:false};
