@@ -67,3 +67,56 @@ test('split minima participate in incremental keys and IL bridge preserves measu
  assert.equal(il.status,'placed');
  assert.deepEqual(il.fragments.map(f=>[f.origin.blockKey,f.unitStart,f.unitEnd]),cold.pages.flatMap(p=>p.fragments.map(f=>[f.origin.blockKey,f.unitStart,f.unitEnd])));
 });
+
+test('split search prevents isolated intermediate units missed by local greedy flow',()=>{
+ const heights=[20,20,20,20,60,50,20,20],minima={minUnitsBefore:2,minUnitsAfter:2};
+ const old=plan(section('s',[block('body',heights,'allow',minima)]));
+ const r=plan(section('s',[block('body',heights,'allow',{...minima,optimizeSplit:true})]));
+ assert.equal(old.diagnostics[0].code,'PG_SPLIT_MINIMUM');
+ assert.deepEqual(r.diagnostics,[]);
+ assert.deepEqual(r.pages.map(p=>p.fragments.map(f=>[f.unitStart,f.unitEnd,f.rect.height])),[[[0,3,60]],[[3,5,80]],[[5,8,90]]]);
+});
+test('split search considers an already occupied page and preserves fallback',()=>{
+ const minima={minUnitsBefore:2,minUnitsAfter:2,optimizeSplit:true};
+ const r=plan(section('s',[block('intro',[60]),block('body',[20,20,60,50,20,20],'allow',minima)]));
+ assert.deepEqual(r.pages.map(p=>p.fragments.map(f=>[f.origin.blockKey,f.unitStart,f.unitEnd])),[[['intro',0,1]],[['body',0,3]],[['body',3,6]]]);
+ assert.deepEqual(r.diagnostics,[]);
+ const impossible=plan(section('s',[block('body',[60,60,60],'allow',minima)]));
+ assert.deepEqual(impossible,plan(section('s',[block('body',[60,60,60],'allow',{...minima,optimizeSplit:false})])));
+ assert.equal(impossible.diagnostics[0].code,'PG_SPLIT_MINIMUM');
+ assert.equal(plan(section('s',[block('a',[10],'allow',{optimizeSplit:'true'})])).diagnostics[0].code,'PG_INVALID');
+});
+test('bounded split search agrees with exhaustive small legal partitions',()=>{
+ for(let seed=0;seed<180;seed++){
+  const n=4+seed%6,heights=Array.from({length:n},(_,i)=>10+((seed*17+i*23+i*i*7)%7)*10);
+  const minBefore=2+seed%2,minAfter=2+(seed>>1)%2,overhead=10;
+  const visit=(start,first)=>{
+   if(start===n)return 0;
+   let best=Infinity,h=overhead;
+   for(let end=start+1;end<=n;end++){
+    h+=heights[end-1];if(h>100)break;
+    const required=end<n?Math.max(minBefore,first?1:minAfter):first?1:minAfter;
+    if(end-start>=required)best=Math.min(best,1+visit(end,false));
+   }
+   return best;
+  };
+  const optimum=visit(0,true),r=plan(section('s',[block('body',heights,'allow',{minUnitsBefore:minBefore,minUnitsAfter:minAfter,optimizeSplit:true,fragmentPadding:{top:5,bottom:5}})]));
+  assert.equal(r.completeness,'full');
+  if(Number.isFinite(optimum)){
+   assert.equal(r.pages.length,optimum,'minimum page count seed '+seed);
+   assert.deepEqual(r.diagnostics,[],'no minimum warning seed '+seed);
+  }
+  const fs=r.pages.flatMap(p=>p.fragments);
+  assert.deepEqual(fs.flatMap(f=>heights.slice(f.unitStart,f.unitEnd)),heights);
+  assert.ok(fs.every(f=>f.rect.height<=100));
+ }
+});
+test('split-search setting invalidates pagination checkpoint and retains IL ranges',async()=>{
+ const make=optimizeSplit=>({schemaVersion:1,revision:'1',fingerprint:'fixture',content:{width:100,height:100},sections:[section('s',[block('intro',[100]),block('body',[20,20,20,20,60,50,20,20],'allow',{minUnitsBefore:2,minUnitsAfter:2,optimizeSplit})])]});
+ const old=make(false),next=make(true),seed=paginateMeasuredIncremental(old);
+ const r=paginateMeasuredIncremental(next,seed.snapshot),cold=paginateMeasured(next);
+ assert.deepEqual(r.plan,cold);assert.notDeepEqual(r.plan,seed.plan);assert.ok(r.reusedBlocks>=1);
+ assert.deepEqual((await paginateMeasuredIncrementalCooperative(next,seed.snapshot,()=>{})).plan,cold);
+ const il=planMeasuredIntelligentLayout(next);assert.equal(il.status,'placed');
+ assert.deepEqual(il.fragments.map(f=>[f.origin.blockKey,f.unitStart,f.unitEnd]),cold.pages.flatMap(p=>p.fragments.map(f=>[f.origin.blockKey,f.unitStart,f.unitEnd])));
+});
