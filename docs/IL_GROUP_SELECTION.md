@@ -19,3 +19,15 @@ BookCreator #267 では固定競合時の明示解除を開発中。グループ
 既存占有率・前後余白・他の意図を保つ。ungroup はグループ関連2フィールドだけを除去し、空のintentのみ除去する。横並び許可も既定で維持する。縦配置への切替には既存trueの明示解除が必要で、edit.clearHorizontal に対象の正確なsourceを渡す。falseを解除することは拒否する。グループ作成時に付与したtrueか元からあったtrueかはEngineのoptionsだけでは識別できないため、GUIが意図の出所を保存するかユーザーに確認する。rowモードへの切替は未指定のみtrueにする。
 
 本APIは正常計画からの編集専用。競合中のグループ復旧、永続化、Undo/Redo、実機GUIは別途。ホストは正確な要求optionsと世代・永続ID・保存リースの確認を続け、全冊再計測が成功したものだけ確定する。通常/増分/協調/JSON往復、元設定への復帰、部分・不正解除拒否を回帰試験に追加。CI未確認。
+
+## IL-12F: Group conflict recovery and placement impact
+
+#105 全3系統CI成功・main統合済み。本体 #269 の同一ページ内固定ドラッグと将来の複数選択操作に対応する。
+
+`findIntelligentGroupConflictTarget(result, options, expected)` は計測済み失敗の診断対象と明示intentが一意に一致する場合、同一原稿のgroupIdと全membersを返す。分割・欠落・内部改ページ・過大グループ等を含む。一般組版エラー、旧revision/fingerprint、重複intent、章またぎ、対象不明はundefined。原因がグループだけであることや解除後の成立は保証しない。
+
+`proposeIntelligentGroupRecovery(result, options, expected, selection)` は明示された全メンバーが失敗時のグループと完全一致する場合だけ、groupId/グループlayoutの2フィールドを除いた独立optionsを返す。横並び許可・禁止、固定、希望、占有率、余白等は変更しない。空intentだけ除く。成功紙面を必要としないが、解除後も失敗する可能性がある（例: 分割ブロックに個別占有率が残る）。ホストは明示確認・保存済み永続IDとリース・世代・失敗時optionsの完全一致を検証し、復旧提案を再計測する。無断解除・保存は行わない。
+
+`compareIntelligentPlacementImpact(before, after, expected)` は同一revision/fingerprint、同じ順序・断片ID・原稿revision/範囲/永続ID・unit範囲の成功済みIL計画同士を比較する。移動断片数、ページ変更断片数、各変更の前後geometryと固定/希望結果・内容寸法・占有寸法の変化を返す。ページをまたぐ移動は物理ページindexで判定し、本文相対座標とは区別する。分割再構成や本文変更の比較は対象外。計数は断片単位であり、原稿ブロック単位ではない。要求世代の検証はホスト側で行う。表示用であって保存許可ではない。
+
+通常/増分/協調、JSON往復、過大・分割・内部改ページ、他固定/余白/占有維持、差分の独立性を回帰試験に追加。本体コード・実機操作・永続化は今回変更しない。CI未確認。
