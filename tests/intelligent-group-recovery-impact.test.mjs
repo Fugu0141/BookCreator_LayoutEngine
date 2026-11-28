@@ -47,10 +47,12 @@ test('layout impact differentiates moved, page changed, footprint-only and fixed
  const next=plan(i,o);
  assert.equal(approved.status,'placed');assert.equal(next.status,'placed');
  const impact=compare(approved,next,i);assert.equal(impact.fragmentCount,4);
- assert.equal(impact.movedFragments,2);assert.equal(impact.pageChangedFragments,1);
+ assert.equal(impact.movedFragments,3);assert.equal(impact.pageChangedFragments,1);
  assert.deepEqual(impact.changed.map(c=>[c.origin.blockKey,c.pageChanged,c.positionChanged,c.footprintSizeChanged,c.fixedChanged]),[
-  ['a',false,false,true,false],['b',false,true,false,false],['c',true,true,false,false],['d',false,false,false,true]
+  ['a',false,false,true,false],['b',false,true,false,false],['c',true,true,false,false],['d',false,true,false,true]
  ]);
+ const locked=plan(i,{gap:5,intents:[{...source('d'),placement:{fixed:{page:1,x:0,y:0}}}]});
+ const lockImpact=compare(approved,locked,i);assert.equal(lockImpact.movedFragments,0);assert.equal(lockImpact.changed.length,1);assert.equal(lockImpact.changed[0].fixedChanged,true);
  assert.deepEqual(compare(approved,approved,i),{fragmentCount:4,movedFragments:0,pageChangedFragments:0,changed:[]});
  assert.deepEqual(compare(JSON.parse(JSON.stringify(approved)),JSON.parse(JSON.stringify(next)),i),impact);
  impact.changed[0].after.occupiedRect.width=99;
