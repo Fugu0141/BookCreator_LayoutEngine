@@ -33,7 +33,7 @@ function cleanRequest(r:PlainTextMeasureRequest):PlainTextMeasureRequest{
 function componentKey(c:PreviewComponentChild):unknown{
   // Only fields used by width resolution, measurement and placement.
   return [c.type,c.id,c.width,c.x,c.y,
-    c.type==='group'?[c.direction,c.height,c.gap,c.padding,c.children.map(componentKey)]:
+    c.type==='group'?[c.direction,c.height,c.heightMode,c.gap,c.padding,c.children.map(componentKey)]:
     c.type==='label'?[c.text,c.fontFamily,c.fontWeight,c.fontSize,c.lineHeight]:
     c.type==='slot'?c.name:
     c.type==='rect'||c.type==='image'?c.height:null];
@@ -43,7 +43,7 @@ function measurementKey(b:PreviewTextBlock,width:number,height:number):string|un
   // Source offsets/revision and purely visual component fields are not
   // measurement inputs. The current block always supplies rendering metadata.
   return JSON.stringify([width,height,cleanRequest(b.request),b.splitPolicy,b.displayMath??false,b.equationNumber??null,
-    c?[c.direction,c.gap,c.padding,c.children.map(componentKey)]:null,
+    c?[c.direction,c.gap,c.padding,c.widthPercent,c.minHeightPercent,c.children.map(componentKey)]:null,
     l?[l.kind,l.kind==='ordered'?l.number:null,l.depth,l.indentStep,l.markerWidth,l.gap]:null,
     (b.namedSlots??[]).map(s=>[s.name,cleanRequest({...s.request,width:100000})])]);
 }
@@ -86,6 +86,7 @@ export async function measurePreviewSections(document:Document,sections:readonly
       b.sourceTextStart+b.request.text.length>b.origin.range.end))throw Error('Invalid exact source mapping');
     const fragmentable=!!b.component&&b.splitPolicy!=='strict';
     if(fragmentable&&(b.component!.direction!=='column'||b.component!.gap!==0||b.component!.children.length!==1||b.component!.children[0].type!=='content'))throw Error('Splittable components require a single content slot in a column frame');
+    if(fragmentable&&(b.component!.widthPercent!==undefined||b.component!.minHeightPercent!==undefined))throw RangeError('Area percentages require a non-splittable component');
     // Enforce the global label budget even when every block is retained.
     function countLabels(children:readonly PreviewComponentChild[]){for(const child of children){
       if(child.type==='group')countLabels(child.children);
@@ -102,7 +103,8 @@ export async function measurePreviewSections(document:Document,sections:readonly
     else{
     measuredBlocks++;
     if(retained&&key===undefined)bypassedBlocks++;
-    const geometry=b.component?resolveComponentWidths(b.component,b.request.width):undefined;
+    const componentWidth=b.component?.widthPercent===undefined?b.request.width:Math.max(1,Math.floor(b.request.width*b.component.widthPercent/100));
+    const geometry=b.component?resolveComponentWidths(b.component,componentWidth):undefined;
     const textWidth=geometry?.contentWidth??(b.request.width-(b.listItem?listInset(b.listItem):0));
     let marker:MeasuredTextLines|undefined;
     if(b.listItem){
@@ -129,7 +131,11 @@ export async function measurePreviewSections(document:Document,sections:readonly
       labels.set(child.id,await measurePlainTextLines(document,{text:child.text,width:geometry!.widths.get(child.id)!,fontFamily:child.fontFamily,fontWeight:child.fontWeight,fontSize:child.fontSize,lineHeight:child.lineHeight}));
     }}
     if(b.component)await measureLabels(b.component.children);
-    const placement=b.component&&!fragmentable?placeComponent(b.component,b.request.width,measurement,labels,slots,geometry!.widths,height):undefined;
+    const placement=b.component&&!fragmentable?placeComponent(b.component,componentWidth,measurement,labels,slots,geometry!.widths,height):undefined;
+    if(placement&&b.component?.minHeightPercent!==undefined){
+      // Reserve blank space after existing children, without scaling or moving them.
+      placement.rect.height=Math.max(placement.rect.height,Math.ceil(height*b.component.minHeightPercent/100));
+    }
     value={measurement,labels,slots,placement,marker,math};
     }
     if(retained&&key!==undefined&&keyChars+key.length<=MAX_KEY_CHARS){
@@ -148,7 +154,7 @@ export async function measurePreviewSections(document:Document,sections:readonly
     }
     byKey.set(k,{block:b,...value});
     const heights=value.placement?[value.placement.rect.height]:value.measurement.lines.map(l=>l.height);
-    blocks.push({kind:'block' as const,origin:b.origin,width:b.request.width,unitHeights:heights,splitPolicy:b.splitPolicy,...(fragmentable?{fragmentPadding:{top:b.component!.padding,bottom:b.component!.padding}}:{}),startPosition:b.startPosition,startPositionSource:b.startPositionSource});
+    blocks.push({kind:'block' as const,origin:b.origin,width:value.placement?.rect.width??b.request.width,unitHeights:heights,splitPolicy:b.splitPolicy,...(fragmentable?{fragmentPadding:{top:b.component!.padding,bottom:b.component!.padding}}:{}),startPosition:b.startPosition,startPositionSource:b.startPositionSource});
   }
     measuredSections.push({id:section.id,startOn:section.startOn,blocks});
   }

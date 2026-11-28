@@ -226,6 +226,22 @@ try{
     let rejected=false;try{await autoPreview(group,'Heading',cap);}catch{rejected=true;}
     assert(rejected,'automatic canvas rejects invalid mode or page/coordinate overflow');
   }
+  // Occupied area is relative to the full printable body, not remaining space.
+  const area={...component,direction:'column',padding:1000,gap:0,children:[{id:'content',type:'content'}],widthPercent:80,minHeightPercent:30};
+  const areaPreview=(c,text='Heading',height=150000)=>createPlainTextPagePreview(document,{revision:'area',fingerprint:'area',width:65000,height,blocks:[makeText('sample','head',text,{component:c,splitPolicy:'strict'}),makeText('sample','after','After')]});
+  const reserved=await areaPreview(area),ar=reserved.plan.pages[0].fragments[0].rect;
+  assert(ar.width===52000&&ar.height===45000,'percent width and minimum height occupy printable body dimensions');
+  assert(reserved.plan.pages[0].fragments[1].rect.y>=ar.y+ar.height,'reserved blank space moves following text');
+  const areaEl=reserved.element.shadowRoot.querySelector('[data-component]');
+  assert(Math.abs(parseFloat(areaEl.style.height)-45000*96/25400)<.02,'occupied area rendered at reserved height');
+  assert(parseFloat(areaEl.querySelector('[data-content-slot]').style.height)<parseFloat(areaEl.style.height),'reserve space without stretching text');
+  const grown=await areaPreview({...area,minHeightPercent:1},'Heading '.repeat(12).trim());
+  assert(grown.plan.pages[0].fragments[0].rect.height>1500,'content grows beyond minimum height');
+  const resized=await areaPreview(area,'Heading',100000);
+  assert(resized.plan.pages[0].fragments[0].rect.height===30000,'height percentage follows new page body height');
+  for(const patch of [{widthPercent:0},{widthPercent:101},{minHeightPercent:2.5},{minHeightPercent:-1}]){
+    let rejected=false;try{await areaPreview({...area,...patch});}catch{rejected=true;}assert(rejected,'invalid area percentage rejected');
+  }
   // Four distinct source columns, two rows. Cover crops the central two columns.
   const imageId='a'.repeat(64),png=new Blob([Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAAAQAAAACCAIAAADwyuo0AAAAGUlEQVR4nGP4z8DA8J+BgeH/////mRiQAABryAX9SqklXwAAAABJRU5ErkJggg=='),c=>c.charCodeAt(0))],{type:'image/png'});
   const imageNode={id:'art',type:'image',assetId:imageId,width:20000,height:20000,fit:'contain',alt:'Sample illustration'};

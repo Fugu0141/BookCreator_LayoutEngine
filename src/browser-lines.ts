@@ -338,6 +338,8 @@ export type PreviewComponentChild = (
   | {id:string;type:'label';width:number|'fill';text:string;fontFamily:PlainTextMeasureRequest['fontFamily'];fontWeight:number;fontSize:number;lineHeight:number;color:string}
   | {id:string;type:'group';width:number|'fill';direction:'row'|'column'|'canvas';height?:number;heightMode?:'auto';gap:number;padding:number;background:string;children:readonly PreviewComponentChild[]}) & {x?:number;y?:number};
 export interface PreviewComponent {
+  /** Percentage of the block's available width / full page content height. */
+  widthPercent?:number; minHeightPercent?:number;
   direction:'row'|'column'; gap:number; padding:number; background:string; textColor:string;
   children:readonly PreviewComponentChild[];
 }
@@ -377,6 +379,7 @@ function snapshotComponent(c:PreviewComponent):PreviewComponent{
     });
   }
   if(!c||!['row','column'].includes(c.direction)||!isColor(c.textColor))throw RangeError('Invalid component color');
+  for(const p of [c.widthPercent,c.minHeightPercent])if(p!==undefined&&(!Number.isSafeInteger(p)||p<1||p>100))throw RangeError('Invalid component area percentage');
   const children=group(c,0);
   if(slots!==1)throw RangeError('Component requires exactly one content slot');
   return {...c,children};
