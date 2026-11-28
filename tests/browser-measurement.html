@@ -2,7 +2,7 @@
 <html lang="en"><meta charset="utf-8"><title>Browser measurement smoke test</title>
 <body><pre id="result">RUNNING</pre>
 <script type="module">
-import {createIntelligentGeometryDraftSession,createIntelligentGeometryDraft,proposeIntelligentGroup,proposeIntelligentGroupEdit,compareIntelligentPlacementImpact,IntelligentPreviewConflictError,findIntelligentFixedConflictTarget,describeIntelligentPreferredPlacement,createFullRetainedTextPagePreview,createTrialPrintPreviewForLayout,createIntelligentPrintTicket,createVerifiedIntelligentPrintPreview,measurePlainText,paginateMeasured,measurePlainTextLines,createPlainTextPagePreview,createIncrementalTextPagePreview,createRetainedTextPagePreview,measureDisplayMath,displayMathArtifact,restoreDisplayMathArtifact,createPreviewMath,createTextMeasurementCache,createParagraphMeasurementCache,createPageRenderCache,parsePreviewMath,parseDisplayMath,readyPreviewMathFont,createMathCompilationCache,createDisplayMathGeometryCache,createInlineMathGeometryCache,measureInlineMathGeometry,createInlineMathAtom} from '/dist/index.js';
+import {prepareRetainedIntelligentOptimizationReview,confirmRetainedIntelligentOptimizationReview,cancelRetainedIntelligentOptimizationReview,createIntelligentGeometryDraftSession,createIntelligentGeometryDraft,proposeIntelligentGroup,proposeIntelligentGroupEdit,compareIntelligentPlacementImpact,IntelligentPreviewConflictError,findIntelligentFixedConflictTarget,describeIntelligentPreferredPlacement,createFullRetainedTextPagePreview,createTrialPrintPreviewForLayout,createIntelligentPrintTicket,createVerifiedIntelligentPrintPreview,measurePlainText,paginateMeasured,measurePlainTextLines,createPlainTextPagePreview,createIncrementalTextPagePreview,createRetainedTextPagePreview,measureDisplayMath,displayMathArtifact,restoreDisplayMathArtifact,createPreviewMath,createTextMeasurementCache,createParagraphMeasurementCache,createPageRenderCache,parsePreviewMath,parseDisplayMath,readyPreviewMathFont,createMathCompilationCache,createDisplayMathGeometryCache,createInlineMathGeometryCache,measureInlineMathGeometry,createInlineMathAtom} from '/dist/index.js';
 const result=document.querySelector('#result');
 const assert=(condition,message)=>{if(!condition)throw Error(message);};
 const phase=async name=>{await fetch('/test-progress',{method:'POST',body:name});};
@@ -284,6 +284,48 @@ try{
     }
     bench.close();
     assert(approved.element.shadowRoot.innerHTML===original,'session leaves approved DOM untouched');
+  }
+
+  await phase("IL retained optimization review lifecycle");
+  {
+    const blocks=['a','b','c','d'].map(blockKey=>({origin:{documentId:'review-doc',revision:'source',blockKey},
+      request:{text:'Text',width:80000,fontSize:3000,fontFamily:'sans-serif',lineHeight:1.4},splitPolicy:'strict'}));
+    const seed={revision:'review-r',fingerprint:'review-fp',width:80000,height:80000,blocks,intelligentLayout:{gap:1000}};
+    const h=(await createPlainTextPagePreview(document,seed)).plan.pages[0].fragments[0].rect.height;
+    const height=3*h+2000;
+    const paper={width:100000,height:height+20000,top:10000,bottom:10000,inner:12000,outer:8000,firstSide:'right'};
+    const base={...seed,height,paper};
+    const approved=await createFullRetainedTextPagePreview(document,base);
+    const original=JSON.stringify(approved.intelligentLayout),dom=approved.element.shadowRoot.innerHTML;
+    const prepare=()=>prepareRetainedIntelligentOptimizationReview(document,approved.snapshot,'balance','lease',{firstPage:0,lastPage:1});
+    const review=prepare();
+    assert(review.status==='review'&&review.proposal.improvement.depthImbalanceReduction>0,'review generated from private measured input');
+    const next={...base,intelligentLayout:structuredClone(review.proposal.options)};
+    const candidate=await createFullRetainedTextPagePreview(document,next,approved.snapshot);
+    assert(candidate.measurementWork.reusedBlocks===4,'retained candidate reuses measured blocks');
+    assert(JSON.stringify(candidate.intelligentLayout)===JSON.stringify(review.proposal.result),'rendered candidate matches proposal');
+    const ticket=JSON.parse(JSON.stringify(createIntelligentPrintTicket(candidate,paper)));
+    const confirmed=confirmRetainedIntelligentOptimizationReview(document,review.handle,approved.snapshot,candidate.snapshot,'lease');
+    assert(confirmed.status==='confirmed'&&JSON.stringify(confirmed.options)===JSON.stringify(next.intelligentLayout),'confirm actual rendered snapshot');
+    assert(confirmRetainedIntelligentOptimizationReview(document,review.handle,approved.snapshot,candidate.snapshot,'lease').reason==='invalid-handle','single use');
+    const cancelled=prepare();assert(cancelRetainedIntelligentOptimizationReview(cancelled.handle),'cancel');
+    assert(confirmRetainedIntelligentOptimizationReview(document,cancelled.handle,approved.snapshot,candidate.snapshot,'lease').reason==='invalid-handle','cancel prevents acceptance');
+    const wrong=prepare();assert(confirmRetainedIntelligentOptimizationReview(document,wrong.handle,approved.snapshot,approved.snapshot,'lease').reason==='preview-mismatch','base cannot confirm itself');
+    const stale=prepare();assert(confirmRetainedIntelligentOptimizationReview(document,stale.handle,candidate.snapshot,candidate.snapshot,'lease').reason==='stale','different base rejected');
+    const old=prepare();assert(confirmRetainedIntelligentOptimizationReview(document,old.handle,approved.snapshot,candidate.snapshot,'new-lease').reason==='stale','old lease rejected');
+    const changed=await createFullRetainedTextPagePreview(document,{...next,revision:'different'},approved.snapshot);
+    const mismatched=prepare();assert(confirmRetainedIntelligentOptimizationReview(document,mismatched.handle,approved.snapshot,changed.snapshot,'lease').reason==='preview-mismatch','different measured input rejected');
+    const detached=prepare();
+    detached.proposal.options.gap=999;
+    assert(confirmRetainedIntelligentOptimizationReview(document,detached.handle,approved.snapshot,candidate.snapshot,'lease').status==='confirmed','display mutation cannot alter private candidate');
+    const frame=document.createElement('iframe');document.body.append(frame);
+    try{
+      const foreign=await createFullRetainedTextPagePreview(frame.contentDocument,next);
+      const r=prepare();assert(confirmRetainedIntelligentOptimizationReview(document,r.handle,approved.snapshot,foreign.snapshot,'lease').reason==='stale','foreign document rejected');
+      const printed=await createVerifiedIntelligentPrintPreview(frame.contentDocument,next,ticket);
+      assert(JSON.stringify(printed.plan)===JSON.stringify(candidate.plan),'confirmed candidate print parity');
+    }finally{frame.remove();}
+    assert(JSON.stringify(approved.intelligentLayout)===original&&approved.element.shadowRoot.innerHTML===dom,'base remains unchanged');
   }
   await phase("IL textbook semantic quality and print parity");
   {
