@@ -54,8 +54,26 @@ export interface IntelligentPlacement {
   fixed: boolean;
   preference?: 'honored' | 'fallback';
 }
+export interface IntelligentPreviousPosition extends IntelligentPosition { id:string }
+export interface IntelligentOptimizationOptions {
+  /** Soft stability hints only; never treated as saved placement intent. */
+  previousPositions?: readonly Readonly<IntelligentPreviousPosition>[];
+}
+export interface IntelligentCandidateScore {
+  honoredPreferences:number;
+  pageCount:number;
+  previousPageDistance:number;
+  previousPositionDistance:number;
+  occupiedDepth:number;
+}
+export interface IntelligentOptimizationReport {
+  evaluatedCandidates:number;
+  feasibleCandidates:number;
+  selected:'greedy'|'lookahead'|'greedy-fallback'|'lookahead-fallback';
+  score:IntelligentCandidateScore;
+}
 export type IntelligentLayoutResult =
-  | {status:'placed'; revision:string; placements: IntelligentPlacement[]; publicationReady:false}
+  | {status:'placed'; revision:string; placements: IntelligentPlacement[]; publicationReady:false; optimization?:IntelligentOptimizationReport}
   | {status:'conflict'; revision:string; placements: []; publicationReady:false;
       diagnostic:{code:'IL_INVALID'|'IL_TOO_LARGE'|'IL_FIXED_CONFLICT'|'IL_RESERVED_CONFLICT'|'IL_SIZE_CONFLICT'|'IL_LIMIT'; blockId?:string; regionId?:string; message:string}};
 
@@ -127,7 +145,8 @@ function findRow(regions:readonly IntelligentReservedRegion[],minY:number,w:numb
  * callers retain the last valid plan. A conservative solver may reject an input
  * that could fit with more sophisticated search.
  */
-export function planIntelligentLayout(input: IntelligentLayoutInput): IntelligentLayoutResult {
+export function planIntelligentLayout(input: IntelligentLayoutInput, options?:IntelligentOptimizationOptions): IntelligentLayoutResult {
+  if(options!==undefined) return optimize(input,options);
   const first = solve(input,true);
   // Soft choices must not make a feasible hard plan fail. At most two passes.
   if(first.status==='conflict' && Array.isArray(input.blocks) &&
@@ -137,7 +156,69 @@ export function planIntelligentLayout(input: IntelligentLayoutInput): Intelligen
   return first;
 }
 
-function solve(input:IntelligentLayoutInput,honorPreferences:boolean):IntelligentLayoutResult {
+type Placed = Extract<IntelligentLayoutResult,{status:'placed'}>;
+
+function scoreCandidate(result:Placed,previous:ReadonlyMap<string,IntelligentPreviousPosition>):IntelligentCandidateScore {
+  let honoredPreferences=0,pageCount=0,previousPageDistance=0,previousPositionDistance=0;
+  const depths=new Map<number,number>();
+  for(const p of result.placements){
+    if(p.preference==='honored') honoredPreferences++;
+    pageCount=Math.max(pageCount,p.page+1);
+    const old=previous.get(p.id), r=p.occupiedRect??p.rect;
+    if(old){
+      previousPageDistance+=Math.abs(p.page-old.page);
+      previousPositionDistance+=Math.abs(r.x-old.x)+Math.abs(r.y-old.y);
+    }
+    depths.set(p.page,Math.max(depths.get(p.page)??0,r.y+r.height));
+  }
+  let occupiedDepth=0;
+  for(const depth of depths.values()) occupiedDepth+=depth;
+  return {honoredPreferences,pageCount,previousPageDistance,previousPositionDistance,occupiedDepth};
+}
+
+function better(a:IntelligentCandidateScore,b:IntelligentCandidateScore):boolean {
+  if(a.honoredPreferences!==b.honoredPreferences) return a.honoredPreferences>b.honoredPreferences;
+  if(a.pageCount!==b.pageCount) return a.pageCount<b.pageCount;
+  if(a.previousPageDistance!==b.previousPageDistance) return a.previousPageDistance<b.previousPageDistance;
+  if(a.previousPositionDistance!==b.previousPositionDistance) return a.previousPositionDistance<b.previousPositionDistance;
+  return a.occupiedDepth<b.occupiedDepth;
+}
+
+function optimize(input:IntelligentLayoutInput,options:IntelligentOptimizationOptions):IntelligentLayoutResult {
+  const invalid=(message:string):IntelligentLayoutResult=>({status:'conflict',revision:input.revision,
+    placements:[],publicationReady:false,diagnostic:{code:'IL_INVALID',message}});
+  if(!options||typeof options!=='object'||Array.isArray(options)) return invalid('Invalid optimization options');
+  const hints=options.previousPositions===undefined?[]:options.previousPositions;
+  if(!Array.isArray(hints)||hints.length>10000) return invalid('Invalid previous positions');
+  const previous=new Map<string,IntelligentPreviousPosition>();
+  for(const hint of hints){
+    if(!hint||typeof hint.id!=='string'||!hint.id||previous.has(hint.id)||!validPosition(hint))
+      return invalid('Invalid or duplicate previous position');
+    previous.set(hint.id,hint);
+  }
+  const first=solve(input,true);
+  // Invalid input and static hard conflicts cannot be fixed by alternate shelves.
+  if(first.status==='conflict'&&first.diagnostic.code!=='IL_FIXED_CONFLICT'&&first.diagnostic.code!=='IL_LIMIT') return first;
+  const candidates: {name:IntelligentOptimizationReport['selected'];result:IntelligentLayoutResult}[]=[
+    {name:'greedy',result:first},{name:'lookahead',result:solve(input,true,true)}
+  ];
+  if(Array.isArray(input.blocks)&&input.blocks.some(b=>b?.preferred!==undefined)){
+    candidates.push({name:'greedy-fallback',result:solve(input,false)},
+      {name:'lookahead-fallback',result:solve(input,false,true)});
+  }
+  let best:{name:IntelligentOptimizationReport['selected'];result:Placed;score:IntelligentCandidateScore}|undefined;
+  let feasibleCandidates=0;
+  for(const {name,result} of candidates){
+    if(result.status!=='placed') continue;
+    feasibleCandidates++;
+    const score=scoreCandidate(result,previous);
+    if(!best||better(score,best.score)) best={name,result,score};
+  }
+  if(!best) return first;
+  return {...best.result,optimization:{evaluatedCandidates:candidates.length,feasibleCandidates,selected:best.name,score:best.score}};
+}
+
+function solve(input:IntelligentLayoutInput,honorPreferences:boolean,lookahead=false):IntelligentLayoutResult {
   const conflict = (code: Extract<IntelligentLayoutResult,{status:'conflict'}>['diagnostic']['code'],
     message:string,blockId?:string,regionId?:string):IntelligentLayoutResult =>
       ({status:'conflict',revision:input.revision,placements:[],publicationReady:false,
@@ -199,7 +280,8 @@ function solve(input:IntelligentLayoutInput,honorPreferences:boolean):Intelligen
   function nextPage(p:number){
     page=p;rowY=0;bottom=0;right=0;rowOpen=false;rowShare=false;
   }
-  for(const b of input.blocks){
+  for(let i=0;i<input.blocks.length;i++){
+    const b=input.blocks[i];
     const {width:w,height:h}=footprints.get(b.id)!, before=b.spaceBefore??0, after=b.spaceAfter??0;
     if(b.startNewPage && rowOpen) nextPage(page+1);
     if(page>=MAX_PAGES) return conflict('IL_LIMIT','Page limit exceeded',b.id);
@@ -216,8 +298,23 @@ function solve(input:IntelligentLayoutInput,honorPreferences:boolean):Intelligen
       rowY=y;bottom=y+h;right=x+w;rowOpen=true;rowShare=false;
     }else{
       const minY=(rowOpen?bottom+gap:0)+before;
-      const shareX=rowOpen && rowShare && b.sideBySide && before===0 && after===0 && rowY+h<=height
+      let shareX=rowOpen && rowShare && b.sideBySide && before===0 && after===0 && rowY+h<=height
         ? findX(regionsAt(page),right+gap,rowY,w,h,width):undefined;
+      // One-block lookahead: avoid pairing a short row with a tall block
+      // when the two following neighbors fit together more compactly.
+      // Only choose this on unobstructed pages and for opt-in normal flow.
+      if(lookahead&&shareX!==undefined&&!target&&regionsAt(page).length===0){
+        const next=input.blocks[i+1];
+        if(next&&next.sideBySide&&!next.fixed&&!next.preferred&&!next.startNewPage&&
+          !next.spaceBefore&&!next.spaceAfter){
+          const n=footprints.get(next.id)!;
+          const oldHeight=bottom-rowY;
+          const paired=Math.max(oldHeight,h)+gap+n.height;
+          const separate=oldHeight+gap+Math.max(h,n.height);
+          if(shareX+w+gap+n.width>width&&w+gap+n.width<=width&&
+             minY+Math.max(h,n.height)<=height&&separate<paired) shareX=undefined;
+        }
+      }
       let naturalPage=page;
       let slot=shareX!==undefined?{x:shareX,y:rowY}:findRow(regionsAt(page),minY,w,h,width,height);
       // Every failed page advances. With no exclusions, the next page must fit.
