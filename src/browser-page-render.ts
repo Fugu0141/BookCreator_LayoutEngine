@@ -118,13 +118,13 @@ const px=(um:number)=>um*96/25400;
 export const previewBlockKey=(o:Origin)=>JSON.stringify([o.documentId,o.blockKey]);
 // Internal ownership contract: math nodes are consumed by this render; bitmaps
 // are borrowed for this call (including optional cooperative waits), and closed by their owning orchestrator.
-export async function renderMeasuredPreview(document:Document,plan:MeasuredPagePlan,{width,height,paper,byKey,images,imageKeys,pageCache,pageCacheEpoch,delta}:{width:number;height:number;paper?:PreviewPaper;byKey:ReadonlyMap<string,MeasuredPreviewBlock>;images:ReadonlyMap<string,ImageBitmap>;imageKeys?:ReadonlyMap<string,string>;pageCache?:PageRenderCache;pageCacheEpoch?:number;delta?:{previousKeys:ReadonlyMap<number,string>;allowInlineMath?:boolean}},{styleText,frozenText,listInset}:RenderServices,checkpoint?:PreviewCheckpoint,priorityPages?:readonly number[],onPriorityPage?:ProvisionalPageReceiver):Promise<TextPagePreview & {pageDelta?:PageRenderDelta}>{
+export async function renderMeasuredPreview(document:Document,plan:MeasuredPagePlan,{width,height,paper,byKey,images,imageKeys,imageDimensions,decodeImage,pageCache,pageCacheEpoch,delta}:{width:number;height:number;paper?:PreviewPaper;byKey:ReadonlyMap<string,MeasuredPreviewBlock>;images:ReadonlyMap<string,ImageBitmap>;imageKeys?:ReadonlyMap<string,string>;imageDimensions:ReadonlyMap<string,{width:number;height:number}>;decodeImage:(id:string)=>Promise<void>;pageCache?:PageRenderCache;pageCacheEpoch?:number;delta?:{previousKeys:ReadonlyMap<number,string>;allowInlineMath?:boolean}},{styleText,frozenText,listInset}:RenderServices,checkpoint?:PreviewCheckpoint,priorityPages?:readonly number[],onPriorityPage?:ProvisionalPageReceiver):Promise<TextPagePreview & {pageDelta?:PageRenderDelta}>{
   let renderedImagePixels=0;
   function rasterGeometry(child:Extract<PreviewComponentChild,{type:'image'}>,rect:ComponentPlacement['rect']){
-    const bitmap=images.get(child.assetId)!;
-    const source=imageSourceRect(bitmap.width,bitmap.height,rect.width,rect.height,child.fit,child.crop);
+    const dimensions=imageDimensions.get(child.assetId)!;
+    const source=imageSourceRect(dimensions.width,dimensions.height,rect.width,rect.height,child.fit,child.crop);
     const scale=Math.min(1,2048/Math.max(source.width,source.height));
-    return {bitmap,source,width:Math.max(1,Math.round(source.width*scale)),height:Math.max(1,Math.round(source.height*scale))};
+    return {source,width:Math.max(1,Math.round(source.width*scale)),height:Math.max(1,Math.round(source.height*scale))};
   }
   function reserveRaster(w:number,h:number){
     if((renderedImagePixels+=w*h)>64000000)throw RangeError('Rendered image pixel limit exceeded');
@@ -238,7 +238,7 @@ export async function renderMeasuredPreview(document:Document,plan:MeasuredPageP
           else if(child.type==='image'){
             el.dataset.componentImage=child.assetId;
             // Raster dimensions follow source pixels, not layout CSS pixels; fit does not distort the image.
-            const raster=rasterGeometry(child,rect),{bitmap,source}=raster;
+            const raster=rasterGeometry(child,rect),{source}=raster,bitmap=images.get(child.assetId)!;
             const canvas=document.createElement('canvas');
             const ratio=rect.width/rect.height;
             const sw=source.width,sh=source.height;
@@ -270,6 +270,14 @@ export async function renderMeasuredPreview(document:Document,plan:MeasuredPageP
           }else{textParent=el;el.dataset.contentSlot='true';}
           parent.append(el);
         }}
+        // Only generated pages need actual bitmaps. A retained page still
+        // reserves its raster budget from validated dimensions above.
+        const needed=new Set<string>();
+        function collectMissing(children:readonly PreviewComponentChild[]){
+          for(const child of children){if(child.type==='image'&&!images.has(child.assetId))needed.add(child.assetId);else if(child.type==='group')collectMissing(child.children);}
+        }
+        collectMissing(c.children);
+        for(const id of needed){if(checkpoint)await checkpoint('image',p.index);await decodeImage(id);}
         renderChildren(c.children,placement,fragment);
       }else if(block.component){
         const c=block.component;fragment.dataset.component='true';fragment.dataset.fragmentableFrame='true';fragment.style.background=c.background;
