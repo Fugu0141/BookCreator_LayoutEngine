@@ -158,6 +158,13 @@ try{
     assert(initial.element.shadowRoot.children.length===3&&initial.element!==changed.element,'prior paper not consumed');
     const repeat=await createFullRetainedTextPagePreview(document,make(60),changed.snapshot);
     assert(repeat.element.shadowRoot.children.length===3&&repeat.measurementWork.reusedBlocks===4,'unchanged proposal still returns all pages');
+    const sparse=await createRetainedTextPagePreview(document,make(60),repeat.snapshot);
+    assert(sparse.pageDelta.reusedPageIndices.length===0&&sparse.changedElement.shadowRoot.children.length===3&&sparse.measurementWork.reusedBlocks===4,'full snapshot has computation but no sparse page base');
+    assert(Array.from(sparse.changedElement.shadowRoot.children).every((node,i)=>node.isEqualNode(oracle.element.shadowRoot.children[i])),'full-to-sparse transition redraws exactly');
+    const sparseAgain=await createRetainedTextPagePreview(document,make(60),sparse.pageDelta.snapshot);
+    assert(sparseAgain.pageDelta.reusedPageIndices.length===3,'sparse redraw establishes reusable page keys');
+    const fullAgain=await createFullRetainedTextPagePreview(document,make(60),sparseAgain.pageDelta.snapshot);
+    assert(fullAgain.element.shadowRoot.children.length===3&&fullAgain.measurementWork.reusedBlocks===4,'sparse-to-full keeps measurements but redraws every page');
     let cancelled=false;
     try{await createFullRetainedTextPagePreview(document,make(50),changed.snapshot,stage=>{if(stage==='render-page')throw Error('cancel proposal');});}
     catch(e){cancelled=e.message==='cancel proposal';}
