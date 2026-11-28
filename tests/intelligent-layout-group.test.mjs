@@ -35,3 +35,25 @@ test('groups preserve parity on synchronous, incremental, cooperative and optimi
  assert.deepEqual(plan(i,{}).placements,plain.placements);
  await assert.rejects(cooperative(i,undefined,s=>{if(s==='il-place')throw Error('cancel');}),/cancel/);
 });
+
+const rows=(id,width,height,extra={})=>group(id,width,height,{keepTogetherLayout:'rows',sideBySide:true,...extra});
+test('row group fits beside neighbors within same page and respects occupied dimensions',()=>{
+ const i=input([b('prior',20,55),rows('figure',20,20,{sizeConstraints:{minWidth:40}}),rows('caption',45,30),b('after',20,10)]);
+ const r=plan(i);assert.equal(r.status,'placed');
+ assert.deepEqual(r.placements.map(p=>[p.id,p.page,p.rect.x,p.rect.y]),[['prior',0,0,0],['figure',0,0,60],['caption',0,45,60],['after',1,0,0]]);
+ assert.deepEqual(r.placements[1].occupiedRect,{x:0,y:60,width:40,height:20});
+ assert.equal(plan({...i,blocks:i.blocks.map(b=>b.keepTogetherGroup?{...b,keepTogetherLayout:'vertical',sideBySide:false}:b)}).placements[1].page,1);
+});
+test('mixed group wraps by occupied width and preserves explicit vertical spaces',()=>{
+ const r=plan(input([rows('a',40,20),rows('b',50,30),rows('c',60,10),rows('d',20,10,{spaceBefore:3,spaceAfter:4}),rows('e',20,10)]));
+ assert.equal(r.status,'placed');assert.deepEqual(r.placements.map(p=>[p.rect.x,p.rect.y]),[[0,0],[45,0],[0,35],[0,53],[0,72]]);
+ assert.deepEqual(r.placements[3].occupiedRect,{x:0,y:53,width:20,height:14});
+});
+test('row groups remain indivisible and reserve their complete enclosing rectangle',async()=>{
+ const i=input([b('prior',20,65),rows('a',40,20),rows('b',40,20),rows('c',40,10)],{reservedRegions:[{id:'reserved',page:1,rect:{x:0,y:0,width:100,height:10}}]});
+ const r=plan(i);assert.equal(r.status,'placed');assert.deepEqual(r.placements.map(p=>[p.page,p.rect.x,p.rect.y]),[[0,0,0],[1,0,10],[1,45,10],[1,0,35]]);
+ assert.deepEqual((await cooperative(i,undefined,()=>{})).layout,r);assert.deepEqual(plan(i,{}).placements,r.placements);
+ for(const blocks of [[rows('a',20,20),group('b',20,20)],[b('a',20,20,{keepTogetherLayout:'rows'})],[rows('a',20,20,{keepTogetherLayout:'other'}),rows('b',20,20)]]){
+  const bad=plan(input(blocks));assert.equal(bad.status,'conflict');assert.equal(bad.diagnostic.code,'IL_INVALID');assert.deepEqual(bad.placements,[]);
+ }
+});

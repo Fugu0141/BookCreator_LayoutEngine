@@ -109,3 +109,11 @@ test('measured keep-together groups preserve distinct source fragments and rejec
  const broken=input([section([b('example',20,[20]),{kind:'pagebreak',origin:origin('break')},b('solution',20,[20])])]);
  const bad=plan(broken,opts);assert.equal(bad.status,'conflict');assert.equal(bad.diagnostic.code,'IL_INVALID');assert.deepEqual(bad.fragments,[]);
 });
+
+test('measured mixed row group keeps individual source ranges and same-page geometry',async()=>{
+ const i=input([section([b('prior',20,[65]),b('image',30,[20]),b('caption',40,[20])])]);
+ const group={keepTogetherGroup:'pair',keepTogetherLayout:'rows',sideBySide:true};
+ const opts=JSON.parse(JSON.stringify({gap:5,intents:[intent('image',group),intent('caption',group)]}));
+ const r=plan(i,opts);assert.equal(r.status,'placed');assert.deepEqual(r.fragments.map(f=>[f.origin.blockKey,f.placement.page,f.placement.rect.x,f.placement.rect.y]),[['prior',0,0,0],['image',0,0,70],['caption',0,35,70]]);
+ assert.deepEqual((await cooperative(i,opts,undefined,()=>{})).result,r);
+});

@@ -40,6 +40,8 @@ export interface IntelligentBlock {
   startNewPage?: boolean;
   /** Consecutive members form an indivisible vertical group on one page. */
   keepTogetherGroup?: string;
+  /** All group members must agree. Rows still require mutual sideBySide. */
+  keepTogetherLayout?: 'vertical'|'rows';
 }
 /** Hard exclusion, independent of semantic document blocks. */
 export interface IntelligentReservedRegion {
@@ -391,7 +393,8 @@ function* solve(input:IntelligentLayoutInput,honorPreferences:boolean,lookahead=
       (b.fixedPositionOnly===true&&b.fixed===undefined) ||
       (b.fixedRowShare!==undefined&&typeof b.fixedRowShare!=='boolean') ||
       (b.fixedRowShare===true&&(b.fixed===undefined||b.sideBySide!==true)) ||
-      (b.keepTogetherGroup!==undefined&&(typeof b.keepTogetherGroup!=='string'||!b.keepTogetherGroup.trim()||b.keepTogetherGroup.length>256||b.fixed!==undefined||b.preferred!==undefined||b.sideBySide===true)))
+      (b.keepTogetherGroup!==undefined&&(typeof b.keepTogetherGroup!=='string'||!b.keepTogetherGroup.trim()||b.keepTogetherGroup.length>256||b.fixed!==undefined||b.preferred!==undefined||(b.sideBySide===true&&b.keepTogetherLayout!=='rows'))) ||
+      (b.keepTogetherLayout!==undefined&&(b.keepTogetherGroup===undefined||(b.keepTogetherLayout!=='vertical'&&b.keepTogetherLayout!=='rows'))))
       return conflict('IL_INVALID','Invalid or duplicate block',b?.id);
     const mode=b.mode ?? (b.fixed!==undefined?'fixed':b.preferred!==undefined?'preferred':'auto');
     if((b.mode!==undefined&&b.mode!==mode) ||
@@ -429,7 +432,7 @@ function* solve(input:IntelligentLayoutInput,honorPreferences:boolean,lookahead=
   }
   // A group reserves one conservative enclosing rectangle. Its members retain
   // their original identities, geometry, gaps and source order.
-  const groups=new Map<number,{end:number;width:number;height:number}>();
+  const groups=new Map<number,{end:number;width:number;height:number;offsets:{x:number;y:number}[]}>();
   const seenGroups=new Set<string>();
   for(let i=0;i<input.blocks.length;){
     if(i%64===0)yield 'il-validate';
@@ -437,18 +440,29 @@ function* solve(input:IntelligentLayoutInput,honorPreferences:boolean,lookahead=
     if(id===undefined){i++;continue;}
     if(seenGroups.has(id))return conflict('IL_INVALID','Group members must be consecutive',first.id);
     seenGroups.add(id);
+    const mode=first.keepTogetherLayout??'vertical';
     let end=i+1,w=footprints[i].width,h=footprints[i].height;
+    let rowY=0,right=w,share=mode==='rows'&&first.sideBySide===true&&!(first.spaceBefore??0)&&!(first.spaceAfter??0);
+    const offsets=[{x:0,y:0}];
     while(end<input.blocks.length&&input.blocks[end].keepTogetherGroup===id){
       if(end%64===0)yield 'il-validate';
-      const member=input.blocks[end];
+      const member=input.blocks[end],footprint=footprints[end];
       if(member.startNewPage)return conflict('IL_INVALID','Explicit page break inside keep-together group',member.id);
-      w=Math.max(w,footprints[end].width);
-      h+=gap+(member.spaceBefore??0)+footprints[end].height;
+      if((member.keepTogetherLayout??'vertical')!==mode)return conflict('IL_INVALID','Group layout modes must agree',member.id);
+      const canShare=mode==='rows'&&member.sideBySide===true&&!(member.spaceBefore??0)&&!(member.spaceAfter??0);
+      if(share&&canShare&&right+gap+footprint.width<=width){
+        const x=right+gap;offsets.push({x,y:rowY});
+        right=x+footprint.width;h=Math.max(h,rowY+footprint.height);
+      }else{
+        rowY=h+gap+(member.spaceBefore??0);offsets.push({x:0,y:rowY});
+        right=footprint.width;h=rowY+footprint.height;
+      }
+      share=canShare;w=Math.max(w,right);
       if(h+(first.spaceBefore??0)>height)return conflict('IL_TOO_LARGE','Keep-together group exceeds page',first.id);
       end++;
     }
     if(end===i+1)return conflict('IL_INVALID','Group must have at least two members',first.id);
-    groups.set(i,{end,width:w,height:h});
+    groups.set(i,{end,width:w,height:h,offsets});
     i=end;
   }
   const placements:IntelligentPlacement[]=[];
@@ -520,17 +534,15 @@ function* solve(input:IntelligentLayoutInput,honorPreferences:boolean,lookahead=
       }
       if(!slot||groupPage>=MAX_PAGES)return conflict('IL_LIMIT','No page fits keep-together group',b.id);
       if(groupPage!==page)nextPage(groupPage);
-      let y=slot.y;
       for(let k=i;k<group.end;k++){
         if(k%64===0)yield 'il-place';
-        const member=input.blocks[k],footprint=footprints[k];
-        if(k!==i)y+=gap+(member.spaceBefore??0);
-        const rect={x:slot.x,y,width:member.size.width,height:member.size.height};
+        const member=input.blocks[k],footprint=footprints[k],offset=group.offsets[k-i];
+        const x=slot.x+offset.x,y=slot.y+offset.y;
+        const rect={x,y,width:member.size.width,height:member.size.height};
         placements.push({id:member.id,page,rect,fixed:false,
-          ...(footprint.width!==rect.width||footprint.height!==rect.height?{occupiedRect:{x:slot.x,y,...footprint}}:{})});
-        y+=footprint.height;
+          ...(footprint.width!==rect.width||footprint.height!==rect.height?{occupiedRect:{x,y,...footprint}}:{})});
       }
-      rowY=slot.y;bottom=y;right=slot.x+group.width;rowOpen=true;rowShare=false;
+      rowY=slot.y;bottom=slot.y+group.height;right=slot.x+group.width;rowOpen=true;rowShare=false;
       i=group.end-1;continue;
     }
     let x=0,y=0;
