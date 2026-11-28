@@ -33,7 +33,7 @@ function cleanRequest(r:PlainTextMeasureRequest):PlainTextMeasureRequest{
 function componentKey(c:PreviewComponentChild):unknown{
   // Only fields used by width resolution, measurement and placement.
   return [c.type,c.id,c.width,c.x,c.y,
-    c.type==='group'?[c.direction,c.height,c.gap,c.padding,c.children.map(componentKey)]:
+    c.type==='group'?[c.direction,c.height,c.heightMode,c.gap,c.padding,c.children.map(componentKey)]:
     c.type==='label'?[c.text,c.fontFamily,c.fontWeight,c.fontSize,c.lineHeight]:
     c.type==='slot'?c.name:
     c.type==='rect'||c.type==='image'?c.height:null];
@@ -43,7 +43,7 @@ function measurementKey(b:PreviewTextBlock,width:number,height:number):string|un
   // Source offsets/revision and purely visual component fields are not
   // measurement inputs. The current block always supplies rendering metadata.
   return JSON.stringify([width,height,cleanRequest(b.request),b.splitPolicy,b.displayMath??false,b.equationNumber??null,
-    c?[c.direction,c.gap,c.padding,c.children.map(componentKey)]:null,
+    c?[c.direction,c.gap,c.padding,c.minHeightPercent,c.children.map(componentKey)]:null,
     l?[l.kind,l.kind==='ordered'?l.number:null,l.depth,l.indentStep,l.markerWidth,l.gap]:null,
     (b.namedSlots??[]).map(s=>[s.name,cleanRequest({...s.request,width:100000})])]);
 }
