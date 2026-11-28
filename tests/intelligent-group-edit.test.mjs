@@ -1,0 +1,72 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {proposeIntelligentGroupEdit as edit,proposeIntelligentGroup as create,planMeasuredIntelligentLayout as plan,planMeasuredIntelligentLayoutIncremental as incremental,planMeasuredIntelligentLayoutIncrementalCooperative as cooperative} from '../dist/index.js';
+const source=(blockKey,documentId='doc')=>({documentId,blockKey});
+const input={schemaVersion:1,revision:'r',fingerprint:'fp',content:{width:100,height:100},sections:[{id:'s',startOn:'continuous',blocks:['a','b','c','d'].map(blockKey=>({kind:'block',origin:{...source(blockKey),revision:'r'},width:25,unitHeights:[20],splitPolicy:'strict'}))}]};
+const members=['c','b'].map(id=>source(id));
+const cmd=(action,clearHorizontal)=>({groupId:'pair',members,action,...(clearHorizontal?{clearHorizontal}:{})});
+const original={gap:5,intents:[{...source('b'),placement:{sizeConstraints:{minWidth:30}}},{...source('c'),placement:{sideBySide:false,spaceAfter:3}},{...source('d'),placement:{spaceBefore:7}}]};
+const grouped=create(plan(input,original),original,input,{groupId:'pair',layout:'adaptiveRows',members}).options;
+const r=plan(input,grouped);
+
+test('explicit whole-group edits preserve constraints and original order, including explicit horizontal denial',async()=>{
+ const before=JSON.stringify(grouped);
+ assert.equal(r.status,'placed');
+ const rows=edit(r,grouped,input,cmd('rows'));
+ assert.equal(rows.status,'proposed');
+ assert.deepEqual(rows.members,[source('b'),source('c')]);
+ assert.equal(rows.options.intents[0].placement.keepTogetherLayout,'rows');
+ assert.equal(rows.options.intents[1].placement.sideBySide,false);
+ assert.deepEqual(rows.options.intents[2],original.intents[2]);
+ assert.deepEqual(edit(r,grouped,input,cmd('vertical')),{status:'rejected',reason:'horizontal-intent'});
+ const vertical=edit(r,grouped,input,cmd('vertical',[source('b')]));
+ assert.equal(vertical.status,'proposed');
+ assert.equal(vertical.options.intents[0].placement.sideBySide,undefined);
+ assert.equal(vertical.options.intents[1].placement.sideBySide,false);
+ const v=plan(input,vertical.options);
+ assert.equal(v.status,'placed');
+ assert.equal(v.fragments[1].placement.page,v.fragments[2].placement.page);
+ assert.equal(v.fragments[1].placement.rect.x,v.fragments[2].placement.rect.x);
+ assert.equal(v.fragments[1].placement.occupiedRect.width,30);
+ assert.equal(v.fragments[2].placement.occupiedRect.height,23);
+ const prior=incremental(input,grouped);
+ assert.deepEqual(incremental(input,vertical.options,prior.snapshot).result,v);
+ assert.deepEqual((await cooperative(input,vertical.options,prior.snapshot,()=>{})).result,v);
+ const again=edit(v,vertical.options,input,cmd('adaptiveRows'));
+ assert.equal(again.status,'proposed');
+ assert.equal(again.options.intents[0].placement.sideBySide,true);
+ assert.equal(again.options.intents[1].placement.sideBySide,false);
+ const keep=edit(r,grouped,input,cmd('ungroup'));
+ assert.equal(keep.status,'proposed');
+ assert.equal(keep.options.intents[0].placement.sideBySide,true);
+ const restore=edit(r,grouped,input,cmd('ungroup',[source('b')]));
+ assert.equal(restore.status,'proposed');
+ assert.deepEqual(restore.options,original);
+ assert.deepEqual(plan(input,restore.options),plan(input,original));
+ assert.deepEqual(edit(JSON.parse(JSON.stringify(r)),JSON.parse(before),input,cmd('ungroup',[source('b')])).options,original);
+ restore.options.intents[0].placement.sizeConstraints.minWidth=99;
+ assert.equal(JSON.stringify(grouped),before);
+});
+
+test('reject stale, partial, wrong group, unrelated and explicitly forbidden horizontal clears',()=>{
+ const check=(command,reason,expected=input)=>assert.deepEqual(edit(r,grouped,expected,command),{status:'rejected',reason});
+ check(cmd('ungroup'),'stale',{...input,fingerprint:'old'});
+ check({...cmd('ungroup'),members:[source('b')]},'invalid-selection');
+ check({...cmd('ungroup'),members:[source('a'),source('b')]},'existing-group');
+ check({...cmd('ungroup'),groupId:'other'},'existing-group');
+ check({...cmd('ungroup'),members:[source('b'),source('b')]},'ambiguous');
+ check(cmd('ungroup',[source('a')]),'invalid-selection');
+ check(cmd('ungroup',[source('c')]),'horizontal-intent');
+ check(cmd('rows',[source('b')]),'invalid-selection');
+ assert.equal(edit({...r,status:'conflict'},grouped,input,cmd('ungroup')).reason,'stale');
+});
+
+test('ungroup removes empty placement entries only and preserves unrelated locks',()=>{
+ const initial={intents:[{...source('d'),placement:{fixed:{page:1,x:5,y:5}}}]};
+ const p=create(plan(input,initial),initial,input,{groupId:'pair',layout:'vertical',members});
+ assert.equal(p.status,'proposed');
+ const next=edit(plan(input,p.options),p.options,input,cmd('ungroup'));
+ assert.equal(next.status,'proposed');
+ assert.deepEqual(next.options,initial);
+ assert.deepEqual(plan(input,next.options),plan(input,initial));
+});
