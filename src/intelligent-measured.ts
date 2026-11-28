@@ -302,3 +302,68 @@ export function projectIntelligentMeasuredPlan(result:Extract<IntelligentMeasure
     measurement:'premeasured',publicationReady:false,pages,
     diagnostics:result.paginationDiagnostics.map(d=>({...d,...(d.origin?{origin:copyOrigin(d.origin)}:{})}))};
 }
+
+export interface IntelligentPlacementChange {
+  origin:Origin;
+  unitStart:number;
+  unitEnd:number;
+  before:IntelligentPlacement;
+  after:IntelligentPlacement;
+  pageChanged:boolean;
+  /** Coordinates are body-relative, even when the physical page changed. */
+  positionChanged:boolean;
+  contentSizeChanged:boolean;
+  footprintSizeChanged:boolean;
+  fixedChanged:boolean;
+  preferenceChanged:boolean;
+}
+export interface IntelligentPlacementImpact {
+  fragmentCount:number;
+  movedFragments:number;
+  pageChangedFragments:number;
+  changed:IntelligentPlacementChange[];
+}
+
+/**
+ * Compare two successful plans of the same measured source, e.g. an approved
+ * layout and a drag proposal. Refuse changed fragment identities, order,
+ * ranges, or revisions rather than attributing source edits to layout.
+ * Host must compare request generations and exact captured input separately.
+ * Result is display-only, not a save authorization.
+ */
+export function compareIntelligentPlacementImpact(
+  before:IntelligentMeasuredResult,
+  after:IntelligentMeasuredResult,
+  expected:Readonly<Pick<PaginationInput,'revision'|'fingerprint'>>,
+):IntelligentPlacementImpact|undefined {
+  if(before.status!=='placed'||after.status!=='placed'||
+    before.revision!==expected.revision||after.revision!==expected.revision||
+    before.fingerprint!==expected.fingerprint||after.fingerprint!==expected.fingerprint||
+    before.fragments.length!==after.fragments.length||before.fragments.length>10000)return undefined;
+  const changed:IntelligentPlacementChange[]=[];
+  const seen=new Set<string>();
+  let movedFragments=0,pageChangedFragments=0;
+  const clone=(p:IntelligentPlacement):IntelligentPlacement=>({...p,rect:{...p.rect},
+    ...(p.occupiedRect?{occupiedRect:{...p.occupiedRect}}:{})});
+  for(const [index,a] of before.fragments.entries()){
+    const b=after.fragments[index],p=a.placement,q=b.placement;
+    if(p.id!==q.id||seen.has(p.id)||sourceKey(a.origin)!==sourceKey(b.origin)||
+      a.origin.revision!==b.origin.revision||a.origin.persistentId!==b.origin.persistentId||
+      a.origin.range?.start!==b.origin.range?.start||a.origin.range?.end!==b.origin.range?.end||
+      a.unitStart!==b.unitStart||a.unitEnd!==b.unitEnd||a.continuationIndex!==b.continuationIndex)
+      return undefined;
+    seen.add(p.id);
+    const pageChanged=p.page!==q.page;
+    const positionChanged=p.rect.x!==q.rect.x||p.rect.y!==q.rect.y;
+    const contentSizeChanged=p.rect.width!==q.rect.width||p.rect.height!==q.rect.height;
+    const occupied=p.occupiedRect??p.rect,other=q.occupiedRect??q.rect;
+    const footprintSizeChanged=occupied.width!==other.width||occupied.height!==other.height;
+    const fixedChanged=p.fixed!==q.fixed,preferenceChanged=p.preference!==q.preference;
+    if(pageChanged)pageChangedFragments++;
+    if(pageChanged||positionChanged)movedFragments++;
+    if(pageChanged||positionChanged||contentSizeChanged||footprintSizeChanged||fixedChanged||preferenceChanged)
+      changed.push({origin:copyOrigin(a.origin),unitStart:a.unitStart,unitEnd:a.unitEnd,
+        before:clone(p),after:clone(q),pageChanged,positionChanged,contentSizeChanged,footprintSizeChanged,fixedChanged,preferenceChanged});
+  }
+  return {fragmentCount:before.fragments.length,movedFragments,pageChangedFragments,changed};
+}
