@@ -85,3 +85,9 @@ hostは原稿/フォント/画像/用紙/測定環境の同一性、最新世代
 inspectRetainedIntelligentOptimizationReview(document,handle,base,lease) は有効なretained reviewの非公開候補から、改善前後の総ページ数、移動・ページ変更断片数、改善理由、対象範囲、変更断片の完全な前後配置、影響ページの前後品質と出入りの断片IDを返す。座標は本文領域基準の整数µm、ページは0始まり。ページ単位の品質値が同じでも断片変更があれば含め、追加/削除ページの存在しない側は省略する。全体評価から個々の移動の因果は推定しない。変更のないページは除外する。
 
 元base・Document・leaseを検証し、取消済み/消費済みのhandleはundefined。誤った参照による照会はhandleを消費しない。返却値は独立コピーで、公開proposalの改変にも影響されない。照会は再配置・測定・描画・保存を行わず、候補紙面の実測確認やhostの世代検証を代替しない。ブラウザ回帰で前後座標、ページ対応、公開データの隔離、別base/Document/lease、取消・確認後の無効化を検証する。CI・GUI接続・実機未確認。
+
+## IL-17E: 改善候補の明示選択
+
+prepareRetainedIntelligentOptimizationChoices(document,base,target,lease) は同一の承認済み実測紙面からcompactとbalanceを独立に生成する。targetは明示的なbook、pages(scope)、document(documentId,maxMovedFragments?)のいずれか。欠落/不正targetはinvalid-targetで拒否し、原稿の共有ページや不明IDを全冊対象に広げない。各候補はavailable(比較情報)またはrejected(既存拒否理由)。全案拒否時はemptyでhandleなし。候補間の自動順位付け、第三の目的関数、同時最適化は行わない。compactは既存の選択的希望位置復帰方式で、必ずページ数を削減するものではない。
+
+selectRetainedIntelligentOptimizationChoice(document,handle,base,lease,goal) は同一base/Document/leaseの有効候補を一度だけ通常のreviewとして移譲し、他候補を取消す。候補一覧に個別review handleを公開しない。誤選択は集合を消費せず、cancelRetainedIntelligentOptimizationChoicesで全候補を破棄可能。選択後は従来の候補実測描画・confirm/cancelを使用し、選択自体は描画・保存・印刷を許可しない。hostは世代変更時に集合/移譲済みreviewを破棄する。各目的ごとに既存solverを呼ぶため最大2回分の提案計算費用がある。回帰試験は範囲誤指定、共有原稿、予算、不採用理由、表示改変、lease/Document、単回選択、取消、実測候補確認を対象とする。CI・GUI接続・実機速度未確認。

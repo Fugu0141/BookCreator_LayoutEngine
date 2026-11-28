@@ -2,7 +2,7 @@
 <html lang="en"><meta charset="utf-8"><title>Browser measurement smoke test</title>
 <body><pre id="result">RUNNING</pre>
 <script type="module">
-import {inspectRetainedIntelligentOptimizationReview,prepareRetainedIntelligentDocumentOptimizationReview,inspectRetainedIntelligentLayoutQuality,prepareRetainedIntelligentOptimizationReview,confirmRetainedIntelligentOptimizationReview,cancelRetainedIntelligentOptimizationReview,createIntelligentGeometryDraftSession,createIntelligentGeometryDraft,proposeIntelligentGroup,proposeIntelligentGroupEdit,compareIntelligentPlacementImpact,IntelligentPreviewConflictError,findIntelligentFixedConflictTarget,describeIntelligentPreferredPlacement,createFullRetainedTextPagePreview,createTrialPrintPreviewForLayout,createIntelligentPrintTicket,createVerifiedIntelligentPrintPreview,measurePlainText,paginateMeasured,measurePlainTextLines,createPlainTextPagePreview,createIncrementalTextPagePreview,createRetainedTextPagePreview,measureDisplayMath,displayMathArtifact,restoreDisplayMathArtifact,createPreviewMath,createTextMeasurementCache,createParagraphMeasurementCache,createPageRenderCache,parsePreviewMath,parseDisplayMath,readyPreviewMathFont,createMathCompilationCache,createDisplayMathGeometryCache,createInlineMathGeometryCache,measureInlineMathGeometry,createInlineMathAtom} from '/dist/index.js';
+import {prepareRetainedIntelligentOptimizationChoices,selectRetainedIntelligentOptimizationChoice,cancelRetainedIntelligentOptimizationChoices,inspectRetainedIntelligentOptimizationReview,prepareRetainedIntelligentDocumentOptimizationReview,inspectRetainedIntelligentLayoutQuality,prepareRetainedIntelligentOptimizationReview,confirmRetainedIntelligentOptimizationReview,cancelRetainedIntelligentOptimizationReview,createIntelligentGeometryDraftSession,createIntelligentGeometryDraft,proposeIntelligentGroup,proposeIntelligentGroupEdit,compareIntelligentPlacementImpact,IntelligentPreviewConflictError,findIntelligentFixedConflictTarget,describeIntelligentPreferredPlacement,createFullRetainedTextPagePreview,createTrialPrintPreviewForLayout,createIntelligentPrintTicket,createVerifiedIntelligentPrintPreview,measurePlainText,paginateMeasured,measurePlainTextLines,createPlainTextPagePreview,createIncrementalTextPagePreview,createRetainedTextPagePreview,measureDisplayMath,displayMathArtifact,restoreDisplayMathArtifact,createPreviewMath,createTextMeasurementCache,createParagraphMeasurementCache,createPageRenderCache,parsePreviewMath,parseDisplayMath,readyPreviewMathFont,createMathCompilationCache,createDisplayMathGeometryCache,createInlineMathGeometryCache,measureInlineMathGeometry,createInlineMathAtom} from '/dist/index.js';
 const result=document.querySelector('#result');
 const assert=(condition,message)=>{if(!condition)throw Error(message);};
 const phase=async name=>{await fetch('/test-progress',{method:'POST',body:name});};
@@ -309,6 +309,10 @@ try{
     const select=(id)=>prepareRetainedIntelligentDocumentOptimizationReview(document,approved.snapshot,id,'balance','scope-lease');
     assert(select('chapter-a').reason==='shared-pages'&&select('chapter-b').reason==='shared-pages','manuscript selection refuses shared paper');
     assert(select('missing').reason==='unknown-document'&&select('').reason==='unknown-document','missing selection never expands to full book');
+    for(const [id,reason] of [['chapter-a','shared-pages'],['missing','unknown-document']]){
+      const choices=prepareRetainedIntelligentOptimizationChoices(document,approved.snapshot,{kind:'document',documentId:id},'scope-lease');
+      assert(choices.status==='empty'&&choices.choices.length===2&&choices.choices.every(c=>c.status==='rejected'&&c.reason===reason),'candidate choices respect manuscript boundary');
+    }
     info.documents[2].exclusiveScope.firstPage=99;info.quality.pages[0].fragmentCount=99;
     const again=inspectRetainedIntelligentLayoutQuality(document,approved.snapshot);
     assert(again.documents[2].exclusiveScope.firstPage===1&&again.quality.pages[0].fragmentCount===2,'diagnostics are independent copies');
@@ -368,10 +372,33 @@ try{
     assert(inspectRetainedIntelligentOptimizationReview(document,explicit.handle,approved.snapshot,'lease')===undefined,'cancelled review cannot inspect');
     const otherDocument=document.implementation.createHTMLDocument('foreign');
     assert(inspectRetainedIntelligentOptimizationReview(otherDocument,review.handle,approved.snapshot,'lease')===undefined,'foreign document cannot inspect');
+    const choicesFor=(target={kind:'document',documentId:'review-doc'})=>prepareRetainedIntelligentOptimizationChoices(document,approved.snapshot,target,'lease');
+    const choose=(set,goal,lease='lease',doc=document,snapshot=approved.snapshot)=>selectRetainedIntelligentOptimizationChoice(doc,set.handle,snapshot,lease,goal);
+    for(const target of [undefined,null,{}, {kind:'pages'}, {kind:'document'}, {kind:'book',documentId:'review-doc'}]){
+      const rejected=prepareRetainedIntelligentOptimizationChoices(document,approved.snapshot,target,'lease');
+      assert(rejected.status==='rejected'&&rejected.reason==='invalid-target','malformed target never falls back to book');
+    }
+    const limited=choicesFor({kind:'document',documentId:'review-doc',maxMovedFragments:0});
+    assert(limited.status==='empty'&&limited.choices.find(c=>c.goal==='balance').reason==='movement-budget','choice set preserves budget');
+    const choices=choicesFor();
+    assert(choices.status==='ready'&&choices.choices.map(c=>c.goal).join(',')==='compact,balance','two goal outcomes in stable order');
+    assert(choices.choices[0].status==='rejected'&&choices.choices[0].reason==='no-improvement','unavailable compact is explained');
+    assert(choices.choices[1].status==='available'&&JSON.stringify(choices.choices[1].comparison)===comparisonJSON,'available comparison matches independent review');
+    assert(choose(choices,'compact').reason==='unavailable-goal','unavailable goal cannot be selected');
+    assert(choose(choices,'balance','wrong').reason==='stale','wrong lease cannot select');
+    assert(choose(choices,'balance','lease',otherDocument).reason==='stale','foreign document cannot select');
+    choices.choices[1].comparison.changes[0].before.rect.x=999;
+    choices.choices[1].comparison.scope.firstPage=99;
+    const selected=choose(choices,'balance');
+    assert(selected.status==='review'&&JSON.stringify(inspectRetainedIntelligentOptimizationReview(document,selected.handle,approved.snapshot,'lease'))===comparisonJSON,'selection transfers exact private review despite display mutation');
+    assert(choose(choices,'balance').reason==='invalid-handle'&&!cancelRetainedIntelligentOptimizationChoices(choices.handle),'choice set consumed once');
+    const discarded=choicesFor({kind:'pages',scope:{firstPage:0,lastPage:1}});
+    assert(discarded.status==='ready'&&cancelRetainedIntelligentOptimizationChoices(discarded.handle)&&choose(discarded,'balance').reason==='invalid-handle','cancel entire choice set');
     const next={...base,intelligentLayout:structuredClone(review.proposal.options)};
     const candidate=await createFullRetainedTextPagePreview(document,next,approved.snapshot);
     assert(candidate.measurementWork.reusedBlocks===4,'retained candidate reuses measured blocks');
     assert(JSON.stringify(candidate.intelligentLayout)===JSON.stringify(review.proposal.result),'rendered candidate matches proposal');
+    assert(confirmRetainedIntelligentOptimizationReview(document,selected.handle,approved.snapshot,candidate.snapshot,'lease').status==='confirmed','selected review confirms only actual rendered candidate');
     const ticket=JSON.parse(JSON.stringify(createIntelligentPrintTicket(candidate,paper)));
     assert(inspectRetainedIntelligentOptimizationReview(document,review.handle,candidate.snapshot,'lease')===undefined,'candidate is not the original review base');
     assert(JSON.stringify(inspect())===comparisonJSON,'failed inspections do not consume review');
