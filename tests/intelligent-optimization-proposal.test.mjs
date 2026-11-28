@@ -45,3 +45,50 @@ test('stale same-revision options, conflict, invalid goal and no improvement fai
  const corrupted=structuredClone(approved);corrupted.fragments[0].placement.rect.x=10;
  assert.deepEqual(propose(i,corrupted,o,'compact'),{status:'rejected',reason:'stale'});
 });
+
+import {prepareIntelligentOptimizationReview as prepare,confirmIntelligentOptimizationReview as confirm,cancelIntelligentOptimizationReview as cancel} from '../dist/index.js';
+const reviewFixture=()=>{
+ const i=input([b('a',60,10),b('b',30,40),b('c',60,40)],{width:100,height:65});
+ const options={gap:5,intents:['a','b','c'].map(id=>intent(id,{sideBySide:true}))};
+ const approved=plan(i,options),current={input:i,approved,options,lease:'lease-1'};
+ const review=prepare(i,approved,options,'compact',current.lease);
+ assert.equal(review.status,'review');
+ const preview={options:structuredClone(review.proposal.options),result:plan(i,review.proposal.options)};
+ return {current,review,preview};
+};
+test('review confirms only independently recalculated candidate once and isolates mutable display data',()=>{
+ const {current,review,preview}=reviewFixture(),before=JSON.stringify(current);
+ review.proposal.options.intents[0].placement.sideBySide=false;
+ review.proposal.result.fragments[0].placement.rect.x=99;
+ const accepted=confirm(review.handle,current,preview);
+ assert.equal(accepted.status,'confirmed');assert.deepEqual(accepted.options,preview.options);assert.deepEqual(accepted.result,preview.result);
+ assert.equal(JSON.stringify(current),before);
+ accepted.options.intents[0].placement.sideBySide=false;
+ assert.equal(preview.options.intents[0].placement.sideBySide,true);
+ assert.deepEqual(confirm(review.handle,current,preview),{status:'rejected',reason:'invalid-handle'});
+});
+test('cancel, stale lease, changed input, changed approved plan and changed options cannot confirm',()=>{
+ for(const mutate of [
+  c=>{c.lease='lease-2';},
+  c=>{c.input.sections[0].blocks[0].unitHeights[0]=11;},
+  c=>{c.approved.fragments[0].placement.rect.x=1;},
+  c=>{c.options.gap=6;}
+ ]){
+  const {current,review,preview}=reviewFixture();mutate(current);
+  assert.deepEqual(confirm(review.handle,current,preview),{status:'rejected',reason:'stale'});
+  assert.equal(cancel(review.handle),false);
+ }
+ const {current,review,preview}=reviewFixture();
+ assert.equal(cancel(review.handle),true);assert.equal(cancel(review.handle),false);
+ assert.deepEqual(confirm(review.handle,current,preview),{status:'rejected',reason:'invalid-handle'});
+ assert.deepEqual(confirm(JSON.parse(JSON.stringify(review.handle)),current,preview),{status:'rejected',reason:'invalid-handle'});
+});
+test('wrong preview or settings consume the review without publishing',()=>{
+ for(const mutate of [p=>{p.result.fragments[0].placement.rect.x=1;},p=>{p.options.gap=7;}]){
+  const {current,review,preview}=reviewFixture();mutate(preview);
+  assert.deepEqual(confirm(review.handle,current,preview),{status:'rejected',reason:'preview-mismatch'});
+  assert.equal(cancel(review.handle),false);
+ }
+ const {current}=reviewFixture();
+ assert.deepEqual(prepare(current.input,current.approved,current.options,'compact',''),{status:'rejected',reason:'stale'});
+});

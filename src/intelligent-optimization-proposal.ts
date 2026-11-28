@@ -67,3 +67,62 @@ export function proposeIntelligentOptimization(
     return {status:'rejected',reason:'no-improvement'};
   return {status:'proposed',goal,options:next,result,before,after,impact,improvement};
 }
+
+/** Opaque in-process review handle. Not a persisted lease or print ticket. */
+export interface IntelligentOptimizationReviewHandle {readonly kind:'intelligent-optimization-review'}
+type Proposed=Extract<IntelligentOptimizationProposal,{status:'proposed'}>;
+export type IntelligentOptimizationReview=
+  | {status:'review';handle:IntelligentOptimizationReviewHandle;proposal:Proposed}
+  | Extract<IntelligentOptimizationProposal,{status:'rejected'}>;
+export type IntelligentOptimizationConfirmation=
+  | {status:'confirmed';options:IntelligentMeasuredOptions;result:Proposed['result']}
+  | {status:'rejected';reason:'invalid-handle'|'stale'|'preview-mismatch'};
+interface ReviewState {
+  lease:string;
+  input:string;
+  approved:string;
+  options:string;
+  candidate:Proposed;
+}
+const reviews=new WeakMap<IntelligentOptimizationReviewHandle,ReviewState>();
+/** Capture the exact review context. The host owns the unique current
+ * request lease and must independently verify its currentness at save. */
+export function prepareIntelligentOptimizationReview(
+  input:PaginationInput,approved:IntelligentMeasuredResult,options:IntelligentMeasuredOptions,
+  goal:IntelligentOptimizationGoal,lease:string,
+):IntelligentOptimizationReview{
+  if(typeof lease!=='string'||!lease||lease.length>1024)return {status:'rejected',reason:'stale'};
+  const proposal=proposeIntelligentOptimization(input,approved,options,goal);
+  if(proposal.status==='rejected')return proposal;
+  const handle=Object.freeze({kind:'intelligent-optimization-review' as const});
+  reviews.set(handle,{lease,input:JSON.stringify(input),approved:JSON.stringify(approved),
+    options:JSON.stringify(options),candidate:structuredClone(proposal)});
+  return {status:'review',handle,proposal};
+}
+/** Discard the private review; later confirmation always fails. */
+export function cancelIntelligentOptimizationReview(handle:IntelligentOptimizationReviewHandle):boolean{
+  return reviews.delete(handle);
+}
+/**
+ * Single-use confirmation of an independently rendered candidate. Require
+ * the original measured input, approved plan, options and current host lease,
+ * plus the actual complete preview result/settings. A failed attempt consumes
+ * the review as well. No save, history entry, DOM publication or printing.
+ */
+export function confirmIntelligentOptimizationReview(
+  handle:IntelligentOptimizationReviewHandle,
+  current:Readonly<{input:PaginationInput;approved:IntelligentMeasuredResult;options:IntelligentMeasuredOptions;lease:string}>,
+  preview:Readonly<{result:IntelligentMeasuredResult;options:IntelligentMeasuredOptions}>,
+):IntelligentOptimizationConfirmation{
+  const state=reviews.get(handle);
+  if(!state)return {status:'rejected',reason:'invalid-handle'};
+  reviews.delete(handle);
+  if(current.lease!==state.lease||JSON.stringify(current.input)!==state.input||
+    JSON.stringify(current.approved)!==state.approved||JSON.stringify(current.options)!==state.options)
+    return {status:'rejected',reason:'stale'};
+  const c=state.candidate;
+  if(preview.result.status!=='placed'||JSON.stringify(preview.result)!==JSON.stringify(c.result)||
+    JSON.stringify(preview.options)!==JSON.stringify(c.options))
+    return {status:'rejected',reason:'preview-mismatch'};
+  return {status:'confirmed',options:structuredClone(c.options),result:structuredClone(c.result)};
+}
