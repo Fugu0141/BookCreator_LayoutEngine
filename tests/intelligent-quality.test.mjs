@@ -97,3 +97,39 @@ test('measured fragments cover all original units exactly through repeated edits
   previous=r.snapshot;
  }
 });
+
+import {inspectIntelligentLayoutQuality as inspectQuality} from '../dist/index.js';
+const qualityBlock=(id,heights,doc='a',extra={})=>({kind:'block',origin:{documentId:doc,revision:'r',blockKey:id},width:40,unitHeights:heights,splitPolicy:'strict',...extra});
+const qualityInput={schemaVersion:1,revision:'book',fingerprint:'fp',content:{width:100,height:100},sections:[
+ {id:'a',startOn:'continuous',blocks:[qualityBlock('area',[20]),qualityBlock('wish',[20]),qualityBlock('long',[40,40,40],'a',{splitPolicy:'allow'})]},
+ {id:'b',startOn:'page',blocks:[qualityBlock('pin',[20],'b')]}
+]};
+const qualityOptions={intents:[{documentId:'a',blockKey:'area',placement:{sizeConstraints:{minHeightPercent:50}}},
+ {documentId:'a',blockKey:'wish',placement:{preferred:{page:0,x:0,y:0}}},
+ {documentId:'b',blockKey:'pin',placement:{fixed:{page:5,x:10,y:30}}}]};
+test('quality report distinguishes rectangular coverage from occupied whitespace and retains source references',()=>{
+ const r=measured(qualityInput,qualityOptions);assert.equal(r.status,'placed');
+ const before=JSON.stringify(r),report=inspectQuality(r,qualityInput);
+ assert.equal(report.pageCount,6);assert.equal(report.fragmentCount,5);
+ assert.deepEqual(report.blankPages,[3,4]);
+ assert.deepEqual(report.pages[0],{page:0,fragmentCount:2,contentPercent:16,occupiedPercent:28,occupiedDepth:70,trailingSpace:30,fixedFragments:0,honoredPreferences:0,fallbackPreferences:1,explicitBoundary:false});
+ assert.equal(report.pages[5].fixedFragments,1);assert.equal(report.pages[5].explicitBoundary,true);
+ assert.equal(report.pages[5].trailingSpace,50);
+ assert.deepEqual(report.findings.map(f=>[f.kind,f.documentId,f.blockKey,f.unitStart,f.unitEnd]),[['preferred-fallback','a','wish',0,1],['single-unit-continuation','a','long',0,1]]);
+ assert.equal(JSON.stringify(r),before);
+ report.pages[0].occupiedDepth=0;report.findings[0].blockKey='changed';
+ assert.equal(JSON.stringify(r),before);assert.equal(inspectQuality(r,qualityInput).pages[0].occupiedDepth,70);
+});
+test('quality report rejects stale/conflicting/out-of-body results and retains optimization score by value',()=>{
+ const r=measured(qualityInput,{...qualityOptions,optimization:{}});
+ assert.equal(r.status,'placed');const quality=inspectQuality(r,qualityInput);
+ assert.deepEqual(quality.optimizationScore,r.layout.optimization.score);
+ assert.notEqual(quality.optimizationScore,r.layout.optimization.score);
+ assert.equal(inspectQuality(r,{...qualityInput,revision:'old'}),undefined);
+ assert.equal(inspectQuality(r,{...qualityInput,fingerprint:'old'}),undefined);
+ assert.equal(inspectQuality(r,{...qualityInput,content:{width:1,height:100}}),undefined);
+ const broken=structuredClone(r);broken.fragments[0].placement.rect.x=100;
+ assert.equal(inspectQuality(broken,qualityInput),undefined);
+ const conflict=measured(qualityInput,{intents:[{documentId:'b',blockKey:'pin',placement:{fixed:{page:0,x:0,y:0}}}]});
+ assert.equal(conflict.status,'conflict');assert.equal(inspectQuality(conflict,qualityInput),undefined);
+});
