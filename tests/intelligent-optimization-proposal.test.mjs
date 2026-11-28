@@ -92,3 +92,25 @@ test('wrong preview or settings consume the review without publishing',()=>{
  const {current}=reviewFixture();
  assert.deepEqual(prepare(current.input,current.approved,current.options,'compact',''),{status:'rejected',reason:'stale'});
 });
+
+import {describeIntelligentOptimizationProposal as describe} from '../dist/index.js';
+test('proposal explanation reports observed benefits and exact source movements without assigning causes',()=>{
+ const {review}=reviewFixture(),p=review.proposal;
+ const original=JSON.stringify(p),r=describe(p);
+ assert.equal(r.goal,'compact');assert.equal(r.selectedCandidate,'lookahead');
+ assert.deepEqual(r.benefits,[{kind:'pages-saved',count:1}]);
+ assert.equal(r.causalAttribution,false);
+ assert.deepEqual(r.changes,p.impact.changed.map(c=>({documentId:c.origin.documentId,blockKey:c.origin.blockKey,placementId:c.before.id,unitStart:c.unitStart,unitEnd:c.unitEnd,beforePage:c.before.page,afterPage:c.after.page,deltaX:c.after.rect.x-c.before.rect.x,deltaY:c.after.rect.y-c.before.rect.y,preferenceRestored:c.before.preference==='fallback'&&c.after.preference==='honored'})));
+ assert.ok(r.changes.some(c=>c.blockKey==='c'&&c.beforePage===1&&c.afterPage===0));
+ r.changes[0].blockKey='changed';r.benefits[0].count=999;
+ assert.equal(JSON.stringify(p),original);
+ assert.equal(describe({status:'rejected',reason:'no-improvement'}),undefined);
+});
+test('balance explanation reports physical depth improvement and retains page count',()=>{
+ const i=input(['a','b','c','d'].map(id=>b(id,80,30))),o={gap:5};
+ const p=propose(i,plan(i,o),o,'balance'),r=describe(p);
+ assert.equal(r.goal,'balance');assert.equal(r.selectedCandidate,'page-balance');
+ assert.deepEqual(r.benefits,[{kind:'depth-imbalance-reduced',micrometres:70}]);
+ assert.equal(r.causalAttribution,false);
+ assert.ok(r.changes.some(c=>c.blockKey==='c'&&c.beforePage===0&&c.afterPage===1));
+});
