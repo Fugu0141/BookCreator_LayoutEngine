@@ -23,6 +23,8 @@ export interface IntelligentMeasuredOptions {
   optimization?:IntelligentOptimizationOptions;
   /** Opt-in semantic pairing from explicitly classified source blocks. */
   semanticHints?:readonly IntelligentSemanticHint[];
+  /** Permit pairing an unsplit semantic block with the first measured fragment of a following text block. */
+  semanticSplitStarts?:boolean;
 }
 export interface IntelligentMeasuredFragment {
   origin:Origin;
@@ -47,7 +49,7 @@ export type IntelligentMeasuredResult =
 
 // Placement intent is a serialized host contract. Unknown field names are
 // rejected rather than silently treating a misspelled constraint as automatic.
-const optionKeys=['gap','intents','reservedRegions','optimization','semanticHints'];
+const optionKeys=['gap','intents','reservedRegions','optimization','semanticHints','semanticSplitStarts'];
 const semanticRoles=new Set(['heading','body','example','explanation','exercise','solution','figure','table','caption','other']);
 const intentKeys=['documentId','blockKey','placement'];
 const placementKeys=['mode','fixed','fixedPositionOnly','fixedRowShare','preferred','preferredTolerance','sideBySide','sizeConstraints','spaceBefore','spaceAfter','startNewPage','keepTogetherGroup','keepTogetherLayout'];
@@ -280,6 +282,8 @@ function* placeMeasuredWork(input:PaginationInput,options:IntelligentMeasuredOpt
       spaceBefore:i?.spaceBefore,spaceAfter:i?.spaceAfter,keepTogetherGroup:i?.keepTogetherGroup,keepTogetherLayout:i?.keepTogetherLayout,
       startNewPage:hardBreak||i?.startNewPage===true});
   }
+  if(options.semanticSplitStarts!==undefined&&typeof options.semanticSplitStarts!=='boolean')
+    return fail('intent',{code:'IL_MEASURED_INTENT',message:'Invalid semantic split-start option'});
   let optimization=options.optimization;
   if(options.semanticHints!==undefined){
     const list=options.semanticHints;
@@ -308,10 +312,15 @@ function* placeMeasuredWork(input:PaginationInput,options:IntelligentMeasuredOpt
     for(let j=0;j+1<fragments.length;j++){
       if(j%128===0)yield 'il-bridge';
       const a=fragments[j],b=fragments[j+1],ak=sourceKey(a.origin),bk=sourceKey(b.origin);
-      if(a.origin.documentId!==b.origin.documentId||ak===bk||counts.get(ak)!==1||counts.get(bk)!==1||
+      if(a.origin.documentId!==b.origin.documentId||ak===bk||counts.get(ak)!==1||
         sectionBySource.get(ak)!==sectionBySource.get(bk)||blocks[j+1].startNewPage)continue;
       const left=hints.get(ak),right=hints.get(bk);
       if(left?.keepWithNext===false||right?.keepWithPrevious===false)continue;
+      // Only the first already-measured fragment of explicitly classified
+      // flowing text may be paired. Never move or merge continuation units,
+      // change line boundaries, or treat a split figure/table as flowing text.
+      if(counts.get(bk)!==1&&!(options.semanticSplitStarts===true&&b.unitStart===0&&b.continuationIndex===0&&
+        right&&['body','explanation','solution'].includes(right.role)))continue;
       const rolePair=left&&right&&(
         left.role==='heading'&&['body','explanation','example','exercise'].includes(right.role)||
         left.role==='example'&&right.role==='explanation'||
