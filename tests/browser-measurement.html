@@ -2,7 +2,7 @@
 <html lang="en"><meta charset="utf-8"><title>Browser measurement smoke test</title>
 <body><pre id="result">RUNNING</pre>
 <script type="module">
-import {IntelligentPreviewConflictError,findIntelligentFixedConflictTarget,describeIntelligentPreferredPlacement,createFullRetainedTextPagePreview,createTrialPrintPreviewForLayout,createIntelligentPrintTicket,createVerifiedIntelligentPrintPreview,measurePlainText,paginateMeasured,measurePlainTextLines,createPlainTextPagePreview,createIncrementalTextPagePreview,createRetainedTextPagePreview,measureDisplayMath,displayMathArtifact,restoreDisplayMathArtifact,createPreviewMath,createTextMeasurementCache,createParagraphMeasurementCache,createPageRenderCache,parsePreviewMath,parseDisplayMath,readyPreviewMathFont,createMathCompilationCache,createDisplayMathGeometryCache,createInlineMathGeometryCache,measureInlineMathGeometry,createInlineMathAtom} from '/dist/index.js';
+import {proposeIntelligentGroup,proposeIntelligentGroupEdit,compareIntelligentPlacementImpact,IntelligentPreviewConflictError,findIntelligentFixedConflictTarget,describeIntelligentPreferredPlacement,createFullRetainedTextPagePreview,createTrialPrintPreviewForLayout,createIntelligentPrintTicket,createVerifiedIntelligentPrintPreview,measurePlainText,paginateMeasured,measurePlainTextLines,createPlainTextPagePreview,createIncrementalTextPagePreview,createRetainedTextPagePreview,measureDisplayMath,displayMathArtifact,restoreDisplayMathArtifact,createPreviewMath,createTextMeasurementCache,createParagraphMeasurementCache,createPageRenderCache,parsePreviewMath,parseDisplayMath,readyPreviewMathFont,createMathCompilationCache,createDisplayMathGeometryCache,createInlineMathGeometryCache,measureInlineMathGeometry,createInlineMathAtom} from '/dist/index.js';
 const result=document.querySelector('#result');
 const assert=(condition,message)=>{if(!condition)throw Error(message);};
 const phase=async name=>{await fetch('/test-progress',{method:'POST',body:name});};
@@ -104,6 +104,89 @@ try{
     assert(feedback?.status==='within-tolerance'&&feedback.requested.x===60000&&feedback.actual.x===48000&&feedback.offset.x===-12000,'drag feedback describes footprint-constrained origin');
     assert(draft.measurementWork.reusedBlocks===2,'drag reuses measurements');
     assert(initial.element.shadowRoot.innerHTML===previous,'draft cannot modify approved DOM');
+  }
+  await phase("IL full-book edit confirmation cancellation undo redo");
+  {
+    // Host simulation: snapshots are only adopted after explicit confirmation.
+    // History stores JSON intents, not stale geometry, DOM or opaque leases.
+    const paper={width:100000,height:100000,top:10000,bottom:10000,inner:12000,outer:8000,firstSide:'right'};
+    const source=(blockKey,documentId='edit-a')=>({documentId,blockKey});
+    const block=(blockKey,documentId)=>({origin:{...source(blockKey,documentId),revision:'source-r',persistentId:'id-'+documentId+'-'+blockKey},request:{text:blockKey,width:22000,fontSize:3000,fontFamily:'sans-serif',lineHeight:1.4},splitPolicy:'strict'});
+    const base={revision:'edit-book',fingerprint:'edit-fp',paper,width:80000,height:80000,
+      sections:[{id:'edit-a',startOn:'continuous',blocks:['first','second','third'].map(id=>block(id,'edit-a'))},
+        {id:'edit-b',startOn:'page',blocks:[block('pin','edit-b')]}],
+      intelligentLayout:{gap:2000,intents:[
+        {...source('first'),placement:{sizeConstraints:{minWidth:30000}}},
+        {...source('third'),placement:{sizeConstraints:{minWidthPercent:40},spaceAfter:1000}},
+        {...source('pin','edit-b'),placement:{fixed:{page:1,x:5000,y:10000}}}
+      ]}};
+    const json=value=>JSON.parse(JSON.stringify(value));
+    const original=await createFullRetainedTextPagePreview(document,base);
+    let approved=original, saved=json(base.intelligentLayout);
+    const history=[json(saved)];let cursor=0;
+    const preview=async(intents,checkpoint)=>{
+      const options={...base,intelligentLayout:json(intents)};
+      const result=await createFullRetainedTextPagePreview(document,options,approved.snapshot,checkpoint);
+      assert(result.measurementWork.reusedBlocks===4,'intent edits reuse all four measurements');
+      const cold=await createPlainTextPagePreview(document,options);
+      assert(JSON.stringify(result.plan)===JSON.stringify(cold.plan)&&JSON.stringify(result.intelligentLayout)===JSON.stringify(cold.intelligentLayout),'edit plan matches cold');
+      const pin=result.intelligentLayout.fragments.find(f=>f.origin.documentId==='edit-b').placement;
+      assert(pin.fixed&&pin.page===1&&pin.rect.x===5000&&pin.rect.y===10000,'unrelated chapter lock retained');
+      return result;
+    };
+    const commit=(intents,result)=>{
+      saved=json(intents);approved=result;
+      history.splice(cursor+1);history.push(json(saved));cursor++;
+    };
+    const group=proposeIntelligentGroup(approved.intelligentLayout,saved,base,{groupId:'pair',layout:'adaptiveRows',members:[source('second'),source('first')]});
+    assert(group.status==='proposed','group selection accepted');
+    const grouped=await preview(group.options);
+    const impact=compareIntelligentPlacementImpact(approved.intelligentLayout,grouped.intelligentLayout,base);
+    assert(impact?.movedFragments>0&&impact.changed.some(c=>c.origin.blockKey==='second'),'group displacement visible');
+    const [a,b]=grouped.intelligentLayout.fragments.map(f=>f.placement);
+    assert(a.page===b.page&&a.rect.y===b.rect.y&&b.rect.x===32000,'adaptive group shares row without resizing');
+    commit(group.options,grouped);
+    const groupDOM=approved.element.shadowRoot.innerHTML;
+    const wanted=json(saved);
+    Object.assign(wanted.intents.find(i=>i.blockKey==='third').placement,{preferred:{page:0,x:60000,y:30000},preferredTolerance:{x:15000,y:0}});
+    const tentative=await preview(wanted);
+    const report=describeIntelligentPreferredPlacement(tentative.intelligentLayout,wanted,base,source('third'));
+    assert(report?.status==='within-tolerance'&&report.actual.x===48000,'requested and measured drag positions differ');
+    // Discard the tentative result. A checkpoint cancellation also must not
+    // change the last committed snapshot or DOM.
+    let cancelled=false;
+    try{await preview(wanted,stage=>{if(stage==='render-page')throw Error('cancel edit');});}
+    catch(e){cancelled=e.message==='cancel edit';}
+    assert(cancelled&&cursor===1&&approved===grouped&&approved.element.shadowRoot.innerHTML===groupDOM,'cancel keeps approved state and history');
+    assert(!saved.intents.find(i=>i.blockKey==='third').placement.preferred,'cancel does not save request');
+    const broken=json(saved);
+    Object.assign(broken.intents.find(i=>i.blockKey==='pin').placement,{fixed:{page:0,x:0,y:0}});
+    let conflict;
+    try{await preview(broken);}catch(e){conflict=e;}
+    assert(conflict instanceof IntelligentPreviewConflictError&&cursor===1&&approved===grouped,'conflict does not commit');
+    const drag=await preview(wanted);commit(wanted,drag);
+    assert(JSON.stringify(saved.intents.find(i=>i.blockKey==='third').placement.preferred)===JSON.stringify({page:0,x:60000,y:30000}),'saved request is not overwritten by actual position');
+    const dragPlan=JSON.stringify(drag.plan),dragLayout=JSON.stringify(drag.intelligentLayout);
+    cursor--;saved=json(history[cursor]);approved=await preview(saved);
+    assert(JSON.stringify(approved.plan)===JSON.stringify(grouped.plan),'undo restores group geometry');
+    cursor++;saved=json(history[cursor]);approved=await preview(saved);
+    assert(JSON.stringify(approved.plan)===dragPlan&&JSON.stringify(approved.intelligentLayout)===dragLayout,'redo restores full layout and preferred result');
+    const ungroup=proposeIntelligentGroupEdit(approved.intelligentLayout,saved,base,{groupId:'pair',members:[source('first'),source('second')],action:'ungroup',clearHorizontal:[source('first'),source('second')]});
+    assert(ungroup.status==='proposed','explicit ungroup accepted');
+    const ungrouped=await preview(ungroup.options);commit(ungroup.options,ungrouped);
+    assert(!saved.intents.some(i=>i.placement.keepTogetherGroup)&&saved.intents.find(i=>i.blockKey==='first').placement.sizeConstraints.minWidth===30000,'ungroup retains occupancy');
+    // Undo the ungroup and print only the final confirmed state, not a draft.
+    cursor--;saved=json(history[cursor]);approved=await preview(saved);
+    const ticket=json(createIntelligentPrintTicket(approved,paper));
+    const frame=document.createElement('iframe');document.body.append(frame);
+    try{
+      const print=await createTrialPrintPreviewForLayout(frame.contentDocument,{...base,intelligentLayout:json(saved)},ticket);
+      assert(JSON.stringify(print.plan)===dragPlan,'confirmed undo state prints identical plan');
+      let rejected=false;
+      try{await createTrialPrintPreviewForLayout(frame.contentDocument,{...base,intelligentLayout:ungroup.options},ticket);}catch{rejected=true;}
+      assert(rejected,'unconfirmed layout cannot use approved ticket');
+    }finally{frame.remove();}
+    assert(original.element.shadowRoot.querySelectorAll('[data-page]').length===2&&JSON.stringify(base.intelligentLayout)===JSON.stringify(history[0]),'original source and options unchanged');
   }
   await phase("IL verified print preview");
   {
