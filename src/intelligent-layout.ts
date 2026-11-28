@@ -26,6 +26,8 @@ export interface IntelligentBlock {
   // Explicitly lock position only, allowing user-specified footprint minima.
   // Without this opt-in, the legacy fixed-size rule remains in force.
   fixedPositionOnly?: boolean;
+  /** Explicitly allow this fixed block to join/open a mutually opted-in row. */
+  fixedRowShare?: boolean;
   // Omitted mode is inferred from position fields for legacy callers.
   mode?: IntelligentPlacementMode;
   preferred?: Readonly<IntelligentPosition>;
@@ -238,10 +240,10 @@ export interface IncrementalIntelligentLayoutResult {
 type FlowState=readonly [number,number,number,number,boolean,boolean];
 // Normalized, validated geometry only. All fields are primitive, and the
 // tuple never retains any caller-owned object. No per-block JSON encoding.
-type LayoutKey=readonly [string,number,number,number,number,number,number,boolean,boolean,number,number,number];
+type LayoutKey=readonly [string,number,number,number,number,number,number,boolean,boolean,number,number,number,boolean];
 const equalKey=(a:LayoutKey,b:LayoutKey)=>a[0]===b[0]&&a[1]===b[1]&&a[2]===b[2]&&
   a[3]===b[3]&&a[4]===b[4]&&a[5]===b[5]&&a[6]===b[6]&&a[7]===b[7]&&
-  a[8]===b[8]&&a[9]===b[9]&&a[10]===b[10]&&a[11]===b[11];
+  a[8]===b[8]&&a[9]===b[9]&&a[10]===b[10]&&a[11]===b[11]&&a[12]===b[12];
 type SavedLayout={context:string;keys:LayoutKey[];states:FlowState[];placements:IntelligentPlacement[]};
 type IncrementalLayoutState={previous?:SavedLayout;next?:SavedLayout;reusedBlocks:number;reusedSuffixBlocks:number;placedBlocks:number;sharedSnapshotPlacements:number};
 const layoutSnapshots=new WeakMap<IntelligentLayoutSnapshot,SavedLayout>();
@@ -384,7 +386,9 @@ function* solve(input:IntelligentLayoutInput,honorPreferences:boolean,lookahead=
       (b.sideBySide!==undefined&&typeof b.sideBySide!=='boolean') ||
       (b.startNewPage!==undefined&&typeof b.startNewPage!=='boolean') ||
       (b.fixedPositionOnly!==undefined&&typeof b.fixedPositionOnly!=='boolean') ||
-      (b.fixedPositionOnly===true&&b.fixed===undefined))
+      (b.fixedPositionOnly===true&&b.fixed===undefined) ||
+      (b.fixedRowShare!==undefined&&typeof b.fixedRowShare!=='boolean') ||
+      (b.fixedRowShare===true&&(b.fixed===undefined||b.sideBySide!==true)))
       return conflict('IL_INVALID','Invalid or duplicate block',b?.id);
     const mode=b.mode ?? (b.fixed!==undefined?'fixed':b.preferred!==undefined?'preferred':'auto');
     if((b.mode!==undefined&&b.mode!==mode) ||
@@ -417,7 +421,7 @@ function* solve(input:IntelligentLayoutInput,honorPreferences:boolean,lookahead=
       if(keys.length%64===0)yield 'il-key';
       const f=b.fixed;
       keys.push([b.id,b.size.width,b.size.height,occupied.width,occupied.height,b.spaceBefore??0,b.spaceAfter??0,
-        !!b.sideBySide,!!b.startNewPage,f?.page??-1,f?.x??0,f?.y??0]);
+        !!b.sideBySide,!!b.startNewPage,f?.page??-1,f?.x??0,f?.y??0,b.fixedRowShare===true]);
     }
   }
   const placements:IntelligentPlacement[]=[];
@@ -486,9 +490,15 @@ function* solve(input:IntelligentLayoutInput,honorPreferences:boolean,lookahead=
       if(f.page<page) return conflict('IL_FIXED_CONFLICT','Fixed page conflicts with document order',b.id);
       if(f.page>page) nextPage(f.page);
       const minY=(rowOpen?bottom+gap:0)+before;
-      if(f.y<minY) return conflict('IL_FIXED_CONFLICT','Fixed position conflicts with preceding content or reserved space',b.id);
+      // Sharing is opt-in for fixed blocks, in addition to ordinary mutual
+      // sideBySide permission. Exact pinned coordinates never move.
+      const allowShare=b.fixedRowShare===true&&before===0&&after===0;
+      const join=allowShare&&rowOpen&&rowShare&&f.y===rowY&&f.x>=right+gap;
+      if(!join&&f.y<minY) return conflict('IL_FIXED_CONFLICT','Fixed position conflicts with preceding content or reserved space',b.id);
       x=f.x;y=f.y;
-      rowY=y;bottom=y+h;right=x+w;rowOpen=true;rowShare=false;
+      if(join){bottom=Math.max(bottom,y+h);right=x+w;}
+      else{rowY=y;bottom=y+h;right=x+w;rowOpen=true;}
+      rowShare=allowShare;
     }else{
       const minY=(rowOpen?bottom+gap:0)+before;
       let shareX=rowOpen && rowShare && b.sideBySide && before===0 && after===0 && rowY+h<=height

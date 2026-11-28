@@ -93,3 +93,10 @@ test('serialized tolerance and position-only locks preserve intent in measured p
  assert.equal(r.fragments[2].placement.occupiedRect.width,40);assert.equal(r.fragments[2].placement.rect.y,40);
  const a=incremental(i,options),bResult=await cooperative(i,options,a.snapshot,()=>{});assert.deepEqual(a.result,r);assert.deepEqual(bResult.result,r);
 });
+
+test('fixed row sharing survives serialized measured intent and cooperative reuse',async()=>{
+ const i=input([section([b('a',20,[20]),b('pin',20,[20]),b('c',20,[10])])]);
+ const options=JSON.parse(JSON.stringify({gap:5,intents:[intent('a',{sideBySide:true}),intent('pin',{fixed:{page:0,x:30,y:0},fixedRowShare:true,sideBySide:true}),intent('c',{sideBySide:true})]}));
+ const r=plan(i,options);assert.equal(r.status,'placed');assert.deepEqual(r.fragments.map(f=>[f.placement.rect.x,f.placement.rect.y]),[[0,0],[30,0],[55,0]]);
+ const a=incremental(i,options),warm=await cooperative(i,options,a.snapshot,()=>{});assert.deepEqual(warm.result,r);assert.equal(warm.placement.reusedBlocks,3);
+});
