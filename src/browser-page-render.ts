@@ -101,7 +101,7 @@ const px=(um:number)=>um*96/25400;
 export const previewBlockKey=(o:Origin)=>JSON.stringify([o.documentId,o.blockKey]);
 // Internal ownership contract: math nodes are consumed by this render; bitmaps
 // are borrowed for this call (including optional cooperative waits), and closed by their owning orchestrator.
-export async function renderMeasuredPreview(document:Document,plan:MeasuredPagePlan,{width,height,paper,byKey,images,pageCache,pageCacheEpoch,delta}:{width:number;height:number;paper?:PreviewPaper;byKey:ReadonlyMap<string,MeasuredPreviewBlock>;images:ReadonlyMap<string,ImageBitmap>;pageCache?:PageRenderCache;pageCacheEpoch?:number;delta?:{previousKeys:ReadonlyMap<number,string>}},{styleText,frozenText,listInset}:RenderServices,checkpoint?:PreviewCheckpoint,priorityPages?:readonly number[],onPriorityPage?:ProvisionalPageReceiver):Promise<TextPagePreview & {pageDelta?:PageRenderDelta}>{
+export async function renderMeasuredPreview(document:Document,plan:MeasuredPagePlan,{width,height,paper,byKey,images,pageCache,pageCacheEpoch,delta}:{width:number;height:number;paper?:PreviewPaper;byKey:ReadonlyMap<string,MeasuredPreviewBlock>;images:ReadonlyMap<string,ImageBitmap>;pageCache?:PageRenderCache;pageCacheEpoch?:number;delta?:{previousKeys:ReadonlyMap<number,string>;allowInlineMath?:boolean}},{styleText,frozenText,listInset}:RenderServices,checkpoint?:PreviewCheckpoint,priorityPages?:readonly number[],onPriorityPage?:ProvisionalPageReceiver):Promise<TextPagePreview & {pageDelta?:PageRenderDelta}>{
   let renderedImagePixels=0;
   const element=document.createElement('div');element.style.cssText='all:initial;display:block;';
   const root=element.attachShadow({mode:'open'});
@@ -112,7 +112,11 @@ export async function renderMeasuredPreview(document:Document,plan:MeasuredPageP
   const nextKeys=new Map<number,string>(),reused:number[]=[];
   let keyCharacters=0;
   function admitKey(p:MeasuredPage){
-    const deltaKey=delta?pageKey(p,width,height,paper,byKey,true):undefined;
+    // Inline atoms are recreated from their source and font family by frozenText.
+    // The existing render key already includes both plus the measured line geometry.
+    // Keep legacy sparse eligibility unchanged; isolated display nodes, components
+    // and lists remain excluded in either mode.
+    const deltaKey=delta?pageKey(p,width,height,paper,byKey,!delta.allowInlineMath):undefined;
     if(deltaKey!==undefined&&nextKeys.size<pageLimits.entries&&keyCharacters+deltaKey.length<=pageLimits.characters){
       nextKeys.set(p.index,deltaKey);keyCharacters+=deltaKey.length;
     }
