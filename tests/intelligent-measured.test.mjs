@@ -125,3 +125,52 @@ test('adaptive measured group preserves original fragments beside reservations',
  const r=plan(i,opts);assert.equal(r.status,'placed');assert.deepEqual(r.fragments.map(f=>[f.origin.blockKey,f.placement.page,f.placement.rect.x,f.placement.rect.y]),[['a',0,0,0],['b',0,30,0],['c',0,0,25],['d',0,30,25]]);
  assert.deepEqual((await cooperative(i,opts,undefined,()=>{})).result,r);
 });
+
+const semantic=(blockKey,role,extra={},documentId='doc')=>({documentId,blockKey,role,...extra});
+test('semantic roles derive keep-next hints without changing persisted intent or source',async()=>{
+ const i=input([section([b('intro',80,[60]),b('a',80,[20]),b('b',80,[35]),b('tail',80,[15])])]);
+ for(const [left,right] of [['heading','body'],['example','explanation'],['exercise','solution'],['figure','caption'],['caption','table']]){
+  const o={gap:5,semanticHints:[semantic('a',left),semantic('b',right)]};
+  const before=JSON.stringify(o),r=plan(i,o);
+  assert.equal(r.status,'placed');assert.equal(r.layout.optimization.selected,'keep-next');
+  assert.equal(r.layout.optimization.score.keptWithNext,1);
+  assert.deepEqual(r.fragments.map(f=>f.placement.page),[0,1,1,1]);
+  assert.deepEqual(r,plan(i,{gap:5,optimization:{keepWithNextIds:[intelligentMeasuredId(origin('a'))]}}));
+  const a=incremental(i,o),c=await cooperative(i,o,a.snapshot,()=>{});
+  assert.deepEqual(a.result,r);assert.deepEqual(c.result,r);assert.equal(JSON.stringify(o),before);
+ }
+});
+test('explicit semantic veto and positive overrides are independent of role defaults',()=>{
+ const i=input([section([b('intro',80,[60]),b('a',80,[20]),b('b',80,[35])])]);
+ const baseline=plan(i,{gap:5});
+ for(const semanticHints of [[semantic('a','heading',{keepWithNext:false}),semantic('b','body')],[semantic('a','heading'),semantic('b','body',{keepWithPrevious:false})],[semantic('a','heading'),semantic('b','heading')]]){
+  assert.deepEqual(plan(i,{gap:5,semanticHints}),baseline);
+ }
+ for(const semanticHints of [[semantic('a','other',{keepWithNext:true})],[semantic('b','other',{keepWithPrevious:true})]]){
+  const r=plan(i,{gap:5,semanticHints});assert.equal(r.layout.optimization.score.keptWithNext,1);
+ }
+});
+test('semantic pairing never crosses document, section, explicit break or split source',()=>{
+ const a=b('a',80,[20]),next=b('b',80,[35]);
+ const cases=[
+  [input([section([a,{...next,origin:origin('b','other')}])]),[semantic('a','heading'),semantic('b','body',{},'other')]],
+  [input([section([a]),section([next],'continuous','s2')]),[semantic('a','heading'),semantic('b','body')]],
+  [input([section([a,{kind:'pagebreak',origin:origin('break')},next])]),[semantic('a','heading'),semantic('b','body')]],
+  [input([section([a,{...next,unitHeights:[60,60],splitPolicy:'allow'}])]),[semantic('a','heading'),semantic('b','body')]]
+ ];
+ for(const [i,semanticHints] of cases){
+  const r=plan(i,{semanticHints});assert.equal(r.status,'placed');assert.deepEqual(r,plan(i));
+ }
+});
+test('unknown, malformed and ambiguous semantic metadata is rejected',()=>{
+ const i=input([section([b('a',80,[20]),b('b',80,[35])])]);
+ for(const options of [
+  {semanticHints:[semantic('missing','heading')]},{semanticHints:[semantic('a','unknown')]},
+  {semanticHints:[semantic('a','heading'),semantic('a','heading')]},
+  {semanticHints:[semantic('a','heading',{keepWithNext:'yes'})]},
+  {semanticHints:[semantic('a','heading',{unknown:true})]},
+  {semanticHints:[semantic('a','heading'),semantic('b','body')],optimization:{keepWithNextIds:[intelligentMeasuredId(origin('a'))]}}
+ ]){
+  const r=plan(i,options);assert.equal(r.status,'conflict');assert.equal(r.stage,'intent');assert.deepEqual(r.fragments,[]);
+ }
+});
