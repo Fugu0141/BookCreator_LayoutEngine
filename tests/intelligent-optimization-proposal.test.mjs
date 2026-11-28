@@ -230,3 +230,37 @@ test('targeted balance reuse matches full balance with preceding adaptive group 
  const work=targeted.layout.optimization.targetedBalanceWork;
  assert.ok(work.reusedBlocks>=5);assert.equal(work.reusedBlocks+work.placedBlocks,i.sections[0].blocks.length);
 });
+
+import {planMeasuredIntelligentLayoutIncremental as incMeasured,planMeasuredIntelligentLayoutIncrementalCooperative as coopMeasured} from '../dist/index.js';
+test('targeted lookahead snapshot survives local edits and range changes with exact cold parity',async()=>{
+ const earlier=Array.from({length:50},(_,n)=>b('before-'+n,80,30)),later=Array.from({length:50},(_,n)=>b('after-'+n,80,30));
+ const i=input([...earlier,...['a','b','c','d'].map(id=>b(id,80,30)),...later]);
+ const options={gap:5,intents:[...earlier.map((_,n)=>intent('before-'+n,{startNewPage:true})),intent('a',{startNewPage:true}),...later.map((_,n)=>intent('after-'+n,{startNewPage:true}))],
+   optimization:{balancePageDepths:true,balancePageRange:{firstPage:50,lastPage:51}}};
+ const first=incMeasured(i,options);
+ assert.ok(first.snapshot);assert.deepEqual(first.result,plan(i,options));
+ assert.equal(first.placement.placedBlocks,104);
+ const edited=structuredClone(i);edited.revision='book-2';edited.fingerprint='fp-2';edited.sections[0].blocks[51].unitHeights=[31];
+ const next=incMeasured(edited,options,first.snapshot);
+ assert.deepEqual(next.result,plan(edited,options));
+ assert.ok(next.placement.reusedBlocks>=95);
+ assert.ok(next.placement.reusedSuffixBlocks>=49);
+ assert.equal(next.placement.reusedBlocks+next.placement.placedBlocks,104);
+ const scope={...options,optimization:{...options.optimization,balancePageRange:{firstPage:51,lastPage:52}}};
+ const changed=incMeasured(edited,scope,next.snapshot);
+ assert.equal(changed.placement.reusedBlocks,104);
+ assert.deepEqual(changed.result,plan(edited,scope));
+ const cooperative=await coopMeasured(edited,options,next.snapshot,()=>{});
+ assert.deepEqual(cooperative.result,plan(edited,options));
+ assert.equal(cooperative.placement.reusedBlocks,104);
+ await assert.rejects(coopMeasured(edited,options,next.snapshot,stage=>{if(stage==='il-reuse')throw Error('cancel');}),/cancel/);
+ assert.equal(incMeasured(edited,options,next.snapshot).placement.reusedBlocks,104);
+ const resized={...edited,content:{width:101,height:100}};
+ const cold=incMeasured(resized,options,next.snapshot);
+ assert.equal(cold.placement.reusedBlocks,0);assert.deepEqual(cold.result,plan(resized,options));
+ const ordinary={gap:5,intents:options.intents};
+ const legacy=incMeasured(edited,ordinary,next.snapshot);
+ assert.equal(legacy.placement.reusedBlocks,0);assert.deepEqual(legacy.result,plan(edited,ordinary));
+ const optimizedAgain=incMeasured(edited,options,legacy.snapshot);
+ assert.equal(optimizedAgain.placement.reusedBlocks,0);assert.deepEqual(optimizedAgain.result,plan(edited,options));
+});

@@ -251,7 +251,7 @@ export interface IncrementalIntelligentLayoutResult {
   placedBlocks:number;
   /** Private placement values reused by reference, never exposed to callers. */
   sharedSnapshotPlacements?:number;
-  /** Global candidate selection cannot safely reuse a single shelf pass. */
+  /** True when no reusable ordinary or targeted lookahead checkpoint is available. */
   fullRecompute:boolean;
 }
 type FlowState=readonly [number,number,number,number,boolean,boolean];
@@ -265,6 +265,9 @@ const equalKey=(a:LayoutKey,b:LayoutKey)=>a[0]===b[0]&&a[1]===b[1]&&a[2]===b[2]&
 type SavedLayout={context:string;keys:LayoutKey[];states:(FlowState|undefined)[];placements:IntelligentPlacement[]};
 type IncrementalLayoutState={previous?:SavedLayout;next?:SavedLayout;reusedBlocks:number;reusedSuffixBlocks:number;placedBlocks:number;sharedSnapshotPlacements:number};
 const layoutSnapshots=new WeakMap<IntelligentLayoutSnapshot,SavedLayout>();
+// A lookahead pass must never seed the ordinary greedy lane. Keep the
+// private optimized checkpoints separate even though the public handle type is shared.
+const optimizedLookaheadSnapshots=new WeakMap<IntelligentLayoutSnapshot,SavedLayout>();
 function copyPlacement(p:IntelligentPlacement):IntelligentPlacement{
   const value:IntelligentPlacement={id:p.id,page:p.page,rect:{...p.rect},fixed:p.fixed};
   if(p.occupiedRect)value.occupiedRect={...p.occupiedRect};
@@ -273,7 +276,8 @@ function copyPlacement(p:IntelligentPlacement):IntelligentPlacement{
 }
 
 /** Opt-in incremental placement of the ordinary preference-honoring pass.
- * Groups are atomic reuse units. Optimized candidates and hard-only retry remain full calculations. */
+ * Groups are atomic reuse units. A targeted balance request may retain its
+ * primary lookahead pass; other optimized candidates and hard-only retry remain full calculations. */
 export function planIntelligentLayoutIncremental(input:IntelligentLayoutInput,previous?:IntelligentLayoutSnapshot,
   options?:IntelligentOptimizationOptions):IncrementalIntelligentLayoutResult {
   return finishIntelligentWork(incrementalWork(input,previous,options));
@@ -288,6 +292,20 @@ export function planIntelligentLayoutIncrementalCooperative(input:IntelligentLay
 function* incrementalWork(input:IntelligentLayoutInput,previous?:IntelligentLayoutSnapshot,
   options?:IntelligentOptimizationOptions):Generator<IntelligentWorkStage,IncrementalIntelligentLayoutResult,void>{
   yield 'il-validate';
+  if(options?.balancePageRange!==undefined&&Array.isArray(input.blocks)){
+    const state:IncrementalLayoutState={previous:previous?optimizedLookaheadSnapshots.get(previous):undefined,
+      reusedBlocks:0,reusedSuffixBlocks:0,placedBlocks:0,sharedSnapshotPlacements:0};
+    const layout=yield* optimize(input,options,state);
+    if(layout.status==='placed'&&state.next){
+      const snapshot=Object.freeze({kind:'intelligent-layout-snapshot' as const});
+      optimizedLookaheadSnapshots.set(snapshot,state.next);
+      // Counts describe the primary preference-honoring lookahead pass.
+      // Greedy, alternate trials, validation and scoring still run.
+      return {layout,snapshot,reusedBlocks:state.reusedBlocks,reusedSuffixBlocks:state.reusedSuffixBlocks,
+        placedBlocks:state.placedBlocks,sharedSnapshotPlacements:state.sharedSnapshotPlacements,fullRecompute:false};
+    }
+    return {layout,reusedBlocks:0,reusedSuffixBlocks:0,placedBlocks:0,fullRecompute:true};
+  }
   if(options!==undefined||!Array.isArray(input.blocks)){
     const layout=yield* planWork(input,options);
     return {layout,reusedBlocks:0,reusedSuffixBlocks:0,placedBlocks:0,fullRecompute:true};
@@ -363,7 +381,7 @@ function better(a:IntelligentCandidateScore,b:IntelligentCandidateScore):boolean
   return a.occupiedDepth<b.occupiedDepth;
 }
 
-function* optimize(input:IntelligentLayoutInput,options:IntelligentOptimizationOptions):Generator<IntelligentWorkStage,IntelligentLayoutResult,void> {
+function* optimize(input:IntelligentLayoutInput,options:IntelligentOptimizationOptions,retainedLookahead?:IncrementalLayoutState):Generator<IntelligentWorkStage,IntelligentLayoutResult,void> {
   const invalid=(message:string):IntelligentLayoutResult=>({status:'conflict',revision:input.revision,
     placements:[],publicationReady:false,diagnostic:{code:'IL_INVALID',message}});
   if(!options||typeof options!=='object'||Array.isArray(options)) return invalid('Invalid optimization options');
@@ -401,8 +419,8 @@ function* optimize(input:IntelligentLayoutInput,options:IntelligentOptimizationO
   if(first.status==='conflict'&&first.diagnostic.code!=='IL_FIXED_CONFLICT'&&first.diagnostic.code!=='IL_LIMIT') return first;
   // Only the targeted balance trial can reuse this exact preference-honoring
   // lookahead pass. Other candidates use their existing independent solves.
-  const lookaheadState:IncrementalLayoutState|undefined=balanceRange?{
-    reusedBlocks:0,reusedSuffixBlocks:0,placedBlocks:0,sharedSnapshotPlacements:0}:undefined;
+  const lookaheadState:IncrementalLayoutState|undefined=balanceRange?(retainedLookahead??{
+    reusedBlocks:0,reusedSuffixBlocks:0,placedBlocks:0,sharedSnapshotPlacements:0}):undefined;
   let targetedBalanceWork:IntelligentOptimizationReport['targetedBalanceWork'];
   const candidates: {name:IntelligentOptimizationReport['selected'];result:IntelligentLayoutResult}[]=[
     {name:'greedy',result:first},{name:'lookahead',result:yield* solve(input,true,true,lookaheadState)}
