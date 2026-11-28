@@ -12,6 +12,7 @@ export {createTextMeasurementCache,createParagraphMeasurementCache,type TextMeas
 import {layoutTree} from './tree.js';
 import {applyPreviewFont,readyPreviewFont,isPreviewFontFamily,isPreviewFontWeight} from './preview-font.js';
 import {planMeasuredIntelligentLayout,planMeasuredIntelligentLayoutIncremental,planMeasuredIntelligentLayoutIncrementalCooperative,projectIntelligentMeasuredPlan,type IntelligentMeasuredResult,type IntelligentMeasuredOptions,type IntelligentMeasuredSnapshot,type IntelligentMeasuredWorkStage,type IncrementalIntelligentMeasuredResult} from './intelligent-measured.js';
+import {inspectIntelligentLayoutQuality,type IntelligentQualityReport} from './intelligent-quality.js';
 import {prepareIntelligentOptimizationReview,confirmIntelligentOptimizationReview,cancelIntelligentOptimizationReview,type IntelligentOptimizationGoal,type IntelligentOptimizationScope,type IntelligentOptimizationReview,type IntelligentOptimizationReviewHandle,type IntelligentOptimizationConfirmation} from './intelligent-optimization-proposal.js';
 import {paginateMeasured,paginateMeasuredIncremental,paginateMeasuredIncrementalCooperative,type PaginationWorkStage,type PaginationCheckpointSnapshot,type PaginationInput,type Origin,type MeasuredPagePlan,type SplitPolicy,type PageBreak} from './pagination.js';
 import type {PlainTextMeasureRequest,InlineStyleRun,InlineMathAtom} from './browser-measurement.js';
@@ -599,6 +600,53 @@ const retainedDraftInputs=new WeakMap<PageReuseSnapshot,PaginationInput>();
 type RetainedReviewContext={options:IntelligentMeasuredOptions;approved:Extract<IntelligentMeasuredResult,{status:'placed'}>};
 const retainedReviewContexts=new WeakMap<PageReuseSnapshot,RetainedReviewContext>();
 const retainedReviewHandles=new WeakMap<IntelligentOptimizationReviewHandle,PageReuseSnapshot>();
+export interface IntelligentDocumentReviewRange {
+  documentId:string;
+  firstPage:number;
+  lastPage:number;
+  /** Pages in the interval containing fragments from another manuscript. */
+  mixedPages:number[];
+  /** Available only if no other manuscript occurs within the interval. */
+  exclusiveScope?:IntelligentOptimizationScope;
+}
+export interface RetainedIntelligentQuality {
+  quality:IntelligentQualityReport;
+  documents:IntelligentDocumentReviewRange[];
+}
+/** Display-only diagnostics and source-derived review scopes from an actual
+ * retained paper. Scope is advisory; no replan or saved state change.
+ * Host still owns currentness and user selection. */
+export function inspectRetainedIntelligentLayoutQuality(
+  document:Document,base:PageReuseSnapshot,
+):RetainedIntelligentQuality|undefined{
+  live(document);previousPageKeys(document,base);
+  const input=retainedDraftInputs.get(base),context=retainedReviewContexts.get(base);
+  if(!input||!context)return undefined;
+  const quality=inspectIntelligentLayoutQuality(context.approved,input);
+  if(!quality)return undefined;
+  const pageDocuments=new Map<number,Set<string>>();
+  const ranges=new Map<string,{firstPage:number;lastPage:number}>();
+  for(const f of context.approved.fragments){
+    const id=f.origin.documentId,page=f.placement.page;
+    const docs=pageDocuments.get(page)??new Set<string>();
+    docs.add(id);pageDocuments.set(page,docs);
+    const range=ranges.get(id);
+    if(range)range.lastPage=page;
+    else ranges.set(id,{firstPage:page,lastPage:page});
+  }
+  const documents:IntelligentDocumentReviewRange[]=[];
+  for(const [documentId,range] of ranges){
+    const mixedPages:number[]=[];
+    for(let page=range.firstPage;page<=range.lastPage;page++){
+      const ids=pageDocuments.get(page);
+      if(ids&&(ids.size>1||!ids.has(documentId)))mixedPages.push(page);
+    }
+    documents.push({documentId,...range,mixedPages,
+      ...(mixedPages.length?{}:{exclusiveScope:{...range}})});
+  }
+  return {quality,documents};
+}
+
 /** Start a review from an actual retained IL paper. No public mutable measured
  * input is required. The host still owns saved intent and currentness checks. */
 export function prepareRetainedIntelligentOptimizationReview(

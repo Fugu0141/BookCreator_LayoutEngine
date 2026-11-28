@@ -67,3 +67,9 @@ balancePageRange 指定時の増分APIで、成功済み希望尊重lookahead pa
 prepareRetainedIntelligentOptimizationReview(document,base,goal,lease,scope?) は成功済みretained IL紙面のsnapshotに紐づく内部計測入力・元設定・元計画を使用する。hostがPaginationInputを再構築したりmutable計画を渡したりする必要がない。戻り値の提案設定でcreateFullRetainedTextPagePreviewを実行し、実際に生成されたcandidate snapshotをconfirmRetainedIntelligentOptimizationReview(document,handle,base,candidate,lease)へ渡す。取消はcancelRetainedIntelligentOptimizationReview。元snapshotの同一性・Document所有権・候補の実測入力一致・元lease・候補設定/計画一致を検証し、単回消費する。元紙面の変更や自動保存は行わない。
 
 hostは原稿/フォント/画像/用紙/測定環境の同一性、最新世代、完全な表示紙面、保存直前の再検証、Undo/Redo、印刷ticketを引き続き管理する。内部計測入力一致は資源バイトや原稿内容の完全認証ではない。retained snapshotへ設定/計画の独立コピーを保持するため追加メモリ・コピー費用がある。ブラウザ回帰に候補描画、計測再利用、承認・取消・旧lease/別base/別Document/変更入力拒否、表示改変隔離、独立印刷DOM一致を追加。CI・本体接続・実機速度未確認。
+
+## IL-17B: retained紙面の診断と原稿単位の改善範囲
+
+#130 全3系統CI成功・main統合済み。inspectRetainedIntelligentLayoutQuality(document,base) は成功済みretained IL紙面の非公開計測・計画から品質診断と原稿ごとの実配置ページ範囲を返す。原稿IDで集約し、同じblockKeyを持つ別原稿を混同しない。ページは0始まり。範囲内に別原稿の断片が存在するページをmixedPagesに列挙し、そのようなページが1つでもあればexclusiveScopeを返さない。間の空白ページは許容する。原稿を選ぶだけで他の原稿が置かれたページを改善対象にしないための保守的な判定であり、共有ページの編集禁止や永続固定ではない。GUIでは範囲を表示し、ユーザーが明示的に選択した場合にprepareRetainedIntelligentOptimizationReviewのscopeとして渡す。
+
+別Document/無効handleは従来通り拒否、非IL retainedはundefined。返却値の変更は内部状態に影響せず、再計算・再測定・保存は行わない。hostの最新世代・原稿/資源の確認は必要。共有ページ、独立原稿、同名部品、固定位置による空白ページ、結果改変の隔離、別Document、非ILをブラウザ回帰で検査。CI・本体接続未確認。

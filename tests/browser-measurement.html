@@ -2,7 +2,7 @@
 <html lang="en"><meta charset="utf-8"><title>Browser measurement smoke test</title>
 <body><pre id="result">RUNNING</pre>
 <script type="module">
-import {prepareRetainedIntelligentOptimizationReview,confirmRetainedIntelligentOptimizationReview,cancelRetainedIntelligentOptimizationReview,createIntelligentGeometryDraftSession,createIntelligentGeometryDraft,proposeIntelligentGroup,proposeIntelligentGroupEdit,compareIntelligentPlacementImpact,IntelligentPreviewConflictError,findIntelligentFixedConflictTarget,describeIntelligentPreferredPlacement,createFullRetainedTextPagePreview,createTrialPrintPreviewForLayout,createIntelligentPrintTicket,createVerifiedIntelligentPrintPreview,measurePlainText,paginateMeasured,measurePlainTextLines,createPlainTextPagePreview,createIncrementalTextPagePreview,createRetainedTextPagePreview,measureDisplayMath,displayMathArtifact,restoreDisplayMathArtifact,createPreviewMath,createTextMeasurementCache,createParagraphMeasurementCache,createPageRenderCache,parsePreviewMath,parseDisplayMath,readyPreviewMathFont,createMathCompilationCache,createDisplayMathGeometryCache,createInlineMathGeometryCache,measureInlineMathGeometry,createInlineMathAtom} from '/dist/index.js';
+import {inspectRetainedIntelligentLayoutQuality,prepareRetainedIntelligentOptimizationReview,confirmRetainedIntelligentOptimizationReview,cancelRetainedIntelligentOptimizationReview,createIntelligentGeometryDraftSession,createIntelligentGeometryDraft,proposeIntelligentGroup,proposeIntelligentGroupEdit,compareIntelligentPlacementImpact,IntelligentPreviewConflictError,findIntelligentFixedConflictTarget,describeIntelligentPreferredPlacement,createFullRetainedTextPagePreview,createTrialPrintPreviewForLayout,createIntelligentPrintTicket,createVerifiedIntelligentPrintPreview,measurePlainText,paginateMeasured,measurePlainTextLines,createPlainTextPagePreview,createIncrementalTextPagePreview,createRetainedTextPagePreview,measureDisplayMath,displayMathArtifact,restoreDisplayMathArtifact,createPreviewMath,createTextMeasurementCache,createParagraphMeasurementCache,createPageRenderCache,parsePreviewMath,parseDisplayMath,readyPreviewMathFont,createMathCompilationCache,createDisplayMathGeometryCache,createInlineMathGeometryCache,measureInlineMathGeometry,createInlineMathAtom} from '/dist/index.js';
 const result=document.querySelector('#result');
 const assert=(condition,message)=>{if(!condition)throw Error(message);};
 const phase=async name=>{await fetch('/test-progress',{method:'POST',body:name});};
@@ -286,6 +286,42 @@ try{
     assert(approved.element.shadowRoot.innerHTML===original,'session leaves approved DOM untouched');
   }
 
+
+  await phase("IL retained quality and manuscript review scopes");
+  {
+    const block=(documentId,blockKey)=>({origin:{documentId,revision:'source',blockKey},
+      request:{text:'Text',width:60000,fontSize:3000,fontFamily:'sans-serif',lineHeight:1.4},splitPolicy:'strict'});
+    const sections=[{id:'first',startOn:'continuous',blocks:[block('chapter-a','same')]},
+      {id:'second',startOn:'continuous',blocks:[block('chapter-b','same')]},
+      {id:'third',startOn:'page',blocks:[block('chapter-c','same'),block('chapter-c','other')]},
+      {id:'last',startOn:'page',blocks:[block('chapter-d','same')]}];
+    const options={revision:'scope-r',fingerprint:'scope-fp',width:80000,height:80000,sections,intelligentLayout:{gap:1000}};
+    const approved=await createFullRetainedTextPagePreview(document,options);
+    const original=JSON.stringify(approved.intelligentLayout),dom=approved.element.shadowRoot.innerHTML;
+    const info=inspectRetainedIntelligentLayoutQuality(document,approved.snapshot);
+    assert(info.quality.pageCount===3&&info.quality.fragmentCount===5,'full retained quality counts');
+    assert(JSON.stringify(info.documents)===JSON.stringify([
+      {documentId:'chapter-a',firstPage:0,lastPage:0,mixedPages:[0]},
+      {documentId:'chapter-b',firstPage:0,lastPage:0,mixedPages:[0]},
+      {documentId:'chapter-c',firstPage:1,lastPage:1,mixedPages:[],exclusiveScope:{firstPage:1,lastPage:1}},
+      {documentId:'chapter-d',firstPage:2,lastPage:2,mixedPages:[],exclusiveScope:{firstPage:2,lastPage:2}}
+    ]),'shared page has no exclusive scope; separate chapter does');
+    info.documents[2].exclusiveScope.firstPage=99;info.quality.pages[0].fragmentCount=99;
+    const again=inspectRetainedIntelligentLayoutQuality(document,approved.snapshot);
+    assert(again.documents[2].exclusiveScope.firstPage===1&&again.quality.pages[0].fragmentCount===2,'diagnostics are independent copies');
+    const legacy=await createFullRetainedTextPagePreview(document,{...options,intelligentLayout:undefined});
+    assert(inspectRetainedIntelligentLayoutQuality(document,legacy.snapshot)===undefined,'legacy retained has no IL diagnostics');
+    const frame=document.createElement('iframe');document.body.append(frame);
+    try{
+      let rejected=false;try{inspectRetainedIntelligentLayoutQuality(frame.contentDocument,approved.snapshot);}catch{rejected=true;}
+      assert(rejected,'foreign document snapshot rejected');
+    }finally{frame.remove();}
+    assert(JSON.stringify(approved.intelligentLayout)===original&&approved.element.shadowRoot.innerHTML===dom,'diagnostics do not modify paper');
+    const pinned={...options,intelligentLayout:{gap:1000,intents:[{documentId:'chapter-d',blockKey:'same',placement:{fixed:{page:5,x:0,y:0}}}]}};
+    const withBlank=await createFullRetainedTextPagePreview(document,pinned,approved.snapshot);
+    const blank=inspectRetainedIntelligentLayoutQuality(document,withBlank.snapshot);
+    assert(blank.quality.blankPages.join(',')==='2,3,4'&&blank.documents[3].exclusiveScope.firstPage===5,'fixed gap pages and actual scope preserved');
+  }
   await phase("IL retained optimization review lifecycle");
   {
     const blocks=['a','b','c','d'].map(blockKey=>({origin:{documentId:'review-doc',revision:'source',blockKey},
