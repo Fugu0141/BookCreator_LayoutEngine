@@ -91,3 +91,33 @@ test('bounded selective retry retains hard-only fallback and rejects invalid fla
  const bad=plan(impossible,{selectivePreferenceFallback:true});assert.equal(bad.status,'conflict');assert.deepEqual(bad.placements,[]);
  assert.equal(plan(i,{selectivePreferenceFallback:'yes'}).diagnostic.code,'IL_INVALID');
 });
+
+test('obstacle-aware lookahead reduces pages while preserving the reserved region',async()=>{
+ const regions=[{id:'right',page:0,rect:{x:95,y:0,width:5,height:65}}];
+ const i=input(sample(),{content:{width:100,height:65},reservedRegions:regions});
+ const greedy=plan(i),r=plan(i,{});
+ assert.equal(greedy.placements[2].page,1);
+ assert.equal(r.status,'placed');assert.equal(r.optimization.selected,'lookahead');
+ assert.equal(r.optimization.score.pageCount,1);
+ assert.deepEqual(r.placements.map(p=>[p.id,p.page,p.rect.x,p.rect.y]),[['a',0,0,0],['b',0,0,15],['c',0,35,15]]);
+ assert.deepEqual(incremental(i,undefined,{}).layout,r);
+ assert.deepEqual((await cooperative(i,undefined,()=>{},{})).layout,r);
+});
+test('obstacle-aware candidate cannot ignore fixed placement, explicit gaps or row permissions',()=>{
+ const regions=[{id:'right',page:0,rect:{x:95,y:0,width:5,height:100}}];
+ const i=input([...sample(),b('pin',20,20,{fixed:{page:0,x:0,y:60}})],{reservedRegions:regions});
+ const r=plan(i,{});
+ assert.equal(r.status,'placed');assert.equal(r.placements.at(-1).fixed,true);
+ assert.deepEqual(r.placements.at(-1).rect,{x:0,y:60,width:20,height:20});
+ for(const extra of [{spaceBefore:5},{spaceAfter:5},{sideBySide:false},{startNewPage:true}]){
+  const blocks=sample();blocks[2]={...blocks[2],...extra};
+  const j=input(blocks,{reservedRegions:regions});
+  assert.deepEqual(plan(j,{}).placements,plan(j).placements);
+ }
+});
+test('obstacle-aware lookahead keeps feasible greedy geometry when a fresh shared row is blocked',()=>{
+ const regions=[{id:'right',page:0,rect:{x:95,y:0,width:5,height:100}},{id:'middle',page:0,rect:{x:35,y:45,width:25,height:30}}];
+ const i=input(sample(),{reservedRegions:regions});
+ const r=plan(i,{}),greedy=plan(i);
+ assert.equal(r.status,'placed');assert.deepEqual(r.placements,greedy.placements);
+});
