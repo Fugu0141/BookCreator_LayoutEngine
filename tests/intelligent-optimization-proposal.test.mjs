@@ -124,8 +124,8 @@ test('scoped improvement preserves an unrelated chapter and rejects a protected 
  assert.equal(p.status,'proposed');assert.deepEqual(p.scope,scope);
  assert.deepEqual(p.result.fragments.at(-1),approved.fragments.at(-1));
  assert.deepEqual(p.result.fragments.map(f=>f.placement.page),[0,0,1,1,2]);
- assert.deepEqual(propose(i,approved,o,'balance',{firstPage:0,lastPage:0}),{status:'rejected',reason:'outside-scope'});
- assert.deepEqual(propose(i,approved,o,'balance',{firstPage:1,lastPage:2}),{status:'rejected',reason:'outside-scope'});
+ assert.deepEqual(propose(i,approved,o,'balance',{firstPage:0,lastPage:0}),{status:'rejected',reason:'no-improvement'});
+ assert.deepEqual(propose(i,approved,o,'balance',{firstPage:1,lastPage:2}),{status:'rejected',reason:'no-improvement'});
  assert.deepEqual(propose(i,approved,o,'balance',{...scope,maxMovedFragments:1}),{status:'rejected',reason:'movement-budget'});
  const bounded=propose(i,approved,o,'balance',{...scope,maxMovedFragments:2});
  assert.equal(bounded.status,'proposed');assert.equal(bounded.impact.movedFragments,2);
