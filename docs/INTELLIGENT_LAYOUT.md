@@ -320,6 +320,16 @@ baseは成功したretained IL紙面のPageReuseSnapshot。未確定案専用の
 
 100/30→65/65の2ページfixture、占有率と余白の維持、明示境界・固定/希望・予約領域・グループ・横並び・安定性ヒント、keep-nextとの優先順位、通常/増分/協調一致の回帰を追加。CI未確認、実機未計測、本体コード変更なし。
 
+## IL-14E: 原稿部品の意味情報による配置ヒント
+
+#115 全3系統CI成功・main統合済み。BookCreator DESIGN.md / COMPONENT_SYSTEM.md の keepWithNext / keepWithPrevious を考慮した計測済みブリッジのopt-in API。IntelligentMeasuredOptions.semanticHints に documentId、blockKey、role (heading/body/example/explanation/exercise/solution/figure/table/caption/other)、任意の keepWithNext / keepWithPrevious を指定する。原稿内容や部品名から役割を推測しない。
+
+同一原稿かつ同一セクションの隣接した単一断片に限定し、見出し→本文/解説/例題/練習問題、例題→解説、練習問題→解答、図表とキャプション（前後両方向）のソフトkeep-nextヒントを導出する。双方が明示分類された場合だけ既定の役割ペアを用いる。明示trueは任意の隣接部品に対し許可し、いずれかの明示falseを優先する。明示改ページ、原稿・セクション境界、分割断片は除外する。重複、不明、不正メタデータは拒否。raw optimization.keepWithNextIds との混用は拒否（空semanticHintsのみ従来設定を保持）。導出対象がなければ既存計画経路を保持する。
+
+導出したIDは一時的な最適化入力であり、原稿や保存済み配置intentは変えない。既存の固定/希望/グループ/ページ数/余白優先ルールと候補評価に従う。本体は最新の役割・明示値を提供し、プレビュー・保存検証・PDFで同一メタデータを使用する。見出し等の同一ページ配置を保証せず、分割本文の先頭とのペアリングは未対応。
+
+5種の役割ペア、明示許可/禁止、原稿/セクション/改ページ/分割境界、不正入力、通常/増分/協調一致の回帰試験を追加。CI・実機未確認、本体コード変更なし。本体 #277 の保存済みIL実PDF受入試験とは独立。
+
 ## 組版への統合（正式出版経路は未実装）
 
 既存測定・分割・増分組版を活用し、ロックや手動余白、明示改ページを制約として扱う。ユーザーが許可した範囲のみ再計測・配置し、不要な全冊再組版を避ける。異なるページへ移動する提案や競合解消はプレビューで明示する。最終的にGUIとPDFは同じ検証済みPagePlanを使用する。
