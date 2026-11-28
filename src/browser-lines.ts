@@ -624,15 +624,22 @@ export function inspectRetainedIntelligentLayoutQuality(
   if(!input||!context)return undefined;
   const quality=inspectIntelligentLayoutQuality(context.approved,input);
   if(!quality)return undefined;
+  return {quality,documents:retainedDocumentReviewRanges(context.approved)};
+}
+function retainedDocumentReviewRanges(
+  approved:RetainedReviewContext['approved'],
+):IntelligentDocumentReviewRange[]{
   const pageDocuments=new Map<number,Set<string>>();
   const ranges=new Map<string,{firstPage:number;lastPage:number}>();
-  for(const f of context.approved.fragments){
+  for(const f of approved.fragments){
     const id=f.origin.documentId,page=f.placement.page;
     const docs=pageDocuments.get(page)??new Set<string>();
     docs.add(id);pageDocuments.set(page,docs);
     const range=ranges.get(id);
-    if(range)range.lastPage=page;
-    else ranges.set(id,{firstPage:page,lastPage:page});
+    if(range){
+      range.firstPage=Math.min(range.firstPage,page);
+      range.lastPage=Math.max(range.lastPage,page);
+    }else ranges.set(id,{firstPage:page,lastPage:page});
   }
   const documents:IntelligentDocumentReviewRange[]=[];
   for(const [documentId,range] of ranges){
@@ -644,7 +651,28 @@ export function inspectRetainedIntelligentLayoutQuality(
     documents.push({documentId,...range,mixedPages,
       ...(mixedPages.length?{}:{exclusiveScope:{...range}})});
   }
-  return {quality,documents};
+  return documents;
+}
+
+export type RetainedIntelligentDocumentOptimizationReview=IntelligentOptimizationReview|
+  {status:'rejected';reason:'unknown-document'|'shared-pages'};
+/** A manuscript selection is not permission to improve neighbouring
+ * manuscripts. Resolve the exclusive page range from the private snapshot,
+ * never from a previously displayed range. Shared pages require a separate
+ * explicit page-range review using prepareRetainedIntelligentOptimizationReview.
+ * The same retained confirmation/cancellation APIs apply to successful reviews. */
+export function prepareRetainedIntelligentDocumentOptimizationReview(
+  document:Document,base:PageReuseSnapshot,documentId:string,
+  goal:IntelligentOptimizationGoal,lease:string,maxMovedFragments?:number,
+):RetainedIntelligentDocumentOptimizationReview{
+  live(document);previousPageKeys(document,base);
+  const context=retainedReviewContexts.get(base);
+  if(!context||!retainedDraftInputs.has(base))return {status:'rejected',reason:'stale'};
+  const range=retainedDocumentReviewRanges(context.approved).find(r=>r.documentId===documentId);
+  if(!range)return {status:'rejected',reason:'unknown-document'};
+  if(!range.exclusiveScope)return {status:'rejected',reason:'shared-pages'};
+  const scope={...range.exclusiveScope,...(maxMovedFragments===undefined?{}:{maxMovedFragments})};
+  return prepareRetainedIntelligentOptimizationReview(document,base,goal,lease,scope);
 }
 
 /** Start a review from an actual retained IL paper. No public mutable measured

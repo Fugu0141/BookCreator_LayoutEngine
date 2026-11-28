@@ -73,3 +73,9 @@ hostは原稿/フォント/画像/用紙/測定環境の同一性、最新世代
 #130 全3系統CI成功・main統合済み。inspectRetainedIntelligentLayoutQuality(document,base) は成功済みretained IL紙面の非公開計測・計画から品質診断と原稿ごとの実配置ページ範囲を返す。原稿IDで集約し、同じblockKeyを持つ別原稿を混同しない。ページは0始まり。範囲内に別原稿の断片が存在するページをmixedPagesに列挙し、そのようなページが1つでもあればexclusiveScopeを返さない。間の空白ページは許容する。原稿を選ぶだけで他の原稿が置かれたページを改善対象にしないための保守的な判定であり、共有ページの編集禁止や永続固定ではない。GUIでは範囲を表示し、ユーザーが明示的に選択した場合にprepareRetainedIntelligentOptimizationReviewのscopeとして渡す。
 
 別Document/無効handleは従来通り拒否、非IL retainedはundefined。返却値の変更は内部状態に影響せず、再計算・再測定・保存は行わない。hostの最新世代・原稿/資源の確認は必要。共有ページ、独立原稿、同名部品、固定位置による空白ページ、結果改変の隔離、別Document、非ILをブラウザ回帰で検査。CI・本体接続未確認。
+
+## IL-17C: 原稿選択からの安全な改善案生成
+
+#131 全3系統CI成功・main統合済み。prepareRetainedIntelligentDocumentOptimizationReview(document,base,documentId,goal,lease,maxMovedFragments?) を追加。GUIは選択した原稿IDを渡し、非公開の実測配置から排他的ページ範囲を再取得する。表示用診断の改変や古い表示範囲を入力として使わない。原稿なしはunknown-document、共有ページを含む範囲はshared-pages、非ILはstaleで拒否し、全冊改善にフォールバックしない。共有ページを対象とする場合はユーザーが明示したページ範囲で従来のprepareRetainedIntelligentOptimizationReviewを呼ぶ。
+
+範囲内外の移動制限とmaxMovedFragmentsの検証、確認・取消・実際の候補紙面との照合は既存APIを再利用する。範囲集約は断片の列挙順序によらず最小・最大ページを使用する。回帰試験では共有/不明原稿、非IL、別Document、移動予算、表示診断の改変、明示範囲案との一致、確認・取消を検証する。hostの最新世代・資源・保存/履歴検証は引き続き必要。CI、本体GUI接続、実機操作は未確認。
