@@ -1,4 +1,4 @@
-import {planMeasuredIntelligentLayout,compareIntelligentPlacementImpact,type IntelligentMeasuredOptions,type IntelligentMeasuredResult,type IntelligentPlacementImpact} from './intelligent-measured.js';
+import {planMeasuredIntelligentLayout,planMeasuredIntelligentLayoutIncrementalCooperative,type IntelligentMeasuredSnapshot,type IntelligentMeasuredWorkStage,compareIntelligentPlacementImpact,type IntelligentMeasuredOptions,type IntelligentMeasuredResult,type IntelligentPlacementImpact} from './intelligent-measured.js';
 import {inspectIntelligentLayoutQuality,type IntelligentQualityReport,type IntelligentPageQuality} from './intelligent-quality.js';
 import type {PaginationInput} from './pagination.js';
 
@@ -26,6 +26,17 @@ export function proposeIntelligentOptimization(
   input:PaginationInput,approved:IntelligentMeasuredResult,options:IntelligentMeasuredOptions,
   goal:IntelligentOptimizationGoal,scope?:Readonly<IntelligentOptimizationScope>,
 ):IntelligentOptimizationProposal{
+  const work=optimizationProposalWork(input,approved,options,goal,scope);
+  try{
+    let step=work.next();
+    while(!step.done)step=work.next(planMeasuredIntelligentLayout(input,step.value));
+    return step.value;
+  }finally{work.return(undefined as never);}
+}
+function* optimizationProposalWork(
+  input:PaginationInput,approved:IntelligentMeasuredResult,options:IntelligentMeasuredOptions,
+  goal:IntelligentOptimizationGoal,scope?:Readonly<IntelligentOptimizationScope>,
+):Generator<IntelligentMeasuredOptions,IntelligentOptimizationProposal,IntelligentMeasuredResult>{
   if(goal!=='compact'&&goal!=='balance')return {status:'rejected',reason:'invalid-goal'};
   const before=inspectIntelligentLayoutQuality(approved,input);
   if(!before||approved.status!=='placed')return {status:'rejected',reason:'stale'};
@@ -38,13 +49,13 @@ export function proposeIntelligentOptimization(
     return {status:'rejected',reason:'invalid-scope'};
   // Compare the whole result, not revision alone: intent changes can use the
   // same source revision. Expect an engine-produced plan or its JSON copy.
-  const current=planMeasuredIntelligentLayout(input,options);
+  const current=yield options;
   if(current.status!=='placed'||JSON.stringify(current)!==JSON.stringify(approved))
     return {status:'rejected',reason:'stale'};
   const next=structuredClone(options);
   next.optimization={...next.optimization,
     ...(goal==='compact'?{selectivePreferenceFallback:true}:{balancePageDepths:true,...(scope?{balancePageRange:{firstPage:scope.firstPage,lastPage:scope.lastPage}}:{})})};
-  const result=planMeasuredIntelligentLayout(input,next);
+  const result=yield next;
   if(result.status!=='placed')return {status:'rejected',reason:'conflict'};
   const after=inspectIntelligentLayoutQuality(result,input);
   const impact=compareIntelligentPlacementImpact(approved,result,input);
@@ -93,6 +104,32 @@ export function proposeIntelligentOptimization(
   return {status:'proposed',goal,options:next,result,before,after,impact,improvement,...(scope?{scope:{...scope}}:{})};
 }
 
+export type IntelligentOptimizationWorkStage=IntelligentMeasuredWorkStage|'optimization-start'|'optimization-evaluate'|'optimization-complete';
+export type IntelligentOptimizationCheckpoint=(stage:IntelligentOptimizationWorkStage)=>void|Promise<void>;
+/** Cooperative equivalent of the synchronous proposal. Capture caller-owned
+ * inputs before the first yield. Throwing from a checkpoint aborts the work.
+ * The host must yield to tasks, not just microtasks, for UI responsiveness. */
+async function cooperativeProposal(
+  input:PaginationInput,approved:IntelligentMeasuredResult,options:IntelligentMeasuredOptions,
+  goal:IntelligentOptimizationGoal,scope:Readonly<IntelligentOptimizationScope>|undefined,
+  checkpoint:IntelligentOptimizationCheckpoint,previous?:IntelligentMeasuredSnapshot,
+):Promise<IntelligentOptimizationProposal>{
+  const work=optimizationProposalWork(input,approved,options,goal,scope);
+  try{
+    await checkpoint('optimization-start');
+    let step=work.next();
+    let snapshot=previous;
+    while(!step.done){
+      const planned=await planMeasuredIntelligentLayoutIncrementalCooperative(input,step.value,snapshot,checkpoint);
+      snapshot=planned.snapshot;
+      await checkpoint('optimization-evaluate');
+      step=work.next(planned.result);
+    }
+    await checkpoint('optimization-complete');
+    return step.value;
+  }finally{work.return(undefined as never);}
+}
+
 /** Opaque in-process review handle. Not a persisted lease or print ticket. */
 export interface IntelligentOptimizationReviewHandle {readonly kind:'intelligent-optimization-review'}
 type Proposed=Extract<IntelligentOptimizationProposal,{status:'proposed'}>;
@@ -117,7 +154,22 @@ export function prepareIntelligentOptimizationReview(
   goal:IntelligentOptimizationGoal,lease:string,scope?:Readonly<IntelligentOptimizationScope>,
 ):IntelligentOptimizationReview{
   if(typeof lease!=='string'||!lease||lease.length>1024)return {status:'rejected',reason:'stale'};
-  const proposal=proposeIntelligentOptimization(input,approved,options,goal,scope);
+  return captureReview(input,approved,options,lease,proposeIntelligentOptimization(input,approved,options,goal,scope));
+}
+export async function prepareIntelligentOptimizationReviewCooperative(
+  input:PaginationInput,approved:IntelligentMeasuredResult,options:IntelligentMeasuredOptions,
+  goal:IntelligentOptimizationGoal,lease:string,scope:Readonly<IntelligentOptimizationScope>|undefined,
+  checkpoint:IntelligentOptimizationCheckpoint,previous?:IntelligentMeasuredSnapshot,
+):Promise<IntelligentOptimizationReview>{
+  if(typeof lease!=='string'||!lease||lease.length>1024)return {status:'rejected',reason:'stale'};
+  const captured=structuredClone({input,approved,options,scope});
+  const proposal=await cooperativeProposal(captured.input,captured.approved,captured.options,goal,captured.scope,checkpoint,previous);
+  return captureReview(captured.input,captured.approved,captured.options,lease,proposal);
+}
+function captureReview(
+  input:PaginationInput,approved:IntelligentMeasuredResult,options:IntelligentMeasuredOptions,
+  lease:string,proposal:IntelligentOptimizationProposal,
+):IntelligentOptimizationReview{
   if(proposal.status==='rejected')return proposal;
   const handle=Object.freeze({kind:'intelligent-optimization-review' as const});
   reviews.set(handle,{lease,input:JSON.stringify(input),approved:JSON.stringify(approved),
