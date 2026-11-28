@@ -164,6 +164,12 @@ BookCreator #250 の paper-area-preview.mjs は保存済み永続IDを現行ブ�
 
 本体担当への残りの受入条件: Engine固定参照更新、全冊の保存済みIL意図と同一revision/fingerprintでチケット生成・IPC移送、印刷専用Documentで上記入口を使用、既存assertMatchingPrintPlan/prepareTrialPrintを維持、出力前後の保存済み意図照合、ILなし経路の回帰、実Electron/WindowsのPDF検査。現在の本体 #250 はILのPDFを拒否しており、これらの条件が満たされるまでは拒否を維持する。本体コードはこのPRで変更しない。
 
+## IL本体受入: IPC前の計画照合
+
+assertIntelligentPrintTicketMatchesPlan(ticket, expectedPlan, paper) はブラウザやDOMを必要としない共通入口。ホストは保存済み原稿・明示意図・素材・フォントから確定した全冊の expectedPlan と paper を用い、IPC送信前または受信時に JSON/structured clone されたチケットを照合できる。schemaVersion、publicationReady=false、revision、fingerprint、紙面と完全計画の署名を照合し、不一致・部分計画を拒否する。型ガードとしても利用できる。印刷側の既存入口も同じチケットヘッダー検証を使用する。
+
+これは計画のみの事前検査であり、占有領域の違い（内容矩形が同じ場合を含む）、原稿・素材・フォントの同一性、出力中の変更、PDF実体は検証しない。必ず createTrialPrintPreviewForLayout で再計測後の layoutSignature を比較し、本体側の保存照合とPDF検証を維持する。#87 の Core checks / Browser measurement smoke test は成功し、main にマージ済み。本体コードは変更しない。
+
 ## 組版への統合（正式出版経路は未実装）
 
 既存測定・分割・増分組版を活用し、ロックや手動余白、明示改ページを制約として扱う。ユーザーが許可した範囲のみ再計測・配置し、不要な全冊再組版を避ける。異なるページへ移動する提案や競合解消はプレビューで明示する。最終的にGUIとPDFは同じ検証済みPagePlanを使用する。
