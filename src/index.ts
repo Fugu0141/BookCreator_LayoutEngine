@@ -55,3 +55,5 @@ export * from './intelligent-preview.js';
 export * from './intelligent-print.js';
 
 export * from './intelligent-group-selection.js';
+
+export * from './intelligent-quality.js';
