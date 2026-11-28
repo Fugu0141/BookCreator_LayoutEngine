@@ -1469,7 +1469,18 @@ try{
     const full=await createPlainTextPagePreview(document,{...retainedOptions,revision:'next'});
     assert(next.measurementWork.measuredBlocks===0&&next.measurementWork.reusedBlocks===1,'primary and named slot display artifacts avoid measurement');
     assert(JSON.stringify(next.plan)===JSON.stringify(full.plan)&&JSON.stringify(next.slices)===JSON.stringify(full.slices),'slot display retained plan and slices parity');
-    assert(next.changedElement.shadowRoot.firstElementChild.isEqualNode(full.element.shadowRoot.firstElementChild),'slot display retained DOM parity');
+    const priorPage=first.changedElement.shadowRoot.firstElementChild;
+    assert(JSON.stringify(next.pageDelta.reusedPageIndices)===JSON.stringify([0])&&next.changedElement.shadowRoot.children.length===0,'unchanged component display rows omit page DOM');
+    assert(priorPage.isEqualNode(full.element.shadowRoot.firstElementChild),'slot display retained DOM parity');
+    const primaryEdit={...multi,request:{...multi.request,inlineMath:[{...multi.request.inlineMath[0],formula:formula.replace('x&=1','x&=3')}]}};
+    const slotEdit={...multi,namedSlots:[{...multi.namedSlots[0],request:{...multi.namedSlots[0].request,inlineMath:[{...multi.namedSlots[0].request.inlineMath[0],equationNumber:'2.4'}]}},multi.namedSlots[1]]};
+    for(const [i,editedBlock] of [primaryEdit,slotEdit].entries()){
+      const opts={...retainedOptions,revision:'slot-edit-'+i,blocks:[editedBlock]};
+      const edited=await createRetainedTextPagePreview(document,opts,next.pageDelta.snapshot),exact=await createPlainTextPagePreview(document,opts);
+      assert(edited.pageDelta.reusedPageIndices.length===0,'changed embedded formula or number invalidates page');
+      assert(edited.changedElement.shadowRoot.firstElementChild.isEqualNode(exact.element.shadowRoot.firstElementChild)&&!priorPage.isEqualNode(exact.element.shadowRoot.firstElementChild),'edited slot display DOM parity');
+      assert(JSON.stringify(edited.plan)===JSON.stringify(exact.plan)&&JSON.stringify(edited.slices)===JSON.stringify(exact.slices),'edited slot plan and slices parity');
+    }
     assert(first.changedElement.shadowRoot.querySelectorAll('[data-slot-display-math] mtable').length===2,'original slot nodes remain in prior paper');
     for(const bad of [{...block,displayMath:undefined},{...block,request:{...req,text:'\uFFFC',inlineMath:[{start:0,formula}]},displayMath:undefined,sourceTextStart:undefined}]){
       let rejected=false;try{await createPlainTextPagePreview(document,{...options,blocks:[bad]});}catch{rejected=true;}
