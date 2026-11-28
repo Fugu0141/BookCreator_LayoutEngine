@@ -93,6 +93,8 @@ export interface IntelligentOptimizationReport {
   feasibleCandidates:number;
   selected:'greedy'|'lookahead'|'greedy-fallback'|'lookahead-fallback'|'greedy-selective'|'lookahead-selective'|'keep-next'|'page-balance';
   score:IntelligentCandidateScore;
+  /** Placement work of the targeted balance trial only; validation/scoring still scan all blocks. */
+  targetedBalanceWork?:{reusedBlocks:number;reusedSuffixBlocks:number;placedBlocks:number};
 }
 export type IntelligentLayoutResult =
   | {status:'placed'; revision:string; placements: IntelligentPlacement[]; publicationReady:false; optimization?:IntelligentOptimizationReport}
@@ -397,8 +399,13 @@ function* optimize(input:IntelligentLayoutInput,options:IntelligentOptimizationO
   }
   // Invalid input and static hard conflicts cannot be fixed by alternate shelves.
   if(first.status==='conflict'&&first.diagnostic.code!=='IL_FIXED_CONFLICT'&&first.diagnostic.code!=='IL_LIMIT') return first;
+  // Only the targeted balance trial can reuse this exact preference-honoring
+  // lookahead pass. Other candidates use their existing independent solves.
+  const lookaheadState:IncrementalLayoutState|undefined=balanceRange?{
+    reusedBlocks:0,reusedSuffixBlocks:0,placedBlocks:0,sharedSnapshotPlacements:0}:undefined;
+  let targetedBalanceWork:IntelligentOptimizationReport['targetedBalanceWork'];
   const candidates: {name:IntelligentOptimizationReport['selected'];result:IntelligentLayoutResult}[]=[
-    {name:'greedy',result:first},{name:'lookahead',result:yield* solve(input,true,true)}
+    {name:'greedy',result:first},{name:'lookahead',result:yield* solve(input,true,true,lookaheadState)}
   ];
   if(options.selectivePreferenceFallback===true){
     // At most one extra pass per normal candidate. Preserve all other soft
@@ -487,7 +494,11 @@ function* optimize(input:IntelligentLayoutInput,options:IntelligentOptimizationO
       if(estimate>gain){gain=estimate;chosen=last.id;}
     }
     if(chosen!==undefined){
-      const alternate=yield* solve({...input,blocks:input.blocks.map(b=>b.id===chosen?{...b,startNewPage:true}:b)},true,true);
+      const trialState:IncrementalLayoutState|undefined=lookaheadState?.next?{
+        previous:lookaheadState.next,reusedBlocks:0,reusedSuffixBlocks:0,placedBlocks:0,sharedSnapshotPlacements:0}:undefined;
+      const alternate=yield* solve({...input,blocks:input.blocks.map(b=>b.id===chosen?{...b,startNewPage:true}:b)},true,true,trialState);
+      if(trialState&&alternate.status==='placed')targetedBalanceWork={
+        reusedBlocks:trialState.reusedBlocks,reusedSuffixBlocks:trialState.reusedSuffixBlocks,placedBlocks:trialState.placedBlocks};
       candidates.push({name:'page-balance',result:alternate});
       if(alternate.status==='placed'){
         feasibleCandidates++;
@@ -496,7 +507,7 @@ function* optimize(input:IntelligentLayoutInput,options:IntelligentOptimizationO
       }
     }
   }
-  return {...best.result,optimization:{evaluatedCandidates:candidates.length,feasibleCandidates,selected:best.name,score:best.score}};
+  return {...best.result,optimization:{evaluatedCandidates:candidates.length,feasibleCandidates,selected:best.name,score:best.score,...(targetedBalanceWork?{targetedBalanceWork}:{})}};
 }
 
 function* solve(input:IntelligentLayoutInput,honorPreferences:boolean,lookahead=false,incremental?:IncrementalLayoutState,ignoredPreference?:string):Generator<IntelligentWorkStage,IntelligentLayoutResult,void> {
@@ -648,12 +659,16 @@ function* solve(input:IntelligentLayoutInput,honorPreferences:boolean,lookahead=
   if(incremental){
     // All blocks and constraints were validated before any reuse. Keys use
     // effective footprint, not the equivalent spelling of minimum constraints.
-    context=JSON.stringify([width,height,gap,reserved.map(r=>[r.id,r.page,r.rect.x,r.rect.y,r.rect.width,r.rect.height])]);
+    context=JSON.stringify([width,height,gap,honorPreferences,lookahead,ignoredPreference??null,reserved.map(r=>[r.id,r.page,r.rect.x,r.rect.y,r.rect.width,r.rect.height])]);
     previous=incremental.previous?.context===context?incremental.previous:undefined;
     if(previous){
       while(prefix<keys.length&&prefix<previous.keys.length&&equalKey(keys[prefix],previous.keys[prefix])){
         if(prefix%128===0)yield 'il-match';prefix++;
       }
+      // A lookahead placement can depend on the next key. Roll back one
+      // matching block at any changed boundary, including insertion/deletion.
+      // Group interiors are then rolled back atomically as usual.
+      if(lookahead&&prefix>0&&(prefix!==keys.length||prefix!==previous.keys.length))prefix--;
       // Prefix must end on a group boundary in BOTH versions. This also
       // handles extending a group with an inserted member at its old end.
       const interior=(index:number)=>index>0&&index<keys.length&&
