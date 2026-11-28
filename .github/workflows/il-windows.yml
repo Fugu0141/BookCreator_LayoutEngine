@@ -1,0 +1,46 @@
+name: IL Windows acceptance
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  il-windows:
+    runs-on: windows-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm install --ignore-scripts --no-audit --no-fund
+      - run: npm run typecheck
+      - run: npm test
+      - name: Locate Chrome and install PDF inspection tools
+        shell: pwsh
+        run: |
+          $chrome = @(
+            "$env:ProgramFiles\Google\Chrome\Application\chrome.exe",
+            "${env:ProgramFiles(x86)}\Google\Chrome\Application\chrome.exe",
+            "$env:LOCALAPPDATA\Google\Chrome\Application\chrome.exe"
+          ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $chrome) { throw "Chrome was not found on the runner" }
+          "CHROME_BIN=$chrome" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          choco install poppler -y --no-progress
+          if ($LASTEXITCODE -ne 0) { throw "Poppler installation failed" }
+          $tools = Join-Path $env:ChocolateyInstall 'lib\poppler\tools'
+          $pdf = Get-ChildItem $tools -Recurse -Filter pdftotext.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($pdf) {
+            $pdf.DirectoryName | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          } elseif (-not (Get-Command pdftotext -ErrorAction SilentlyContinue)) {
+            throw "pdftotext executable not found"
+          }
+      - name: IL full-book PDF geometry acceptance
+        shell: pwsh
+        run: |
+          pdftotext -v
+          if ($LASTEXITCODE -ne 0) { throw "pdftotext is unavailable" }
+          npm run test:il:pdf

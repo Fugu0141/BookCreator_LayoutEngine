@@ -178,6 +178,20 @@ assertIntelligentPrintTicketMatchesPlan(ticket, expectedPlan, paper) はブラ�
 
 これはLinux Chromiumの本体形式に近い受入試験であり、実Electron IPC・保存照合・Windows実機・正式出版の代替ではない。本体コード変更なし。CI未確認。
 
+## IL本体受入: Windows CIの追加
+
+#89のLinux CI run 46128193968 は全冊JSON移送後の英字・混合実PDF試験に成功。4ページ、3ページ目空白、英字4件の位置とページ所属、日本語・数式・画像の独立検査に合格。mainへ統合済み。
+
+Windows runnerでもNode 22型検査と全単体試験を行い、ChromeとPopplerを用いて同じ英字4ページの実PDF受入試験を実行する独立workflowを追加する。Windowsの改行を許容するDevToolsポート読み取りと、試験専用Chromeプロセスツリーの終了・プロファイル削除を調整。Popplerのインストール・実行失敗を成功扱いしない。既存Linux混合試験は維持する。
+
+Windowsの日本語フォント・混合PDF検査は今回追加しない。Windows CIの結果は未確認であり、本体Electronでの実際の保存・IPC・GUI操作・PDF出力や利用者のWindows実機での検証を代替しない。正式出版は未許可。本体コードは変更しない。
+
+## IL本体受入: 未対応の配置意図の拒否
+
+#90 Windows CI run 46128395661 は単体試験136/136、英字4ページの実PDF試験に成功。Linuxの2系統も成功しmainに統合済み。Windowsの日本語・数式・画像混合試験と本体Electronは未検証。
+
+計測済みILのoptions、intent、placement、fixed/preferred座標、sizeConstraintsに未対応のキーが含まれる場合は IL_MEASURED_INTENT として拒否する。対象原稿が特定できる場合はblockIdを返す。誤記した占有率や明示余白を無視して自動配置することを防ぐ。ホスト独自のメタデータはこれらのオブジェクトから分離すること。既知の型付き入力の挙動は変えない。通常・増分・協調経路で同じ拒否を行い、新規snapshotを発行しない。従来の成功snapshotは有効なまま。予約領域・最適化オプションの内部形状については従来の検証契約を維持する。
+
 ## 組版への統合（正式出版経路は未実装）
 
 既存測定・分割・増分組版を活用し、ロックや手動余白、明示改ページを制約として扱う。ユーザーが許可した範囲のみ再計測・配置し、不要な全冊再組版を避ける。異なるページへ移動する提案や競合解消はプレビューで明示する。最終的にGUIとPDFは同じ検証済みPagePlanを使用する。
