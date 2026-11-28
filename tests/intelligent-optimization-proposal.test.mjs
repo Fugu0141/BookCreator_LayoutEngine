@@ -143,3 +143,15 @@ test('scoped review validates page range and retains the independently checked c
  assert.equal(confirm(r.handle,current,preview).status,'confirmed');
  assert.deepEqual(prepare(i,approved,options,'compact',lease,{firstPage:0,lastPage:0}),{status:'rejected',reason:'outside-scope'});
 });
+
+test('scope preserves every later page in a 22-page measured book',()=>{
+ const later=Array.from({length:20},(_,n)=>b('chapter-'+n,80,30));
+ const i=input([...['a','b','c','d'].map(id=>b(id,80,30)),...later]);
+ const options={gap:5,intents:later.map((_,n)=>intent('chapter-'+n,{startNewPage:true}))};
+ const approved=plan(i,options);
+ const p=propose(i,approved,options,'balance',{firstPage:0,lastPage:1,maxMovedFragments:2});
+ assert.equal(p.status,'proposed');
+ assert.equal(p.before.pageCount,22);assert.equal(p.after.pageCount,22);
+ assert.deepEqual(p.result.fragments.slice(4),approved.fragments.slice(4));
+ assert.deepEqual(p.after.pages.slice(2),p.before.pages.slice(2));
+});
