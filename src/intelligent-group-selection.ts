@@ -179,3 +179,60 @@ export function proposeIntelligentGroupEdit(
   }
   return {status:'proposed',options:structuredClone({...options,intents}),members};
 }
+
+/** Candidate only: a diagnostic implicates a member, not necessarily the
+ * sole cause of failure. The exact failed options and request generation
+ * must be retained by the host. */
+export function findIntelligentGroupConflictTarget(
+  result:IntelligentMeasuredResult,
+  options:IntelligentMeasuredOptions,
+  expected:Readonly<Pick<PaginationInput,'revision'|'fingerprint'>>,
+):{groupId:string;members:Source[]}|undefined {
+  if(result.status!=='conflict'||result.revision!==expected.revision||
+    result.fingerprint!==expected.fingerprint||!result.diagnostic.blockId)return undefined;
+  const code=result.diagnostic.code;
+  if(!(result.stage==='layout'&&['IL_INVALID','IL_TOO_LARGE','IL_LIMIT','IL_SIZE_CONFLICT'].includes(code)||
+    result.stage==='intent'&&code==='IL_MEASURED_INTENT'))return undefined;
+  const list=options.intents;
+  if(!Array.isArray(list)||list.length>10000)return undefined;
+  const seen=new Set<string>();
+  let groupId:string|undefined;
+  for(const i of list){
+    if(!validSource(i)||!i.placement||seen.has(key(i)))return undefined;
+    seen.add(key(i));
+    if(key(i)===result.diagnostic.blockId)groupId=i.placement.keepTogetherGroup;
+  }
+  if(typeof groupId!=='string'||!groupId.trim()||groupId.length>256)return undefined;
+  const members=list.filter(i=>i.placement.keepTogetherGroup===groupId)
+    .map(i=>({documentId:i.documentId,blockKey:i.blockKey}));
+  if(!members.length||new Set(members.map(m=>m.documentId)).size!==1)return undefined;
+  return {groupId,members};
+}
+
+/** Explicit recovery of a failed group, including a now-missing or split
+ * source. Unlike ordinary edit this requires no successful fragments.
+ * Removes only group fields. All other intents remain unchanged; replan
+ * and verify the saved lease before committing. */
+export function proposeIntelligentGroupRecovery(
+  result:IntelligentMeasuredResult,
+  options:IntelligentMeasuredOptions,
+  expected:Readonly<Pick<PaginationInput,'revision'|'fingerprint'>>,
+  selection:Readonly<Pick<IntelligentGroupSelection,'groupId'|'members'>>,
+):IntelligentGroupProposal {
+  if(result.status!=='conflict'||result.revision!==expected.revision||result.fingerprint!==expected.fingerprint)
+    return reject('stale');
+  const target=findIntelligentGroupConflictTarget(result,options,expected);
+  if(!target||!selection||target.groupId!==selection.groupId)return reject('existing-group');
+  if(!Array.isArray(selection.members)||selection.members.length!==target.members.length||
+    selection.members.some(s=>!validSource(s)))return reject('invalid-selection');
+  const selected=new Set(selection.members.map(key));
+  if(selected.size!==selection.members.length)return reject('ambiguous');
+  if(target.members.some(m=>!selected.has(key(m))))return reject('existing-group');
+  const intents:IntelligentMeasuredIntent[]=[];
+  for(const i of options.intents!){
+    if(!selected.has(key(i))){intents.push(i);continue;}
+    const {keepTogetherGroup,keepTogetherLayout,...placement}=i.placement;
+    if(Object.keys(placement).length)intents.push({documentId:i.documentId,blockKey:i.blockKey,placement});
+  }
+  return {status:'proposed',options:structuredClone({...options,intents}),members:target.members};
+}
