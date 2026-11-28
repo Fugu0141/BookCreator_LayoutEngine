@@ -57,3 +57,5 @@ export * from './intelligent-print.js';
 export * from './intelligent-group-selection.js';
 
 export * from './intelligent-quality.js';
+
+export * from './intelligent-optimization-proposal.js';
